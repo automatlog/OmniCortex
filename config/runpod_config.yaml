@@ -1,0 +1,99 @@
+# ============================================================
+# OmniCortex RunPod Deployment Configuration
+# ============================================================
+# Edit this file before running deploy_runpod.sh
+
+# RunPod Configuration
+runpod:
+  template: "pytorch"  # PyTorch Ubuntu template
+  gpu_type: "RTX 6000 Ada"  # RTX 4090, RTX 6000 Ada, A40, A100
+  gpu_count: 1
+  region: "auto"  # or specific: US-CA-1, EU-RO-1, etc.
+  cloud_type: "SECURE"  # SECURE or COMMUNITY (70% cheaper)
+
+# Storage Configuration
+storage:
+  container_disk_gb: 50  # Ephemeral storage
+  volume_disk_gb: 100    # Persistent storage (/workspace)
+
+# GPU Configuration
+gpu:
+  type: "RTX 6000 Ada"
+  vram_gb: 48
+  count: 1
+
+# vLLM Server Configuration
+vllm:
+  enabled: true
+  model: "meta-llama/Meta-Llama-3.1-8B-Instruct"
+  port: 8080  # vLLM server port
+  tensor_parallel_size: 1  # Set to GPU count for multi-GPU
+  gpu_memory_utilization: 0.90
+  max_model_len: 8192
+  max_num_seqs: 100  # Max concurrent requests
+
+# Voice Engine Configuration (LiquidAI)
+voice:
+  enabled: true
+  model: "LiquidAI/LFM2.5-Audio-1.5B"
+  max_instances: 8
+
+# OmniCortex Application
+app:
+  streamlit_port: 8501
+  api_port: 8000  # FastAPI backend port
+  base_dir: "/workspace/OmniCortex"
+
+# Database (PostgreSQL)
+database:
+  host: "localhost"
+  port: 5432
+  name: "omnicortex"
+  user: "postgres"
+  password: "postgres"  # CHANGE THIS IN PRODUCTION
+
+# LLM Settings
+llm:
+  provider: "vllm"
+  model: "meta-llama/Meta-Llama-3.1-8B-Instruct"
+  temperature: 0.6
+
+# API Keys (leave empty if not using)
+api_keys:
+  whatsapp_access_token: ""
+  whatsapp_phone_id: ""
+  huggingface_token: ""  # Required for downloading Llama models
+
+# Exposed Ports
+ports:
+  - 8000   # API
+  - 8080   # vLLM (internal)
+  - 8501   # Streamlit UI
+  - 5432   # PostgreSQL (optional, for external access)
+
+# Cost Estimation (Secure Cloud - On-Demand Pricing)
+cost:
+  rtx_6000_ada:
+    hourly_rate_usd: 0.77
+    vram_gb: 48
+    ram_gb: 62
+    vcpu: 16
+    spot_rate_usd: 0.39
+  
+  rtx_pro_6000:
+    hourly_rate_usd: 1.84
+    vram_gb: 96
+    ram_gb: 188
+    vcpu: 16
+    spot_rate_usd: 1.19
+
+# Recommended Models by GPU
+recommended_models:
+  rtx_6000_ada_48gb:
+    - "meta-llama/Meta-Llama-3.1-8B-Instruct"  # Recommended
+    - "meta-llama/Meta-Llama-3.1-70B-Instruct"  # With quantization
+  
+  rtx_pro_6000_96gb:
+    - "meta-llama/Meta-Llama-3.1-70B-Instruct"
+    - "meta-llama/Llama-3.3-70B-Instruct"
+    - "meta-llama/Meta-Llama-3.1-405B-Instruct"  # With quantization

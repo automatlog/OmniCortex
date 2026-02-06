@@ -1,0 +1,36 @@
+2026-02-04 23:25:57.852 IST [25064] LOG:  starting PostgreSQL 18.1 on x86_64-windows, compiled by msvc-19.44.35221, 64-bit
+2026-02-04 23:25:57.860 IST [25064] LOG:  could not bind IPv6 address "::1": Permission denied
+2026-02-04 23:25:57.861 IST [25064] LOG:  could not bind IPv4 address "127.0.0.1": Permission denied
+2026-02-04 23:25:57.861 IST [25064] WARNING:  could not create listen socket for "localhost"
+2026-02-04 23:25:57.861 IST [25064] FATAL:  could not create any TCP/IP sockets
+2026-02-04 23:25:57.865 IST [25064] LOG:  database system is shut down
+2026-02-04 23:26:13.847 IST [15172] LOG:  starting PostgreSQL 18.1 on x86_64-windows, compiled by msvc-19.44.35221, 64-bit
+2026-02-04 23:26:13.855 IST [15172] LOG:  listening on IPv6 address "::1", port 5433
+2026-02-04 23:26:13.856 IST [15172] LOG:  listening on IPv4 address "127.0.0.1", port 5433
+2026-02-04 23:26:13.971 IST [32024] LOG:  database system was shut down at 2026-02-04 23:25:26 IST
+2026-02-04 23:26:13.987 IST [15172] LOG:  database system is ready to accept connections
+2026-02-04 23:27:31.240 IST [15172] LOG:  received fast shutdown request
+2026-02-04 23:27:31.240 IST [30628] LOG:  shutting down
+2026-02-04 23:27:31.241 IST [19436] ERROR:  canceling statement due to user request
+2026-02-04 23:27:31.276 IST [30628] LOG:  checkpoint starting: shutdown immediate
+2026-02-04 23:27:31.278 IST [15172] LOG:  aborting any active transactions
+2026-02-04 23:27:31.292 IST [15172] LOG:  background worker "logical replication launcher" (PID 19436) exited with exit code 1
+2026-02-04 23:27:31.329 IST [30628] LOG:  checkpoint complete: wrote 38 buffers (0.2%), wrote 3 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.006 s, sync=0.024 s, total=0.089 s; sync files=10, longest=0.003 s, average=0.003 s; distance=286 kB, estimate=286 kB; lsn=0/18390B8, redo lsn=0/18390B8
+2026-02-04 23:27:31.357 IST [15172] LOG:  database system is shut down
+2026-02-04 23:36:07.265 IST [21884] LOG:  starting PostgreSQL 18.1 on x86_64-windows, compiled by msvc-19.44.35221, 64-bit
+2026-02-04 23:36:07.276 IST [21884] LOG:  could not bind IPv6 address "::1": Permission denied
+2026-02-04 23:36:07.277 IST [21884] LOG:  could not bind IPv4 address "127.0.0.1": Permission denied
+2026-02-04 23:36:07.277 IST [21884] WARNING:  could not create listen socket for "localhost"
+2026-02-04 23:36:07.277 IST [21884] FATAL:  could not create any TCP/IP sockets
+2026-02-04 23:36:07.283 IST [21884] LOG:  database system is shut down
+2026-02-04 23:37:28.063 IST [19816] LOG:  starting PostgreSQL 18.1 on x86_64-windows, compiled by msvc-19.44.35221, 64-bit
+2026-02-04 23:37:28.073 IST [19816] LOG:  listening on IPv6 address "::1", port 5433
+2026-02-04 23:37:28.074 IST [19816] LOG:  listening on IPv4 address "127.0.0.1", port 5433
+2026-02-04 23:37:28.172 IST [26664] LOG:  database system was shut down at 2026-02-04 23:27:31 IST
+2026-02-04 23:37:28.185 IST [19816] LOG:  database system is ready to accept connections
+2026-02-04 23:42:28.176 IST [18728] LOG:  checkpoint starting: time
+2026-02-04 23:44:22.598 IST [18728] LOG:  checkpoint complete: wrote 1046 buffers (6.4%), wrote 3 SLRU buffers; 1 WAL file(s) added, 0 removed, 0 recycled; write=113.518 s, sync=0.789 s, total=114.424 s; sync files=308, longest=0.065 s, average=0.003 s; distance=5257 kB, estimate=5257 kB; lsn=0/1D5B808, redo lsn=0/1D5B778
+2026-02-05 02:48:05.842 IST [19816] LOG:  background worker "logical replication launcher" (PID 25328) was terminated by exception 0xC000013A
+2026-02-05 02:48:05.842 IST [19816] HINT:  See C include file "ntstatus.h" for a description of the hexadecimal value.
+2026-02-05 02:48:05.843 IST [19816] LOG:  terminating any other active server processes
+2026-02-05 02:48:05.885 IST [19816] LOG:  received fast shutdown request

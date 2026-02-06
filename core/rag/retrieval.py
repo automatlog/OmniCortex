@@ -1,0 +1,157 @@
+"""
+Advanced Retrieval Module
+- Hybrid Search (Vector + Keyword)
+- Reciprocal Rank Fusion (RRF)
+- Cross-Encoder Reranking
+"""
+from typing import List, Dict, Any
+from sqlalchemy import text
+from ..database import get_session, ParentChunk
+from .vector_store import search_documents as vector_search_func
+from sentence_transformers import CrossEncoder
+import os
+
+# Lazy load reranker model to save startup time/memory if not used
+_RERANKER_MODEL = None
+
+def get_reranker():
+    global _RERANKER_MODEL
+    if _RERANKER_MODEL is None:
+        model_name = os.getenv("RERANKER_MODEL_NAME", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+        print(f"🔹 Loading Reranker: {model_name}...")
+        _RERANKER_MODEL = CrossEncoder(model_name)
+    return _RERANKER_MODEL
+
+
+def keyword_search(query: str, agent_id: str = None, k: int = 10) -> List[Dict]:
+    """
+    Perform keyword search on ParentChunks using Postgres Full-Text Search (tsvector)
+    Much faster than ILIKE for large datasets.
+    """
+    db = get_session()
+    try:
+        # Use plainto_tsquery for safer query parsing (handles special chars)
+        # to_tsvector creates searchable tokens from content
+        sql = """
+        SELECT p.id, p.content, d.agent_id,
+               ts_rank(to_tsvector('english', p.content), plainto_tsquery('english', :query)) as rank
+        FROM omni_parent_chunks p
+        JOIN omni_documents d ON p.source_doc_id = d.id
+        WHERE to_tsvector('english', p.content) @@ plainto_tsquery('english', :query)
+        """
+        params = {"query": query}
+        
+        if agent_id:
+            sql += " AND d.agent_id = :agent_id"
+            params["agent_id"] = agent_id
+            
+        sql += " ORDER BY rank DESC"
+        sql += f" LIMIT {k}"
+        
+        results = db.execute(text(sql), params).fetchall()
+        
+        return [
+            {"content": r.content, "metadata": {"id": r.id, "source": "keyword", "rank": r.rank}}
+            for r in results
+        ]
+    except Exception as e:
+        print(f"⚠️ Keyword search failed: {e}")
+        return []
+    finally:
+        db.close()
+
+
+def reciprocal_rank_fusion(results: Dict[str, List[Any]], k=60):
+    """
+    Fuse results from multiple lists using RRF
+    results: {"vector": [...], "keyword": [...]}
+    """
+    fused_scores = {}
+    
+    for source, docs in results.items():
+        for rank, doc in enumerate(docs):
+            # Use content as key for deduplication (simple approach)
+            doc_content = doc.get("page_content") or doc.get("content")
+            if not doc_content:
+                continue
+                
+            if doc_content not in fused_scores:
+                fused_scores[doc_content] = {"doc": doc, "score": 0.0}
+            
+            fused_scores[doc_content]["score"] += 1.0 / (k + rank + 1)
+            
+    # Sort by Score
+    reranked = sorted(fused_scores.values(), key=lambda x: x["score"], reverse=True)
+    return [item["doc"] for item in reranked]
+
+
+def rerank_documents(query: str, docs: List[Any], top_n: int = 4) -> List[Any]:
+    """
+    Rerank documents using Cross-Encoder
+    """
+    if not docs:
+        return []
+        
+    try:
+        reranker = get_reranker()
+        
+        # Prepare pairs [Query, Doc Text]
+        doc_texts = [d.get("page_content") or d.get("content") for d in docs]
+        pairs = [[query, text] for text in doc_texts]
+        
+        scores = reranker.predict(pairs)
+        
+        # Attach scores and sort
+        scored_docs = []
+        for i, doc in enumerate(docs):
+            doc_copy = doc.copy() if isinstance(doc, dict) else doc
+            # If object, simple monkey patch or wrapper?
+            # It returns Langchain Documents usually
+            scored_docs.append((doc, scores[i]))
+            
+        # Sort desc
+        scored_docs.sort(key=lambda x: x[1], reverse=True)
+        
+        print(f"✅ Reranked {len(docs)} documents")
+        return [d[0] for d in scored_docs[:top_n]]
+        
+    except Exception as e:
+        print(f"⚠️ Reranking failed: {e}")
+        return docs[:top_n]
+
+
+def hybrid_search(query: str, agent_id: str = None, top_k: int = 5) -> List[Any]:
+    """
+    Main entry point: Hybrid Search (Vector + Keyword) -> RRF -> Rerank
+    """
+    # 1. Parallel Retrieval
+    print(f"🔍 Hybrid Search: '{query}'")
+    
+    # Vector Search (Semantic) - getting slightly more candidates
+    vector_docs = vector_search_func(query, agent_id, k=top_k*2)
+    
+    # Keyword Search (Lexical)
+    keyword_docs = keyword_search(query, agent_id, k=top_k*2)
+    
+    print(f"   Found: {len(vector_docs)} vector, {len(keyword_docs)} keyword candidates")
+    
+    # 2. RRF Fusion
+    # Convert keyword dicts to objects compatible if needed, or normalize
+    # For now, let's normalize vector docs to dicts or vice versa?
+    # Vector search returns objects with .page_content.
+    
+    # Normalize Vector Docs
+    norm_vector = []
+    for d in vector_docs:
+        norm_vector.append({
+            "content": d.page_content,
+            "metadata": d.metadata,
+            "source": "vector"
+        })
+        
+    all_docs = reciprocal_rank_fusion({"vector": norm_vector, "keyword": keyword_docs})
+    
+    # 3. Reranking
+    final_docs = rerank_documents(query, all_docs, top_n=top_k)
+    
+    return final_docs

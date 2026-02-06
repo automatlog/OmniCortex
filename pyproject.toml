@@ -1,0 +1,53 @@
+[project]
+name = "omnicortex"
+version = "1.0.0"
+description = "OMNI CHANNEL APP - AI FOR WHATSAPP AND VOICE"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "langchain>=0.3",
+    "langchain-community",
+    "langchain-core",
+    "langgraph",
+    "langchain-huggingface",
+    "langchain-openai",
+    "langchain-text-splitters",
+    "langchain-experimental",
+    "pypdf",
+    "python-docx",
+    "python-dotenv",
+    "psycopg2-binary",
+    "sqlalchemy",
+    "langchain-postgres",
+    "pgvector",
+    "sentence-transformers",
+    "fastapi",
+    "uvicorn[standard]",
+    "prometheus-client",
+    "pyyaml",
+    "python-multipart>=0.0.21",
+    "psutil>=7.2.1",
+    "gputil>=1.4.0",
+    "crewai",
+    "crewai-tools",
+    "clickhouse-connect",
+    "ragas",
+    "datasets",
+    "pandas",
+    "streamlit",
+    "audio-recorder-streamlit",
+]
+
+[project.optional-dependencies]
+vllm = ["vllm"]
+# Voice: PersonaPlex (nvidia/personaplex-7b-v1) runs via vLLM, no extra deps
+
+[tool.setuptools.packages.find]
+include = ["core*", "config*"]
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "httpx>=0.27",
+    "locust>=2.20",
+]

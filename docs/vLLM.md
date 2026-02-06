@@ -118,28 +118,6 @@ python -m sglang.launch_server \
   --model-path meta-llama/Meta-Llama-3.1-8B-Instruct \
   --port 8080
 ```
-
----
-
-## Recommended Models
-
-### For RTX 6000 Ada (48GB VRAM)
-
-| Model | VRAM | Quality | Speed |
-|-------|------|---------|-------|
-| **Llama-3.1-8B-Instruct** ⭐ | 16GB | Good | Fast |
-| Llama-3.1-70B-Instruct | 45GB | Excellent | Slower |
-| Qwen2.5-7B-Instruct | 14GB | Good | Fast |
-| Mistral-7B-Instruct-v0.3 | 14GB | Good | Fast |
-
-### Recommended Setup
-```bash
-# 8B model (recommended, good balance)
---model meta-llama/Meta-Llama-3.1-8B-Instruct \
---tensor-parallel-size 2 \
---max-num-seqs 128
-```
-
 ---
 
 ## Performance Tuning

@@ -71,19 +71,34 @@ export function AgentCard({ agent, onDelete }: AgentCardProps) {
           )}
         </div>
 
-        {/* Chat Button */}
-        <Link
-          href={`/agents/${agent.id}/chat`}
-          className={cn(
-            "flex items-center justify-center gap-2 w-full",
-            "bg-blue-600/20 hover:bg-blue-600/30 text-blue-400",
-            "py-2.5 rounded-lg font-medium text-sm",
-            "transition-colors"
-          )}
-        >
-          <MessageSquare size={16} />
-          Test Chat
-        </Link>
+        {/* Actions Footer */}
+        <div className="flex gap-2">
+          <Link
+            href={`/agents/${agent.id}/chat`}
+            className={cn(
+              "flex-1 flex items-center justify-center gap-2",
+              "bg-blue-600/10 hover:bg-blue-600/20 text-blue-400",
+              "py-2.5 rounded-lg font-medium text-sm",
+              "transition-colors"
+            )}
+          >
+            <MessageSquare size={16} />
+            Chat
+          </Link>
+          
+          <Link
+            href={`/agents/${agent.id}/documents`}
+            className={cn(
+              "flex-1 flex items-center justify-center gap-2",
+              "bg-purple-600/10 hover:bg-purple-600/20 text-purple-400",
+              "py-2.5 rounded-lg font-medium text-sm",
+              "transition-colors"
+            )}
+          >
+            <FileText size={16} />
+            Docs
+          </Link>
+        </div>
       </div>
     </motion.div>
   );

@@ -3,29 +3,44 @@
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
-import { Send, Mic, MicOff, Plus, Loader2 } from "lucide-react";
+import { Send, Mic, MicOff, Plus, Loader2, Settings } from "lucide-react";
 import { sendMessage, type ChatMessage } from "@/lib/api";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 
 interface ChatInterfaceProps {
   agentId: string;
   agentName?: string;
-  modelSelection?: string;
 }
 
 export function ChatInterface({
   agentId,
   agentName = "Agent",
-  modelSelection = "Meta Llama 3.1",
 }: ChatInterfaceProps) {
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isRecording, setIsRecording] = useState(false);
-  const [selectedModel, setSelectedModel] = useState(modelSelection);
+  
+  // Settings
+  const [selectedModel, setSelectedModel] = useState("Meta Llama 3.1");
+  const [verbosity, setVerbosity] = useState("medium");
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const models = ["Meta Llama 3.1", "Nemotron"];
+  const verbosityOptions = [
+    { value: "short", label: "⚡ Short (5s)", desc: "Quick responses" },
+    { value: "medium", label: "⚖️ Balanced", desc: "Standard detail" },
+    { value: "detailed", label: "📚 Detailed", desc: "Comprehensive" }
+  ];
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -52,7 +67,9 @@ export function ChatInterface({
       const response = await sendMessage(
         userMessage.content,
         agentId,
-        selectedModel
+        selectedModel,
+        5,
+        verbosity
       );
 
       const assistantMessage: ChatMessage = {
@@ -84,39 +101,81 @@ export function ChatInterface({
 
   const toggleRecording = () => {
     setIsRecording(!isRecording);
-    // TODO: Implement voice recording
+    // TODO: Implement voice recording with Moshi
   };
 
   return (
     <div className="flex flex-col h-full bg-neutral-950 rounded-xl border border-neutral-800">
-      {/* Model Selector */}
-      <div className="p-4 border-b border-neutral-800">
-        <p className="text-sm text-neutral-400 mb-2">Choose your AI Model:</p>
-        <div className="flex gap-4">
-          {models.map((model) => (
-            <label
-              key={model}
-              className="flex items-center gap-2 cursor-pointer"
+      {/* Settings Header */}
+      <div className="p-4 border-b border-neutral-800 flex items-center justify-between">
+        <div className="flex items-center gap-4">
+          <div>
+            <p className="text-sm text-neutral-400 mb-1">Model</p>
+            <select
+              value={selectedModel}
+              onChange={(e) => setSelectedModel(e.target.value)}
+              className="bg-neutral-800 text-white text-sm rounded px-3 py-1.5 border border-neutral-700 focus:border-blue-500 focus:outline-none"
             >
-              <input
-                type="radio"
-                name="model"
-                value={model}
-                checked={selectedModel === model}
-                onChange={(e) => setSelectedModel(e.target.value)}
-                className="w-4 h-4 text-blue-500 bg-neutral-800 border-neutral-600 focus:ring-blue-500"
-              />
-              <span
-                className={cn(
-                  "text-sm",
-                  selectedModel === model ? "text-white" : "text-neutral-400"
-                )}
-              >
-                {model}
-              </span>
-            </label>
-          ))}
+              {models.map((model) => (
+                <option key={model} value={model}>
+                  {model}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <p className="text-sm text-neutral-400 mb-1">Response Length</p>
+            <select
+              value={verbosity}
+              onChange={(e) => setVerbosity(e.target.value)}
+              className="bg-neutral-800 text-white text-sm rounded px-3 py-1.5 border border-neutral-700 focus:border-blue-500 focus:outline-none"
+            >
+              {verbosityOptions.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+          </div>
         </div>
+
+        <Dialog open={settingsOpen} onOpenChange={setSettingsOpen}>
+          <DialogTrigger asChild>
+            <button className="p-2 rounded-lg hover:bg-neutral-800 text-neutral-400 hover:text-white transition-colors">
+              <Settings className="w-5 h-5" />
+            </button>
+          </DialogTrigger>
+          <DialogContent className="bg-neutral-900 border-neutral-800">
+            <DialogHeader>
+              <DialogTitle className="text-white">Chat Settings</DialogTitle>
+            </DialogHeader>
+            <div className="space-y-4">
+              <div>
+                <label className="text-sm text-neutral-400 block mb-2">
+                  Response Style
+                </label>
+                <div className="space-y-2">
+                  {verbosityOptions.map((opt) => (
+                    <button
+                      key={opt.value}
+                      onClick={() => setVerbosity(opt.value)}
+                      className={cn(
+                        "w-full text-left p-3 rounded-lg border transition-colors",
+                        verbosity === opt.value
+                          ? "border-blue-500 bg-blue-500/10"
+                          : "border-neutral-700 hover:border-neutral-600"
+                      )}
+                    >
+                      <div className="text-white font-medium">{opt.label}</div>
+                      <div className="text-xs text-neutral-400">{opt.desc}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          </DialogContent>
+        </Dialog>
       </div>
 
       {/* Messages */}

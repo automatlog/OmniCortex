@@ -399,20 +399,7 @@ def sidebar():
                 st.caption(f"📄 {agent['document_count']} docs")
         
         st.divider()
-        with st.expander("🧪 Test STS (Voice Conversion)"):
-            st.caption("ElevenLabs Speech-to-Speech")
-            sts_audio = audio_recorder(text="", icon_size="lg", key="sts_recorder")
-            if sts_audio:
-                from core.voice import voice_conversion
-                with st.spinner("Transforming voice..."):
-                    try:
-                        converted = voice_conversion(sts_audio)
-                        if converted:
-                            st.audio(converted, format="audio/mp3")
-                        else:
-                            st.error("Conversion failed")
-                    except Exception as e:
-                        st.error(f"Error: {e}")
+
         
 
 
@@ -545,8 +532,6 @@ def chat_page():
     # Initialize Voice State & Verbosity
     if "use_voice" not in st.session_state:
         st.session_state.use_voice = False
-    if "voice_id" not in st.session_state:
-        st.session_state.voice_id = "JBFqnCBsd6RMkjVDRZzb"
     if "verbosity" not in st.session_state:
         st.session_state.verbosity = "medium"
 
@@ -557,7 +542,11 @@ def chat_page():
             "Response Length",
             options=["short", "medium", "detailed"],
             value=st.session_state.verbosity,
-            format_func=lambda x: {"short": "⚡ Short (5s)", "medium": "⚖️ Balanced", "detailed": "📚 Detailed"}[x]
+            format_func=lambda x: {
+                "short": "⚡ Short (5s)", 
+                "medium": "⚖️ Balanced", 
+                "detailed": "📚 Detailed"
+            }[x]
         )
         st.session_state.verbosity = mode
         
@@ -575,34 +564,30 @@ def chat_page():
             index=model_options.index(st.session_state.selected_model_key),
             format_func=lambda x: f"🦙 {x}" if "Llama" in x else f"🚀 {x}"
         )
-        
-        # Auto-switch to short if voice is enabled (on first toggle)
-        # Note: We can logic this out better, but let's keep it manual or subtle
-        if st.session_state.use_voice and st.session_state.verbosity == 'detailed':
-            st.info("💡 Tip: Use 'Short' mode for best voice experience.")
 
-    # Floating Popover Container for Voice
+    # Floating Moshi Info Container
     use_voice = st.session_state.use_voice
     with st.container():
         st.markdown('<div class="voice-settings-container">', unsafe_allow_html=True)
         with st.popover("🎙️", use_container_width=False, help="Voice Settings"):
-            st.markdown("### Voice Settings")
-            st.session_state.use_voice = st.toggle("Enable Voice Mode", value=st.session_state.use_voice)
+            st.markdown("### 🦖 Moshi Voice")
+            st.session_state.use_voice = st.toggle(
+                "Enable Voice Mode", 
+                value=st.session_state.use_voice
+            )
             use_voice = st.session_state.use_voice
             
             if use_voice:
-                voices = {
-                    "pNInz6obpgDQGcFmaJgB": "👨 Rahul (Adam - Deep Male)",
-                    "21m00Tcm4TlvDq8ikWAM": "👩 Riya (Rachel - Clear Female)",
-                    "TxGEqnHWrfWFTfGW9XjX": "👨 Rohan (Josh - Soft Male)",
-                    "EXAVITQu4vr4xnSDxMaL": "👩 Devi (Bella - Gentle Female)",
-                    "PERSONAPLEX": "🦖 Nvidia PersonaPlex (Moshi 7B)",
-                }
-                st.session_state.voice_id = st.selectbox(
-                    "Select Persona", 
-                    options=list(voices.keys()), 
-                    format_func=lambda x: voices[x]
-                )
+                from core.config import PERSONAPLEX_URL
+                st.info("🌐 **Moshi Web UI (Recommended)**")
+                st.markdown(f"For full voice interaction, use:")
+                st.code(PERSONAPLEX_URL, language="")
+                st.caption("⚡ Real-time voice-to-voice conversation")
+                st.divider()
+                st.warning("📝 **Streamlit Voice Mode**")
+                st.caption("Limited functionality:")
+                st.caption("• ✅ Voice transcription works")
+                st.caption("• ❌ TTS not available (use Web UI)")
         st.markdown('</div>', unsafe_allow_html=True)
 
     # Conversation
@@ -635,28 +620,18 @@ def chat_page():
                 )
                 
                 if audio_bytes:
-                    with st.spinner("Transcribing..."):
-                        try:
-                            from core.voice import transcribe_audio
-                            import tempfile
-                            import os
-                            
-                            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-                                f.write(audio_bytes)
-                                temp_path = f.name
-                            
-                            prompt = transcribe_audio(temp_path)
-                            os.unlink(temp_path)
-                            
-                            if prompt:
-                                st.toast(f"🗣️ You said: {prompt}")
-                                
-                        except ImportError:
-                            st.error("Install voice: uv add audio-recorder-streamlit elevenlabs")
-                        except Exception as e:
-                            st.error(f"Transcription failed: {e}")
+                    st.info("🦖 Moshi voice mode: Transcription only in Streamlit")
+                    from core.config import PERSONAPLEX_URL
+                    st.info(f"💡 For full voice chat, use: {PERSONAPLEX_URL}")
+                    
+                    with st.spinner("Processing audio..."):
+                        # For now, show message instead of transcribing
+                        st.warning("⚠️ Moshi transcription requires WebSocket connection")
+                        st.info(f"Please use the Moshi Web UI for voice interaction")
+                        prompt = None  # Don't process
+                        
             except ImportError:
-                st.info("Install voice support: uv add audio-recorder-streamlit")
+                st.info("📦 Install voice support: uv add audio-recorder-streamlit")
                 use_voice = False
             st.markdown('</div>', unsafe_allow_html=True)
 
@@ -694,18 +669,10 @@ def chat_page():
                     # TTS if voice mode
                     audio_bytes = None
                     if use_voice:
-                        try:
-                            from core.voice import speak
-                            voice_id = st.session_state.get('voice_id')
-                            audio_bytes = speak(response, voice=voice_id)
-                            
-                            # Autoplay new response
-                            st.audio(audio_bytes, format='audio/wav', autoplay=True)
-                            with st.expander("📝 Transcript"):
-                                st.markdown(response)
-                        except Exception as e:
-                            st.caption(f"TTS unavailable: {e}")
-                            st.markdown(response)
+                        from core.config import PERSONAPLEX_URL
+                        st.info(f"🦖 Voice response available at Moshi Web UI:")
+                        st.code(PERSONAPLEX_URL)
+                        st.markdown(response)  # Show text response
                     else:
                         st.markdown(response)
                     

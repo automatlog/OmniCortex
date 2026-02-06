@@ -7,6 +7,9 @@ from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from threading import Lock
+import os
+from dateutil import parser  # Ensure robust date parsing if needed, or stick to datetime
+
 
 from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
 from sqlalchemy.sql import func
@@ -245,5 +248,4 @@ def get_whatsapp_history() -> WhatsAppHistoryManager:
     return _history_manager
 
 
-# Missing import
-import os
+

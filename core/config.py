@@ -73,7 +73,11 @@ WHATSAPP_API_VERSION = os.getenv("WHATSAPP_API_VERSION", "v21.0")
 # MODEL ALIASES
 # =============================================================================
 LLM_MODEL = VLLM_MODEL  # Alias for backward compatibility
-TTS_PROVIDER = os.getenv("TTS_PROVIDER", "liquid")  # liquid, elevenlabs, piper, etc.
+# =============================================================================
+# VOICE ENGINE (Moshi/PersonaPlex Only)
+# =============================================================================
+TTS_PROVIDER = os.getenv("TTS_PROVIDER", "moshi")  # Only moshi supported
+MOSHI_ENABLED = os.getenv("MOSHI_ENABLED", "true").lower() == "true"
 
 # =============================================================================
 # VOICE ENGINE (LiquidAI)

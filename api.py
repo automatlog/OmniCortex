@@ -56,13 +56,114 @@ app = FastAPI(
     version="1.0.0"
 )
 
+
+# ============== STARTUP VALIDATION ==============
+@app.on_event("startup")
+async def validate_dependencies():
+    """
+    Validate all required dependencies on startup
+    Exit if critical dependencies are unavailable
+    """
+    import sys
+    import requests
+    
+    print("\n" + "="*60)
+    print("  OmniCortex Backend - Startup Validation")
+    print("="*60)
+    
+    all_ok = True
+    
+    # Check Database
+    print("\n[1/2] Checking PostgreSQL...")
+    try:
+        from core.database import SessionLocal
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+        
+        from sqlalchemy import text as sa_text
+
+        def check_db():
+            db = SessionLocal()
+            try:
+                db.execute(sa_text("SELECT 1"))
+                return True
+            finally:
+                db.close()
+        
+        # Use ThreadPoolExecutor with 10-second timeout
+        with ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(check_db)
+            try:
+                future.result(timeout=10)
+                print("  ✅ PostgreSQL connected")
+            except FutureTimeoutError:
+                print("  ❌ PostgreSQL connection timeout (10s)")
+                print("  💡 Start PostgreSQL: docker-compose up -d postgres")
+                all_ok = False
+            except Exception as e:
+                print(f"  ❌ PostgreSQL connection failed: {e}")
+                print("  💡 Start PostgreSQL: docker-compose up -d postgres")
+                all_ok = False
+                
+    except Exception as e:
+        print(f"  ❌ PostgreSQL connection failed: {e}")
+        print("  💡 Start PostgreSQL: docker-compose up -d postgres")
+        all_ok = False
+    
+    # Check Ollama
+    expected_model = os.environ.get("VLLM_MODEL", "llama3.1:8b")
+    print("\n[2/2] Checking Ollama...")
+    try:
+        response = requests.get("http://localhost:11434/api/tags", timeout=10)
+        if response.status_code == 200:
+            models = response.json().get("models", [])
+            if any(expected_model in m.get("name", "") for m in models):
+                print(f"  ✅ Ollama running with {expected_model}")
+            else:
+                print(f"  ⚠️  Ollama running but {expected_model} not found")
+                print(f"  💡 Pull model: ollama pull {expected_model}")
+                all_ok = False
+        else:
+            print(f"  ❌ Ollama returned status {response.status_code}")
+            all_ok = False
+    except Exception as e:
+        print(f"  ❌ Ollama connection failed: {e}")
+        print("  💡 Start Ollama: ollama serve")
+        all_ok = False
+    
+    print("\n" + "="*60)
+    if all_ok:
+        print("  ✅ All dependencies validated")
+        print("  🚀 Backend ready on http://localhost:8000")
+        print("  📚 API docs: http://localhost:8000/docs")
+    else:
+        print("  ❌ Dependency validation failed")
+        print("  🛑 Backend will exit")
+        print("="*60 + "\n")
+        sys.exit(1)
+    
+    print("="*60 + "\n")
+
+# CORS Configuration - Enhanced with explicit origins
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:3001",  # Alternative port
+    ],
     allow_credentials=True,
-    allow_methods=["*"],
+    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
+    expose_headers=["*"],
+    max_age=3600,  # Cache preflight requests for 1 hour
 )
+
+# Track startup time for uptime calculation
+import datetime
+STARTUP_TIME = datetime.datetime.now()
+
+# Health check cache
+_health_cache = {"result": None, "timestamp": 0}
 
 
 # ============== MODELS ==============
@@ -96,6 +197,37 @@ class AgentResponse(BaseModel):
 
 # ============== MIDDLEWARE ==============
 @app.middleware("http")
+async def cors_error_logging_middleware(request, call_next):
+    """Log CORS-related errors and issues"""
+    origin = request.headers.get("origin")
+    method = request.method
+    
+    # Log CORS preflight requests
+    if method == "OPTIONS":
+        logging.info(f"CORS Preflight: {origin} -> {request.url.path}")
+    
+    # Log requests with Origin header
+    if origin:
+        allowed_origins = [
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://localhost:3001"
+        ]
+        if origin not in allowed_origins:
+            logging.warning(f"CORS Blocked: Origin '{origin}' not in allowlist for {request.url.path}")
+    
+    response = await call_next(request)
+    
+    # Log CORS errors (missing headers in response)
+    if origin and response.status_code >= 400:
+        cors_header = response.headers.get("access-control-allow-origin")
+        if not cors_header:
+            logging.error(f"CORS Error: Missing CORS headers in response for {origin} -> {request.url.path} (status: {response.status_code})")
+    
+    return response
+
+
+@app.middleware("http")
 async def metrics_middleware(request, call_next):
     """Track request metrics"""
     start_time = time.time()
@@ -120,8 +252,105 @@ async def metrics_middleware(request, call_next):
 
 @app.get("/")
 async def root():
-    """Health check endpoint"""
+    """Basic health check endpoint"""
     return {"status": "ok", "service": "OmniCortex API", "version": "1.0.0"}
+
+
+@app.get("/health")
+async def health_check():
+    """
+    Comprehensive health check endpoint
+    Returns service status, database connectivity, and LLM availability
+    Results cached for 5 seconds to avoid overwhelming dependencies
+    """
+    import datetime
+    import json
+    
+    # Check cache (5 second TTL)
+    current_time = time.time()
+    if _health_cache["result"] and (current_time - _health_cache["timestamp"]) < 5:
+        cached_result = _health_cache["result"]
+        status_code = 200 if cached_result["status"] == "healthy" else 503
+        return Response(
+            content=json.dumps(cached_result),
+            media_type="application/json",
+            status_code=status_code
+        )
+    
+    health_status = {
+        "status": "healthy",
+        "version": "1.0.0",
+        "timestamp": datetime.datetime.now().isoformat(),
+        "services": {
+            "database": {"status": "down", "latency_ms": 0},
+            "ollama": {"status": "down", "latency_ms": 0, "model_loaded": False}
+        },
+        "uptime_seconds": int((datetime.datetime.now() - STARTUP_TIME).total_seconds())
+    }
+    
+    # Check Database
+    try:
+        from core.database import SessionLocal
+        from sqlalchemy import text as sa_text
+        db_start = time.time()
+        db = SessionLocal()
+        try:
+            db.execute(sa_text("SELECT 1"))
+            db_latency = int((time.time() - db_start) * 1000)
+            health_status["services"]["database"] = {
+                "status": "up",
+                "latency_ms": db_latency
+            }
+        finally:
+            db.close()
+    except Exception as e:
+        logging.error(f"Database health check failed: {e}")
+        health_status["status"] = "unhealthy"
+        health_status["services"]["database"]["error"] = str(e)
+    
+    # Check Ollama
+    try:
+        import requests
+        ollama_start = time.time()
+        response = requests.get("http://localhost:11434/api/tags", timeout=2)
+        ollama_latency = int((time.time() - ollama_start) * 1000)
+        
+        if response.status_code == 200:
+            models = response.json().get("models", [])
+            expected_model = os.environ.get("VLLM_MODEL", "llama3.1:8b")
+            model_loaded = any(expected_model in m.get("name", "") for m in models)
+            health_status["services"]["ollama"] = {
+                "status": "up",
+                "latency_ms": ollama_latency,
+                "model_loaded": model_loaded
+            }
+            if not model_loaded:
+                health_status["status"] = "degraded"
+        else:
+            health_status["status"] = "degraded"
+    except Exception as e:
+        logging.error(f"Ollama health check failed: {e}")
+        health_status["status"] = "unhealthy"
+        health_status["services"]["ollama"]["error"] = str(e)
+    
+    # Cache result
+    _health_cache["result"] = health_status
+    _health_cache["timestamp"] = current_time
+    
+    # Return appropriate status code
+    status_code = 200 if health_status["status"] == "healthy" else 503
+    
+    return Response(
+        content=json.dumps(health_status),
+        media_type="application/json",
+        status_code=status_code
+    )
+
+
+@app.options("/{full_path:path}")
+async def options_handler(full_path: str):
+    """Handle CORS preflight requests"""
+    return {"status": "ok"}
 
 
 @app.get("/metrics")
@@ -380,7 +609,7 @@ async def get_history(agent_id: str, limit: int = 20):
 @app.post("/voice/transcribe")
 async def transcribe_voice(audio: UploadFile = File(...)):
     """
-    Transcribe audio to text using Whisper
+    Transcribe audio to text using Moshi/PersonaPlex
     Accepts: wav, mp3, m4a, webm
     """
     try:
@@ -404,7 +633,7 @@ async def transcribe_voice(audio: UploadFile = File(...)):
     except ImportError:
         raise HTTPException(
             status_code=501,
-            detail="Whisper not installed. Run: uv add openai-whisper"
+            detail="Voice engine not available. Ensure Moshi/PersonaPlex is configured."
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -413,7 +642,7 @@ async def transcribe_voice(audio: UploadFile = File(...)):
 @app.post("/voice/speak")
 async def speak_text(text: str = Form(...), voice: str = Form(None)):
     """
-    Convert text to speech using Piper
+    Convert text to speech using Moshi/PersonaPlex
     Returns: audio/wav file
     """
     try:
@@ -430,7 +659,7 @@ async def speak_text(text: str = Form(...), voice: str = Form(None)):
     except ImportError:
         raise HTTPException(
             status_code=501,
-            detail="Piper TTS not installed. Run: uv add piper-tts"
+            detail="Voice engine not available. Ensure Moshi/PersonaPlex is configured."
         )
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -498,12 +727,12 @@ from core.whatsapp import WhatsAppHandler
 @app.get("/api/v1/whatsapp/webhook")
 async def verify_whatsapp_webhook(request: Request):
     """Meta Webhook Verification"""
+    from core.config import WHATSAPP_VERIFY_TOKEN
     token = request.query_params.get("hub.verify_token")
     challenge = request.query_params.get("hub.challenge")
     mode = request.query_params.get("hub.mode")
 
-    # Verification Token: "omnicortex_token" (Configure in Meta App)
-    if mode == "subscribe" and token == "omnicortex_token":
+    if mode == "subscribe" and token == WHATSAPP_VERIFY_TOKEN:
         return int(challenge)
     raise HTTPException(status_code=403, detail="Verification failed")
 

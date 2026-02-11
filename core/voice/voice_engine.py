@@ -3,7 +3,7 @@ OmniCortex Voice Engine
 Unified interface for Speech-to-Text (STT) and Text-to-Speech (TTS).
 Powered exclusively by PersonaPlex (Moshi).
 """
-import streamlit as st
+import threading
 from core.config import MOSHI_ENABLED, PERSONAPLEX_URL
 from core.voice.moshi_engine import get_moshi_engine
 
@@ -43,10 +43,17 @@ class MoshiVoiceEngine:
         return audio_bytes  # Return original
 
 
-# Singleton Accessor
-@st.cache_resource
+# Singleton Accessor (thread-safe)
+_engine_instance = None
+_engine_lock = threading.Lock()
+
 def get_engine():
-    return MoshiVoiceEngine()
+    global _engine_instance
+    if _engine_instance is None:
+        with _engine_lock:
+            if _engine_instance is None:
+                _engine_instance = MoshiVoiceEngine()
+    return _engine_instance
 
 
 # --- Wrapper Functions (for backward compatibility) ---

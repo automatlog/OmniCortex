@@ -3,8 +3,9 @@
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
-import { Send, Mic, MicOff, Plus, Loader2, Settings } from "lucide-react";
-import { sendMessage, type ChatMessage } from "@/lib/api";
+import { Send, Plus, Loader2, Settings } from "lucide-react";
+import { sendMessage, sendVoice, type ChatMessage } from "@/lib/api";
+import { VoiceRecorder } from "./VoiceRecorder";
 import {
   Dialog,
   DialogContent,
@@ -25,7 +26,9 @@ export function ChatInterface({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [isRecording, setIsRecording] = useState(false);
+  const [isProcessingVoice, setIsProcessingVoice] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [retryCount, setRetryCount] = useState(0);
   
   // Settings
   const [selectedModel, setSelectedModel] = useState("Meta Llama 3.1");
@@ -62,6 +65,8 @@ export function ChatInterface({
     setMessages((prev) => [...prev, userMessage]);
     setInput("");
     setIsLoading(true);
+    setError(null);
+    setRetryCount(0);
 
     try {
       const response = await sendMessage(
@@ -81,9 +86,26 @@ export function ChatInterface({
       setMessages((prev) => [...prev, assistantMessage]);
     } catch (error) {
       console.error("Failed to send message:", error);
+      
+      const errorMsg = error instanceof Error ? error.message : "Unknown error";
+      setError(errorMsg);
+      
+      // Provide helpful error message based on error type
+      let userFriendlyMsg = "Sorry, I encountered an error. ";
+      
+      if (errorMsg.includes("timeout")) {
+        userFriendlyMsg += "The request took too long. The model might be loading or busy. Please try again.";
+      } else if (errorMsg.includes("Connection") || errorMsg.includes("Failed to fetch")) {
+        userFriendlyMsg += "Cannot connect to the server. Please check if the API is running.";
+      } else if (errorMsg.includes("500")) {
+        userFriendlyMsg += "Server error. The model might be out of memory. Try a shorter question.";
+      } else {
+        userFriendlyMsg += "Please try again.";
+      }
+      
       const errorMessage: ChatMessage = {
         role: "assistant",
-        content: "Sorry, I encountered an error. Please try again.",
+        content: userFriendlyMsg,
         timestamp: new Date().toISOString(),
       };
       setMessages((prev) => [...prev, errorMessage]);
@@ -99,9 +121,45 @@ export function ChatInterface({
     }
   };
 
-  const toggleRecording = () => {
-    setIsRecording(!isRecording);
-    // TODO: Implement voice recording with Moshi
+  const handleVoiceRecording = async (audioBlob: Blob) => {
+    setIsProcessingVoice(true);
+    setError(null);
+
+    try {
+      // Send voice to API
+      const response = await sendVoice(agentId, audioBlob);
+      
+      // Add transcription as user message
+      const userMessage: ChatMessage = {
+        role: "user",
+        content: response.transcription || "[Voice message]",
+        timestamp: new Date().toISOString(),
+      };
+      setMessages((prev) => [...prev, userMessage]);
+
+      // Add response as assistant message
+      const assistantMessage: ChatMessage = {
+        role: "assistant",
+        content: response.response || "I received your voice message.",
+        timestamp: new Date().toISOString(),
+      };
+      setMessages((prev) => [...prev, assistantMessage]);
+
+    } catch (error) {
+      console.error("Failed to process voice:", error);
+      
+      const errorMsg = error instanceof Error ? error.message : "Unknown error";
+      setError(errorMsg);
+      
+      const errorMessage: ChatMessage = {
+        role: "assistant",
+        content: "Sorry, I couldn't process your voice message. Please try again or type your message.",
+        timestamp: new Date().toISOString(),
+      };
+      setMessages((prev) => [...prev, errorMessage]);
+    } finally {
+      setIsProcessingVoice(false);
+    }
   };
 
   return (
@@ -177,6 +235,29 @@ export function ChatInterface({
           </DialogContent>
         </Dialog>
       </div>
+
+      {/* Error Banner */}
+      {error && (
+        <motion.div
+          initial={{ opacity: 0, y: -10 }}
+          animate={{ opacity: 1, y: 0 }}
+          className="mx-4 mt-4 p-3 bg-red-500/10 border border-red-500/20 rounded-lg"
+        >
+          <div className="flex items-start gap-2">
+            <span className="text-red-400 text-sm">⚠️</span>
+            <div className="flex-1">
+              <p className="text-red-400 text-sm font-medium">Connection Issue</p>
+              <p className="text-red-300 text-xs mt-1">{error}</p>
+            </div>
+            <button
+              onClick={() => setError(null)}
+              className="text-red-400 hover:text-red-300 text-xs"
+            >
+              ✕
+            </button>
+          </div>
+        </motion.div>
+      )}
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-4">
@@ -270,58 +351,32 @@ export function ChatInterface({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={isRecording ? "Listening..." : "Ask anything..."}
-            disabled={isLoading || isRecording}
+            placeholder={isProcessingVoice ? "Processing voice..." : "Ask anything..."}
+            disabled={isLoading || isProcessingVoice}
             className="flex-1 bg-transparent text-white placeholder-neutral-500 focus:outline-none text-sm"
           />
 
-          <button
-            onClick={toggleRecording}
+          <VoiceRecorder
+            onRecordingComplete={handleVoiceRecording}
+            isProcessing={isProcessingVoice || isLoading}
+          />
+
+          <motion.button
+            onClick={handleSend}
+            disabled={!input.trim() || isLoading || isProcessingVoice}
             className={cn(
               "p-2 rounded-full transition-colors",
-              isRecording
-                ? "bg-red-500/20 text-red-400"
-                : "text-neutral-400 hover:text-white"
+              input.trim() && !isLoading && !isProcessingVoice
+                ? "bg-blue-600 text-white hover:bg-blue-500"
+                : "bg-neutral-800 text-neutral-500"
             )}
           >
-            {isRecording ? <MicOff size={18} /> : <Mic size={18} />}
-          </button>
-
-          <AnimatePresence mode="wait">
-            {isRecording ? (
-              <motion.button
-                key="end"
-                initial={{ scale: 0.8, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                exit={{ scale: 0.8, opacity: 0 }}
-                onClick={toggleRecording}
-                className="px-4 py-1.5 bg-blue-600 text-white text-sm font-medium rounded-full hover:bg-blue-500 transition-colors"
-              >
-                End
-              </motion.button>
+            {isLoading ? (
+              <Loader2 size={18} className="animate-spin" />
             ) : (
-              <motion.button
-                key="send"
-                initial={{ scale: 0.8, opacity: 0 }}
-                animate={{ scale: 1, opacity: 1 }}
-                exit={{ scale: 0.8, opacity: 0 }}
-                onClick={handleSend}
-                disabled={!input.trim() || isLoading}
-                className={cn(
-                  "p-2 rounded-full transition-colors",
-                  input.trim() && !isLoading
-                    ? "bg-blue-600 text-white hover:bg-blue-500"
-                    : "bg-neutral-800 text-neutral-500"
-                )}
-              >
-                {isLoading ? (
-                  <Loader2 size={18} className="animate-spin" />
-                ) : (
-                  <Send size={18} />
-                )}
-              </motion.button>
+              <Send size={18} />
             )}
-          </AnimatePresence>
+          </motion.button>
         </div>
       </div>
     </div>

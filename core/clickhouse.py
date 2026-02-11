@@ -46,7 +46,20 @@ def log_chat_to_clickhouse(agent_id: str, role: str, content: str, session_id: s
     """
     def _log():
         try:
-            client = get_clickhouse_client()
+            # Create a new client for this thread to avoid concurrent query issues
+            host = os.getenv("CLICKHOUSE_HOST", "192.168.29.140")
+            port = int(os.getenv("CLICKHOUSE_PORT", "8123"))
+            username = os.getenv("CLICKHOUSE_USER", "default")
+            password = os.getenv("CLICKHOUSE_PASSWORD", "smart123")
+            
+            import clickhouse_connect
+            client = clickhouse_connect.get_client(
+                host=host, 
+                port=port, 
+                username=username, 
+                password=password,
+                database="omnicortex"
+            )
             if not client:
                 return
             
@@ -89,7 +102,20 @@ def log_usage_to_clickhouse(agent_id: str, model: str, prompt_tokens: int, compl
     """
     def _log():
         try:
-            client = get_clickhouse_client()
+            # Create a new client for this thread to avoid concurrent query issues
+            host = os.getenv("CLICKHOUSE_HOST", "192.168.29.140")
+            port = int(os.getenv("CLICKHOUSE_PORT", "8123"))
+            username = os.getenv("CLICKHOUSE_USER", "default")
+            password = os.getenv("CLICKHOUSE_PASSWORD", "smart123")
+            
+            import clickhouse_connect
+            client = clickhouse_connect.get_client(
+                host=host, 
+                port=port, 
+                username=username, 
+                password=password,
+                database="omnicortex"
+            )
             if not client:
                 return
             

@@ -46,7 +46,8 @@ def keyword_search(query: str, agent_id: str = None, k: int = 10) -> List[Dict]:
             params["agent_id"] = agent_id
             
         sql += " ORDER BY rank DESC"
-        sql += f" LIMIT {k}"
+        sql += " LIMIT :limit_k"
+        params["limit_k"] = k
         
         results = db.execute(text(sql), params).fetchall()
         
@@ -124,6 +125,9 @@ def hybrid_search(query: str, agent_id: str = None, top_k: int = 5) -> List[Any]
     """
     Main entry point: Hybrid Search (Vector + Keyword) -> RRF -> Rerank
     """
+    # Check if reranking is enabled
+    use_reranker = os.getenv("USE_RERANKER", "false").lower() == "true"
+    
     # 1. Parallel Retrieval
     print(f"🔍 Hybrid Search: '{query}'")
     
@@ -151,7 +155,12 @@ def hybrid_search(query: str, agent_id: str = None, top_k: int = 5) -> List[Any]
         
     all_docs = reciprocal_rank_fusion({"vector": norm_vector, "keyword": keyword_docs})
     
-    # 3. Reranking
-    final_docs = rerank_documents(query, all_docs, top_n=top_k)
+    # 3. Reranking (only if enabled)
+    if use_reranker:
+        print("🔄 Reranking enabled")
+        final_docs = rerank_documents(query, all_docs, top_n=top_k)
+    else:
+        print("⚡ Reranking disabled - using RRF results")
+        final_docs = all_docs[:top_k]
     
     return final_docs

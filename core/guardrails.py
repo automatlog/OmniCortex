@@ -4,12 +4,20 @@ Basic Input/Output validation and safety checks.
 """
 from typing import Tuple
 
-# Blacklisted keywords for simple prompt injection or off-topic filtering
+# Blacklisted keywords for prompt injection and jailbreak filtering
 BLACKLIST = [
     "ignore previous instructions",
+    "ignore all instructions",
+    "disregard your instructions",
+    "forget your instructions",
     "system prompt",
     "you are a hacked",
     "write a exploits",
+    "act as dan",
+    "jailbreak",
+    "reveal your prompt",
+    "pretend you have no restrictions",
+    "bypass your filters",
 ]
 
 def validate_input(text: str) -> Tuple[bool, str]:

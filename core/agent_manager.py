@@ -46,7 +46,7 @@ def get_agent(agent_id: str) -> Optional[Dict]:
             "document_count": agent.document_count or 0,
             "message_count": agent.message_count or 0,
             "created_at": agent.created_at.isoformat() if agent.created_at else None,
-            "metadata": agent.metadata or {}
+            "metadata": agent.extra_data or {}
         }
     finally:
         db.close()

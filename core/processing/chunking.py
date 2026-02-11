@@ -8,6 +8,30 @@ from langchain_text_splitters import RecursiveCharacterTextSplitter
 from ..config import CHUNK_SIZE, CHUNK_OVERLAP, USE_SEMANTIC_CHUNKING
 
 
+def sanitize_text(text: str) -> str:
+    """Remove problematic Unicode characters that cause encoding issues on Windows"""
+    # Replace common problematic characters
+    replacements = {
+        '\u25cf': '*',  # Bullet point
+        '\u2022': '*',  # Bullet
+        '\u2013': '-',  # En dash
+        '\u2014': '--', # Em dash
+        '\u2018': "'",  # Left single quote
+        '\u2019': "'",  # Right single quote
+        '\u201c': '"',  # Left double quote
+        '\u201d': '"',  # Right double quote
+        '\u2026': '...', # Ellipsis
+    }
+    
+    for old, new in replacements.items():
+        text = text.replace(old, new)
+    
+    # Remove any remaining non-ASCII characters that can't be encoded
+    text = text.encode('ascii', errors='ignore').decode('ascii')
+    
+    return text
+
+
 def semantic_chunk(text: str, embeddings=None) -> List[str]:
     """
     Semantic chunking - splits at natural semantic boundaries
@@ -73,6 +97,9 @@ def parent_child_split(text: str, parent_size=2000, child_size=400) -> List[tupl
     Returns: List of (child_content, parent_content)
     """
     from langchain_text_splitters import RecursiveCharacterTextSplitter
+
+    # Sanitize text first
+    text = sanitize_text(text)
 
     # 1. Split into Parents
     parent_splitter = RecursiveCharacterTextSplitter(

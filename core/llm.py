@@ -19,41 +19,37 @@ LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", CONFIG.get("llm", {}).get("
 
 
 def get_llm(model_key: str = None):
-    """Get vLLM instance"""
+    """Get LLM instance (supports Groq, vLLM, Ollama, etc.)"""
     # Determine config based on key
     if model_key and model_key in MODEL_BACKENDS:
         base_url = MODEL_BACKENDS[model_key]["base_url"]
         model_name = MODEL_BACKENDS[model_key]["model"]
+        api_key = MODEL_BACKENDS[model_key].get("api_key", os.getenv("VLLM_API_KEY", "not-needed"))
     else:
         base_url = DEFAULT_BASE_URL
         model_name = DEFAULT_MODEL
+        api_key = os.getenv("VLLM_API_KEY", "not-needed")
 
     return ChatOpenAI(
         base_url=base_url,
-        api_key="not-needed",
+        api_key=api_key,
         model=model_name,
         temperature=LLM_TEMPERATURE,
-        max_tokens=CONFIG.get("llm", {}).get("max_tokens", 2048)
+        max_tokens=CONFIG.get("llm", {}).get("max_tokens", 2048),
+        timeout=180.0,  # Increase timeout to 180 seconds (3 minutes) for Ollama
+        max_retries=2   # Keep retries at 2 for faster failure detection
     )
 
 
-PROMPT_TEMPLATE = """You are a helpful assistant. Respond naturally and helpfully.
+PROMPT_TEMPLATE = """You are a helpful assistant.
 
-Guidelines:
-- If user says hello, respond warmly and ask how you can help.
-- If request is vague, ask for clarification.
-- Never present inferred content as fact.
-- Use natural language, vary sentence length.
-- ALWAYS respond in the SAME language as the user's message.
-
-Previous Conversation: 
+Previous conversation: 
 {conversation_history}
 
-Context from documents:
+Context:
 {context}
 
-Question:
-{question}
+Question: {question}
 
 Answer:"""
 
@@ -71,8 +67,8 @@ def get_qa_chain(model_key: str = None):
     return chain
 
 
-def retry_with_backoff(func, retries=3, initial_delay=1.0):
-    """Simple retry with exponential backoff"""
+def retry_with_backoff(func, retries=2, initial_delay=2.0):
+    """Simple retry with exponential backoff - reduced retries for faster failure"""
     import time
     for i in range(retries):
         try:
@@ -81,9 +77,9 @@ def retry_with_backoff(func, retries=3, initial_delay=1.0):
             if i == retries - 1:  # Last attempt
                 raise e
             
-            # Simple backoff: 1s, 2s, 4s
+            # Exponential backoff: 2s, 4s
             wait = initial_delay * (2 ** i)
-            print(f"⚠️ LLM Error: {e}. Retrying in {wait}s...")
+            print(f"⚠️ LLM Error: {e}. Retrying in {wait}s... ({i+1}/{retries})")
             time.sleep(wait)
 
 
@@ -100,14 +96,14 @@ def invoke_chain(question: str, context: str, conversation_history: str, agent_i
         else:
             CACHE_MISSES.labels(agent_id=str(agent_id)).inc()
 
-        # Execute with retry
+        # Execute with retry (reduced to 2 retries)
         response_msg = retry_with_backoff(
             lambda: chain.invoke({
                 "question": question,
                 "context": context,
                 "conversation_history": conversation_history
             }),
-            retries=3
+            retries=2
         )
         
         latency = time.time() - start_time
@@ -136,8 +132,6 @@ def invoke_chain(question: str, context: str, conversation_history: str, agent_i
                 # ClickHouse Log (Analytics)
                 try:
                     from .clickhouse import log_usage_to_clickhouse
-                    # Re-calculate cost here or fetch from Postgres? 
-                    # Simple calc for now
                     cost_est = ((p_tokens / 1_000_000) * 0.50) + ((c_tokens / 1_000_000) * 0.70)
                     log_usage_to_clickhouse(
                         agent_id=str(agent_id), 
@@ -159,7 +153,16 @@ def invoke_chain(question: str, context: str, conversation_history: str, agent_i
         return answer
         
     except Exception as e:
-        raise RuntimeError(f"LLM invocation failed: {e}")
+        error_msg = str(e)
+        print(f"❌ LLM invocation failed: {error_msg}")
+        
+        # Provide helpful error messages
+        if "Connection" in error_msg or "timeout" in error_msg.lower():
+            raise RuntimeError(f"Cannot connect to Ollama. Please ensure Ollama is running on port 11434 and the model 'llama3.2:3b' is loaded. Error: {error_msg}")
+        elif "memory" in error_msg.lower():
+            raise RuntimeError(f"Out of memory. Try freeing up RAM or using a smaller model. Error: {error_msg}")
+        else:
+            raise RuntimeError(f"LLM invocation failed: {error_msg}")
 
 
 def reset_chain():

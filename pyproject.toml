@@ -34,8 +34,7 @@ dependencies = [
     "ragas",
     "datasets",
     "pandas",
-    "streamlit",
-    "audio-recorder-streamlit",
+    "numpy<2",
 ]
 
 [project.optional-dependencies]

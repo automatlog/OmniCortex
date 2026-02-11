@@ -34,3 +34,88 @@
 2026-02-05 02:48:05.842 IST [19816] HINT:  See C include file "ntstatus.h" for a description of the hexadecimal value.
 2026-02-05 02:48:05.843 IST [19816] LOG:  terminating any other active server processes
 2026-02-05 02:48:05.885 IST [19816] LOG:  received fast shutdown request
+2026-02-06 17:05:40.326 IST [3360] LOG:  starting PostgreSQL 18.1 on x86_64-windows, compiled by msvc-19.44.35221, 64-bit
+2026-02-06 17:05:40.343 IST [3360] LOG:  could not bind IPv6 address "::1": Permission denied
+2026-02-06 17:05:40.344 IST [3360] LOG:  could not bind IPv4 address "127.0.0.1": Permission denied
+2026-02-06 17:05:40.345 IST [3360] WARNING:  could not create listen socket for "localhost"
+2026-02-06 17:05:40.345 IST [3360] FATAL:  could not create any TCP/IP sockets
+2026-02-06 17:05:40.355 IST [3360] LOG:  database system is shut down
+2026-02-06 17:36:07.768 IST [39024] LOG:  starting PostgreSQL 18.1 on x86_64-windows, compiled by msvc-19.44.35221, 64-bit
+2026-02-06 17:36:07.773 IST [39024] LOG:  listening on IPv6 address "::1", port 5433
+2026-02-06 17:36:07.773 IST [39024] LOG:  listening on IPv4 address "127.0.0.1", port 5433
+2026-02-06 17:36:07.828 IST [26676] LOG:  database system was interrupted; last known up at 2026-02-04 23:44:22 IST
+2026-02-06 17:36:08.080 IST [26676] LOG:  database system was not properly shut down; automatic recovery in progress
+2026-02-06 17:36:08.087 IST [26676] LOG:  redo starts at 0/1D5B778
+2026-02-06 17:36:08.102 IST [26676] LOG:  invalid record length at 0/1DC9C48: expected at least 24, got 0
+2026-02-06 17:36:08.102 IST [26676] LOG:  redo done at 0/1DC9C10 system usage: CPU: user: 0.00 s, system: 0.00 s, elapsed: 0.01 s
+2026-02-06 17:36:08.107 IST [30108] LOG:  checkpoint starting: end-of-recovery immediate wait
+2026-02-06 17:36:08.309 IST [30108] LOG:  checkpoint complete: wrote 101 buffers (0.6%), wrote 3 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.005 s, sync=0.180 s, total=0.205 s; sync files=84, longest=0.004 s, average=0.003 s; distance=441 kB, estimate=441 kB; lsn=0/1DC9C48, redo lsn=0/1DC9C48
+2026-02-06 17:36:08.320 IST [39024] LOG:  database system is ready to accept connections
+2026-02-06 17:40:49.133 IST [38472] LOG:  could not receive data from client: An existing connection was forcibly closed by the remote host.
+	
+2026-02-06 17:41:08.312 IST [30108] LOG:  checkpoint starting: time
+2026-02-06 17:41:13.246 IST [30108] LOG:  checkpoint complete: wrote 45 buffers (0.3%), wrote 1 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=4.856 s, sync=0.061 s, total=4.935 s; sync files=27, longest=0.003 s, average=0.003 s; distance=212 kB, estimate=418 kB; lsn=0/1DFEDB0, redo lsn=0/1DFED20
+2026-02-06 17:43:36.263 IST [39024] LOG:  received fast shutdown request
+2026-02-06 17:43:36.264 IST [30108] LOG:  shutting down
+2026-02-06 17:43:36.270 IST [39024] LOG:  aborting any active transactions
+2026-02-06 17:43:36.273 IST [30108] LOG:  checkpoint starting: shutdown immediate
+2026-02-06 17:43:36.284 IST [38312] ERROR:  canceling statement due to user request
+2026-02-06 17:43:36.296 IST [30108] LOG:  checkpoint complete: wrote 0 buffers (0.0%), wrote 0 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.001 s, sync=0.001 s, total=0.032 s; sync files=0, longest=0.000 s, average=0.000 s; distance=0 kB, estimate=376 kB; lsn=0/1DFEE60, redo lsn=0/1DFEE60
+2026-02-06 17:43:36.298 IST [39024] LOG:  background worker "logical replication launcher" (PID 38312) exited with exit code 1
+2026-02-06 17:43:36.343 IST [39024] LOG:  database system is shut down
+2026-02-06 17:46:53.351 IST [21688] LOG:  starting PostgreSQL 18.1 on x86_64-windows, compiled by msvc-19.44.35221, 64-bit
+2026-02-06 17:46:53.355 IST [21688] LOG:  listening on IPv6 address "::1", port 5433
+2026-02-06 17:46:53.356 IST [21688] LOG:  listening on IPv4 address "127.0.0.1", port 5433
+2026-02-06 17:46:53.410 IST [38632] LOG:  database system was shut down at 2026-02-06 17:43:36 IST
+2026-02-06 17:46:53.419 IST [21688] LOG:  database system is ready to accept connections
+2026-02-06 17:48:37.755 IST [21688] LOG:  received fast shutdown request
+2026-02-06 17:48:37.758 IST [12760] LOG:  shutting down
+2026-02-06 17:48:37.765 IST [21688] LOG:  aborting any active transactions
+2026-02-06 17:48:37.765 IST [23536] FATAL:  terminating connection due to administrator command
+2026-02-06 17:48:37.787 IST [26168] ERROR:  canceling statement due to user request
+2026-02-06 17:48:37.844 IST [21688] LOG:  background worker "logical replication launcher" (PID 26168) exited with exit code 1
+2026-02-06 17:48:37.852 IST [12760] LOG:  checkpoint starting: shutdown immediate
+2026-02-06 17:48:38.158 IST [12760] LOG:  checkpoint complete: wrote 0 buffers (0.0%), wrote 3 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.075 s, sync=0.071 s, total=0.400 s; sync files=2, longest=0.037 s, average=0.036 s; distance=0 kB, estimate=0 kB; lsn=0/1DFEF10, redo lsn=0/1DFEF10
+2026-02-06 17:48:38.279 IST [21688] LOG:  database system is shut down
+2026-02-06 17:53:28.236 IST [17376] LOG:  starting PostgreSQL 18.1 on x86_64-windows, compiled by msvc-19.44.35221, 64-bit
+2026-02-06 17:53:28.241 IST [17376] LOG:  listening on IPv6 address "::1", port 5433
+2026-02-06 17:53:28.241 IST [17376] LOG:  listening on IPv4 address "127.0.0.1", port 5433
+2026-02-06 17:53:28.306 IST [23532] LOG:  database system was shut down at 2026-02-06 17:48:38 IST
+2026-02-06 17:53:28.316 IST [17376] LOG:  database system is ready to accept connections
+2026-02-06 17:54:45.464 IST [13356] LOG:  shutting down
+2026-02-06 17:54:45.465 IST [17376] LOG:  received fast shutdown request
+2026-02-06 17:54:45.470 IST [13356] LOG:  checkpoint starting: shutdown immediate
+2026-02-06 17:54:45.473 IST [17376] LOG:  aborting any active transactions
+2026-02-06 17:54:45.473 IST [30372] FATAL:  terminating connection due to administrator command
+2026-02-06 17:54:45.476 IST [39604] ERROR:  canceling statement due to user request
+2026-02-06 17:54:45.512 IST [17376] LOG:  background worker "logical replication launcher" (PID 39604) exited with exit code 1
+2026-02-06 17:54:45.601 IST [13356] LOG:  checkpoint complete: wrote 0 buffers (0.0%), wrote 3 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.003 s, sync=0.009 s, total=0.137 s; sync files=2, longest=0.006 s, average=0.005 s; distance=0 kB, estimate=0 kB; lsn=0/1DFEFC0, redo lsn=0/1DFEFC0
+2026-02-06 17:54:45.626 IST [17376] LOG:  database system is shut down
+2026-02-06 18:04:24.284 IST [21168] LOG:  starting PostgreSQL 18.1 on x86_64-windows, compiled by msvc-19.44.35221, 64-bit
+2026-02-06 18:04:24.291 IST [21168] LOG:  listening on IPv6 address "::1", port 5433
+2026-02-06 18:04:24.291 IST [21168] LOG:  listening on IPv4 address "127.0.0.1", port 5433
+2026-02-06 18:04:24.361 IST [924] LOG:  database system was shut down at 2026-02-06 17:54:45 IST
+2026-02-06 18:04:24.372 IST [21168] LOG:  database system is ready to accept connections
+2026-02-06 18:05:07.441 IST [21168] LOG:  received fast shutdown request
+2026-02-06 18:05:07.441 IST [9632] LOG:  shutting down
+2026-02-06 18:05:07.448 IST [21168] LOG:  aborting any active transactions
+2026-02-06 18:05:07.448 IST [9632] LOG:  checkpoint starting: shutdown immediate
+2026-02-06 18:05:07.448 IST [33712] FATAL:  terminating connection due to administrator command
+2026-02-06 18:05:07.454 IST [20564] ERROR:  canceling statement due to user request
+2026-02-06 18:05:07.466 IST [21168] LOG:  background worker "logical replication launcher" (PID 20564) exited with exit code 1
+2026-02-06 18:05:07.475 IST [9632] LOG:  checkpoint complete: wrote 0 buffers (0.0%), wrote 3 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.004 s, sync=0.006 s, total=0.035 s; sync files=2, longest=0.004 s, average=0.003 s; distance=0 kB, estimate=0 kB; lsn=0/1DFF070, redo lsn=0/1DFF070
+2026-02-06 18:05:07.516 IST [21168] LOG:  database system is shut down
+2026-02-06 18:06:47.748 IST [33396] LOG:  starting PostgreSQL 18.1 on x86_64-windows, compiled by msvc-19.44.35221, 64-bit
+2026-02-06 18:06:47.753 IST [33396] LOG:  listening on IPv6 address "::1", port 5433
+2026-02-06 18:06:47.753 IST [33396] LOG:  listening on IPv4 address "127.0.0.1", port 5433
+2026-02-06 18:06:47.808 IST [4508] LOG:  database system was shut down at 2026-02-06 18:05:07 IST
+2026-02-06 18:06:47.818 IST [33396] LOG:  database system is ready to accept connections
+2026-02-06 18:09:00.259 IST [33396] LOG:  received fast shutdown request
+2026-02-06 18:09:00.262 IST [30836] LOG:  shutting down
+2026-02-06 18:09:00.265 IST [33396] LOG:  aborting any active transactions
+2026-02-06 18:09:00.265 IST [33684] FATAL:  terminating connection due to administrator command
+2026-02-06 18:09:00.267 IST [30836] LOG:  checkpoint starting: shutdown immediate
+2026-02-06 18:09:00.276 IST [21520] ERROR:  canceling statement due to user request
+2026-02-06 18:09:00.282 IST [33396] LOG:  background worker "logical replication launcher" (PID 21520) exited with exit code 1
+2026-02-06 18:09:00.411 IST [30836] LOG:  checkpoint complete: wrote 56 buffers (0.3%), wrote 3 SLRU buffers; 0 WAL file(s) added, 0 removed, 0 recycled; write=0.014 s, sync=0.107 s, total=0.149 s; sync files=47, longest=0.004 s, average=0.003 s; distance=275 kB, estimate=275 kB; lsn=0/1E43D48, redo lsn=0/1E43D48
+2026-02-06 18:09:00.442 IST [33396] LOG:  database system is shut down

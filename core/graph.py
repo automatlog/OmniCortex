@@ -18,12 +18,11 @@ class AgentGraph:
     
     def __init__(
         self,
-        provider: str = "groq",
-        model: str = None,
+        model_key: str = None,
         tools: List[Any] = None,
         system_prompt: SystemMessage = None
     ):
-        self.llm = get_llm(provider=provider, model=model)
+        self.llm = get_llm(model_key=model_key)
         self.tools = tools or []
         self.system_prompt = system_prompt or RAG_SYSTEM_PROMPT
         
@@ -113,20 +112,18 @@ class AgentGraph:
         return self.invoke(question, context)
 
 
-def create_rag_agent(provider: str = "groq", model: str = None) -> AgentGraph:
+def create_rag_agent(model_key: str = None) -> AgentGraph:
     """Create a simple RAG agent without tools"""
-    return AgentGraph(provider=provider, model=model)
+    return AgentGraph(model_key=model_key)
 
 
 def create_tool_agent(
     tools: List[Any],
-    provider: str = "groq",
-    model: str = None
+    model_key: str = None
 ) -> AgentGraph:
     """Create an agent with tool support"""
     return AgentGraph(
-        provider=provider,
-        model=model,
+        model_key=model_key,
         tools=tools,
         system_prompt=TOOL_AGENT_PROMPT
     )

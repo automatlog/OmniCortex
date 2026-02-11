@@ -66,6 +66,11 @@ class MoshiEngine:
         return "[Use Moshi Web UI for voice interaction]"
 
 
+_moshi_instance = None
+
 def get_moshi_engine():
     """Get or create Moshi engine singleton"""
-    return MoshiEngine()
+    global _moshi_instance
+    if _moshi_instance is None:
+        _moshi_instance = MoshiEngine()
+    return _moshi_instance

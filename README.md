@@ -126,14 +126,15 @@ docker run --gpus all -p 8080:8000 ^
 uv run python api.py
 ```
 
-**Terminal 3 - Start Streamlit UI:**
+**Terminal 3 - Start Next.js Admin Panel:**
 ```bash
-uv run streamlit run main.py --server.port 8501
+cd admin
+npm run dev
 ```
 
 ### 6. Access Application
 
-- **Streamlit UI**: http://localhost:8501
+- **Admin Panel**: http://localhost:3000
 - **API Docs**: http://localhost:8000/docs
 - **Metrics**: http://localhost:8000/metrics
 
@@ -162,7 +163,7 @@ Comprehensive guides available in the `docs/` folder:
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                      CLIENT LAYER                           │
-│   [Streamlit UI]  [WhatsApp API]  [Voice/LiquidAI]          │
+│   [Next.js Admin]  [WhatsApp API]  [Voice/LiquidAI]         │
 └───────────────────────────┬─────────────────────────────────┘
                             │
 ┌───────────────────────────▼─────────────────────────────────┐
@@ -189,7 +190,7 @@ Comprehensive guides available in the `docs/` folder:
 | Component | Technology |
 |-----------|------------|
 | **Backend** | Python 3.12, FastAPI, SQLAlchemy |
-| **UI** | Streamlit |
+| **UI** | Next.js + TypeScript + Tailwind CSS |
 | **LLM** | vLLM + Llama 3.1-8B-Instruct |
 | **Embeddings** | HuggingFace all-MiniLM-L6-v2 |
 | **Database** | PostgreSQL 16 + pgvector |
@@ -222,7 +223,7 @@ Tested on RTX 4090 (24GB VRAM):
 |---------|------|-------------|
 | vLLM Server | 8080 | LLM inference engine |
 | FastAPI | 8000 | REST API backend |
-| Streamlit | 8501 | Web UI |
+| Next.js Admin | 3000 | Web Admin Panel |
 | PostgreSQL | 5432 | Database |
 | ClickHouse | 8123 | Analytics (optional) |
 
@@ -300,7 +301,7 @@ OmniCortex/
 ├── scripts/                # Deployment scripts
 ├── tests/                  # Test suite
 ├── api.py                  # FastAPI backend
-├── main.py                 # Streamlit UI
+├── admin/                 # Next.js Admin Panel
 └── pyproject.toml          # Dependencies
 ```
 
@@ -328,7 +329,7 @@ MIT License - see LICENSE file for details
 - **vLLM Team** - High-performance inference
 - **LangChain** - LLM orchestration framework
 - **PostgreSQL** - Reliable database
-- **Streamlit** - Rapid UI development
+- **Next.js** - Modern React framework for admin panel
 
 ---
 

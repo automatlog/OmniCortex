@@ -20,15 +20,30 @@ def extract_text_from_files(files) -> Tuple[List[Tuple[str, str]], List[Tuple[st
     
     for file in files:
         try:
-            filename = file.name
+            # Handle both UploadFile (filename) and regular file objects (name)
+            filename = getattr(file, 'filename', None) or getattr(file, 'name', 'unknown')
             ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else ''
             
             if ext == 'pdf':
                 text = extract_pdf(file)
             elif ext == 'txt':
-                text = file.read().decode('utf-8', errors='ignore')
+                # Handle UploadFile vs regular file
+                content = file.file.read() if hasattr(file, 'file') else file.read()
+                text = content.decode('utf-8', errors='ignore')
+                # Reset file pointer if possible
+                if hasattr(file, 'file') and hasattr(file.file, 'seek'):
+                    file.file.seek(0)
+                elif hasattr(file, 'seek'):
+                    file.seek(0)
             elif ext == 'csv':
-                text = file.read().decode('utf-8', errors='ignore')
+                # Handle UploadFile vs regular file
+                content = file.file.read() if hasattr(file, 'file') else file.read()
+                text = content.decode('utf-8', errors='ignore')
+                # Reset file pointer if possible
+                if hasattr(file, 'file') and hasattr(file.file, 'seek'):
+                    file.file.seek(0)
+                elif hasattr(file, 'seek'):
+                    file.seek(0)
             elif ext == 'docx':
                 text = extract_docx(file)
             else:
@@ -41,19 +56,40 @@ def extract_text_from_files(files) -> Tuple[List[Tuple[str, str]], List[Tuple[st
                 skipped.append((filename, "No text content"))
                 
         except Exception as e:
-            skipped.append((file.name, str(e)))
+            filename = getattr(file, 'filename', None) or getattr(file, 'name', 'unknown')
+            skipped.append((filename, str(e)))
     
     return extracted_files, skipped
 
 
 def extract_pdf(file) -> str:
     """Extract text from PDF"""
-    reader = PdfReader(file)
+    import io
+    
+    # Handle both UploadFile and regular file objects
+    if hasattr(file, 'file'):
+        # FastAPI UploadFile - get the underlying file object
+        file_content = file.file
+    else:
+        file_content = file
+    
+    # Read content into BytesIO for PdfReader
+    if hasattr(file_content, 'read'):
+        content = file_content.read()
+        if hasattr(file_content, 'seek'):
+            file_content.seek(0)  # Reset for potential reuse
+        file_obj = io.BytesIO(content)
+    else:
+        file_obj = file_content
+    
+    reader = PdfReader(file_obj)
     text_parts = []
     
     for page in reader.pages:
         text = page.extract_text()
         if text:
+            # Sanitize text to remove problematic Unicode characters
+            text = text.encode('utf-8', errors='ignore').decode('utf-8')
             text_parts.append(text)
     
     return "\n".join(text_parts)
@@ -85,7 +121,7 @@ def validate_extraction(text: str, skipped: List[Tuple]) -> dict:
 
 def get_file_info(file) -> dict:
     """Get file metadata"""
-    filename = file.name
+    filename = getattr(file, 'filename', None) or getattr(file, 'name', 'unknown')
     ext = filename.rsplit('.', 1)[-1].lower() if '.' in filename else 'unknown'
     size = file.size if hasattr(file, 'size') else 0
     

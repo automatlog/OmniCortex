@@ -69,7 +69,7 @@ uv pip install -e .
 echo "🧠 Installing vLLM and dependencies..."
 uv pip install vllm transformers accelerate
 apt-get install -y libopus-dev
-uv pip install streamlit hf_transfer
+uv pip install hf_transfer
 uv pip install --upgrade transformers sentence-transformers
 
 # Build Admin

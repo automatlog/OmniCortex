@@ -18,9 +18,14 @@ if not DATABASE_URL:
 # =============================================================================
 # Hybrid Model Configuration
 MODEL_BACKENDS = {
+    "default": {
+        "base_url": os.getenv("VLLM_BASE_URL", "https://api.groq.com/openai/v1"),
+        "model": os.getenv("VLLM_MODEL", "llama3-70b-8192"),
+        "api_key": os.getenv("VLLM_API_KEY", ""),
+    },
     "Meta Llama 3.1": {
-        "base_url": os.getenv("VLLM_BASE_URL", "http://localhost:8080/v1"),
-        "model": os.getenv("VLLM_MODEL", "meta-llama/Meta-Llama-3.1-8B-Instruct"),
+        "base_url": os.getenv("LLAMA_BASE_URL", "http://localhost:8080/v1"),
+        "model": os.getenv("LLAMA_MODEL", "meta-llama/Meta-Llama-3.1-8B-Instruct"),
     },
     "Nemotron": {
         "base_url": os.getenv("NEMOTRON_BASE_URL", "http://localhost:8081/v1"),
@@ -32,9 +37,10 @@ MODEL_BACKENDS = {
 PERSONAPLEX_MODEL = os.getenv("PERSONAPLEX_MODEL", "nvidia/personaplex-7b-v1")
 PERSONAPLEX_URL = os.getenv("PERSONAPLEX_URL", "https://jj8s2oaqa396jo-8998.proxy.runpod.net")
 
-# Defaults (Legacy Support)
-VLLM_BASE_URL = MODEL_BACKENDS["Meta Llama 3.1"]["base_url"]
-VLLM_MODEL = MODEL_BACKENDS["Meta Llama 3.1"]["model"]
+# Defaults (from primary backend)
+VLLM_BASE_URL = MODEL_BACKENDS["default"]["base_url"]
+VLLM_MODEL = MODEL_BACKENDS["default"]["model"]
+VLLM_API_KEY = MODEL_BACKENDS["default"]["api_key"]
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.6"))
 
 # =============================================================================
@@ -67,7 +73,8 @@ STORAGE_PATH = os.getenv("STORAGE_PATH", "storage")
 # =============================================================================
 WHATSAPP_ACCESS_TOKEN = os.getenv("WHATSAPP_ACCESS_TOKEN", "")
 WHATSAPP_PHONE_ID = os.getenv("WHATSAPP_PHONE_ID", "")
-WHATSAPP_API_VERSION = os.getenv("WHATSAPP_API_VERSION", "v21.0")
+WHATSAPP_API_VERSION = os.getenv("WHATSAPP_API_VERSION", "v24.0")
+WHATSAPP_VERIFY_TOKEN = os.getenv("WHATSAPP_VERIFY_TOKEN", "omnicortex_token")
 
 # =============================================================================
 # MODEL ALIASES

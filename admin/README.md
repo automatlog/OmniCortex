@@ -1,36 +1,211 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# OmniCortex Admin Panel
 
-## Getting Started
+Modern Next.js admin interface for OmniCortex RAG chatbot system.
 
-First, run the development server:
+## Features
+
+- 🤖 Multi-agent chat interface
+- 📄 Document management and upload
+- 📊 Real-time analytics and metrics
+- 🎨 Modern dark UI with Tailwind CSS
+- ⚡ Optimized API client with retry logic
+- 🔄 Automatic error recovery
+
+## Quick Start
+
+### Prerequisites
+
+- Node.js 18+ installed
+- OmniCortex API running on port 8000
+
+### Installation
 
 ```bash
+# Install dependencies
+npm install
+
+# Create environment file
+cp .env.example .env.local
+
+# Start development server
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+### Environment Variables
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+Create `.env.local` file:
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+```ini
+NEXT_PUBLIC_API_URL=http://localhost:8000
+```
 
-## Learn More
+## Development
 
-To learn more about Next.js, take a look at the following resources:
+```bash
+# Start dev server (with hot reload)
+npm run dev
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+# Build for production
+npm run build
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+# Start production server
+npm start
 
-## Deploy on Vercel
+# Lint code
+npm run lint
+```
 
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
+## API Integration
 
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+The admin panel connects to the FastAPI backend with:
+
+- **Automatic retry**: 3 attempts with exponential backoff
+- **Long timeout**: 90 seconds for chat requests
+- **Error handling**: User-friendly error messages
+- **Health checks**: Monitors API availability
+
+### API Client Features
+
+```typescript
+// Automatic retry with backoff
+await sendMessage(question, agentId);
+// Retries: 2s, 4s, 8s delays
+
+// Long timeout for LLM responses
+// Total: 90s + retries = ~120s max
+```
+
+## Troubleshooting
+
+### "Cannot connect to server"
+
+1. Check if API is running:
+   ```bash
+   curl http://localhost:8000/
+   ```
+
+2. Verify `.env.local`:
+   ```ini
+   NEXT_PUBLIC_API_URL=http://localhost:8000
+   ```
+
+3. Restart dev server:
+   ```bash
+   npm run dev
+   ```
+
+### Slow responses
+
+- Normal: 2-4 seconds
+- First query: 5-10 seconds (model loading)
+- If >30 seconds: Check API logs
+
+### Build errors
+
+```bash
+# Clear cache and reinstall
+rm -rf .next node_modules
+npm install
+npm run dev
+```
+
+## Project Structure
+
+```
+admin/
+├── src/
+│   ├── app/              # Next.js app router pages
+│   │   ├── agents/       # Agent management
+│   │   ├── analytics/    # Analytics dashboard
+│   │   └── settings/     # Settings page
+│   ├── components/       # React components
+│   │   ├── ui/          # shadcn/ui components
+│   │   ├── AgentCard.tsx
+│   │   ├── ChatInterface.tsx
+│   │   └── Sidebar.tsx
+│   └── lib/             # Utilities
+│       ├── api.ts       # API client (with retry logic)
+│       └── utils.ts     # Helper functions
+├── public/              # Static assets
+├── .env.local          # Environment variables (create this)
+└── package.json        # Dependencies
+```
+
+## Configuration
+
+### API Timeouts
+
+Configured in `src/lib/api.ts`:
+
+```typescript
+// Chat requests: 90 seconds
+// Document uploads: 120 seconds
+// Other requests: 10 seconds
+```
+
+### Retry Logic
+
+```typescript
+// Max retries: 3
+// Initial delay: 2 seconds
+// Backoff: Exponential (2s, 4s, 8s)
+// Total max time: ~120 seconds
+```
+
+## Tech Stack
+
+- **Framework**: Next.js 15 (App Router)
+- **UI**: Tailwind CSS + shadcn/ui
+- **Animations**: Framer Motion
+- **Icons**: Lucide React
+- **API Client**: Fetch with retry logic
+- **TypeScript**: Full type safety
+
+## Performance
+
+- **Initial load**: <1 second
+- **Chat response**: 2-4 seconds
+- **Page transitions**: Instant (client-side)
+- **Bundle size**: Optimized with Next.js
+
+## Production Deployment
+
+### Build
+
+```bash
+npm run build
+```
+
+### Environment
+
+Update `.env.production.local`:
+
+```ini
+NEXT_PUBLIC_API_URL=https://your-api-domain.com
+```
+
+### Deploy
+
+Deploy to Vercel, Netlify, or any Node.js host:
+
+```bash
+# Vercel
+vercel deploy
+
+# Docker
+docker build -t omnicortex-admin .
+docker run -p 3000:3000 omnicortex-admin
+```
+
+## Support
+
+For issues:
+
+1. Check API is running: `curl http://localhost:8000/`
+2. Check browser console for errors
+3. Review `CONFIGURATION.md` in root directory
+4. Restart dev server: `npm run dev`
+
+## License
+
+Part of OmniCortex project.

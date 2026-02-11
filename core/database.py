@@ -16,7 +16,11 @@ engine = create_engine(
     pool_size=20,           # Maintain 20 connections
     max_overflow=40,        # Allow up to 40 extra connections
     pool_pre_ping=True,     # Health check connections
-    pool_recycle=3600       # Recycle connections after 1 hour
+    pool_recycle=3600,      # Recycle connections after 1 hour
+    connect_args={
+        "client_encoding": "utf8",
+        "options": "-c client_encoding=utf8"
+    }
 )
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()

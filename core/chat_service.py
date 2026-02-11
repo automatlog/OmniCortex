@@ -18,25 +18,43 @@ import time
 # ... (previous functions similar)
 
 def format_history(messages: List[Dict], max_messages: int = 10) -> str:
-    """Format conversation history for prompt"""
+    """Format conversation history for prompt with size limit"""
     if not messages:
         return "No previous conversation."
     
     recent = messages[-(max_messages * 2):]
     formatted = []
+    total_chars = 0
+    max_history_chars = 1000  # Limit history to 1000 chars
+    
     for msg in recent:
         role = "User" if msg["role"] == "user" else "Assistant"
-        formatted.append(f"{role}: {msg['content']}")
+        content = msg['content']
+        
+        # Truncate long messages
+        if len(content) > 200:
+            content = content[:200] + "..."
+        
+        line = f"{role}: {content}"
+        
+        if total_chars + len(line) > max_history_chars:
+            break
+            
+        formatted.append(line)
+        total_chars += len(line)
     
     return "\n".join(formatted)
 
 
 def format_context(docs) -> str:
-    """Format retrieved documents into context string"""
+    """Format retrieved documents into context string with size limit"""
     if not docs:
         return "No relevant documents found."
     
     context_parts = []
+    total_chars = 0
+    max_context_chars = 2500  # Reduced from 4000 to 2500 for better performance
+    
     for i, doc in enumerate(docs, 1):
         if hasattr(doc, 'page_content'):
             content = doc.page_content
@@ -44,8 +62,19 @@ def format_context(docs) -> str:
             content = doc["content"]
         else:
             content = str(doc)
+        
+        # Truncate very long documents - reduced from 800 to 500
+        if len(content) > 500:
+            content = content[:500] + "..."
             
-        context_parts.append(f"[Document {i}]: {content}")
+        doc_text = f"[Document {i}]: {content}"
+        
+        # Check if adding this would exceed limit
+        if total_chars + len(doc_text) > max_context_chars:
+            break
+            
+        context_parts.append(doc_text)
+        total_chars += len(doc_text)
     
     return "\n\n".join(context_parts)
 
@@ -74,8 +103,8 @@ def process_question(question: str, agent_id: str = None,
         save_message("assistant", cached, agent_id=agent_id)
         return cached
 
-    # 1. Hybrid Search
-    docs = hybrid_search(safe_question, agent_id=agent_id)
+    # 1. Hybrid Search (reduced to 2 documents for maximum performance)
+    docs = hybrid_search(safe_question, agent_id=agent_id, top_k=2)
     
     # Format inputs
     context = format_context(docs)
@@ -178,7 +207,8 @@ def process_documents(files=None, text_input: str = None,
                 save_text_to_file(agent_id, filename, text)
             
             # Find file object for size info
-            file_obj = next((f for f in files if f.name == filename), None)
+            # Find file object for size info
+            file_obj = next((f for f in files if getattr(f, "filename", getattr(f, "name", "")) == filename), None)
             if file_obj:
                 info = get_file_info(file_obj)
                 processed_files.append(info)

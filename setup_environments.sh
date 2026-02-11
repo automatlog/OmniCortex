@@ -5,7 +5,7 @@ echo "🚀 Starting Full Environment Setup (Dual-Env Strategy)..."
 cd /workspace/OmniCortex
 
 # ==========================================
-# 1. Main Environment (vLLM, API, Streamlit)
+# 1. Main Environment (vLLM, API, Next.js)
 # ==========================================
 echo "--------------------------------------------------"
 echo "HARD RESET: Setting up Main Environment (.venv)..."
@@ -28,7 +28,7 @@ uv pip install vllm==0.6.3
 # Install App Dependencies
 echo "📦 Installing App Dependencies..."
 uv pip install transformers==4.46.0 sentence-transformers==3.2.1
-uv pip install accelerate streamlit audio-recorder-streamlit hf_transfer langchain langchain-community langchain-openai psycopg2-binary sqlalchemy pgvector fastapi uvicorn python-multipart clickhouse-connect psutil requests
+uv pip install accelerate hf_transfer langchain langchain-community langchain-openai psycopg2-binary sqlalchemy pgvector fastapi uvicorn python-multipart clickhouse-connect psutil requests
 
 echo "✅ Main Environment Ready!"
 deactivate

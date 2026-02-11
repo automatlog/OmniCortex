@@ -42,8 +42,6 @@ def load_vector_store(agent_id: str = None):
             collection_name=collection,
             connection=DATABASE_URL
         )
-        # Test if it has data
-        store.similarity_search("test", k=1)
         return store
     except Exception as e:
         raise FileNotFoundError(
@@ -84,7 +82,11 @@ def get_vector_count(agent_id: str = None) -> int:
         
         with engine.connect() as conn:
             result = conn.execute(
-                text("SELECT COUNT(*) FROM langchain_pg_embedding WHERE collection_name = :c"),
+                text("""
+                    SELECT COUNT(*) FROM langchain_pg_embedding e
+                    JOIN langchain_pg_collection c ON e.collection_id = c.uuid
+                    WHERE c.name = :c
+                """),
                 {"c": collection}
             )
             return result.scalar() or 0

@@ -20,7 +20,7 @@ export default function Dashboard() {
           checkHealth(),
         ]);
         setAgents(agentList);
-        setIsHealthy(health);
+        setIsHealthy(health.status === "healthy");
       } finally {
         setLoading(false);
       }

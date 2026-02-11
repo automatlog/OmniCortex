@@ -11,6 +11,7 @@ import {
   MessageSquare,
   ChevronLeft,
   ChevronRight,
+  Mic,
 } from "lucide-react";
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
@@ -19,6 +20,7 @@ const navItems = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
   { name: "Agents", href: "/agents", icon: Bot },
   { name: "Conversations", href: "/conversations", icon: MessageSquare },
+  { name: "Voice AI", href: "/voice", icon: Mic },
   { name: "Analytics", href: "/analytics", icon: BarChart3 },
   { name: "Settings", href: "/settings", icon: Settings },
 ];

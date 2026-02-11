@@ -109,26 +109,47 @@ async def validate_dependencies():
         print("  💡 Start PostgreSQL: docker-compose up -d postgres")
         all_ok = False
     
-    # Check Ollama
+    # Check LLM Backend (Ollama or vLLM)
     expected_model = os.environ.get("VLLM_MODEL", "llama3.1:8b")
-    print("\n[2/2] Checking Ollama...")
-    try:
-        response = requests.get("http://localhost:11434/api/tags", timeout=10)
-        if response.status_code == 200:
-            models = response.json().get("models", [])
-            if any(expected_model in m.get("name", "") for m in models):
-                print(f"  ✅ Ollama running with {expected_model}")
+    vllm_base_url = os.environ.get("VLLM_BASE_URL", "http://localhost:11434/v1")
+    is_ollama = ":11434" in vllm_base_url
+    
+    if is_ollama:
+        print("\n[2/2] Checking Ollama...")
+        try:
+            response = requests.get("http://localhost:11434/api/tags", timeout=10)
+            if response.status_code == 200:
+                models = response.json().get("models", [])
+                if any(expected_model in m.get("name", "") for m in models):
+                    print(f"  ✅ Ollama running with {expected_model}")
+                else:
+                    print(f"  ⚠️  Ollama running but {expected_model} not found")
+                    print(f"  💡 Pull model: ollama pull {expected_model}")
+                    all_ok = False
             else:
-                print(f"  ⚠️  Ollama running but {expected_model} not found")
-                print(f"  💡 Pull model: ollama pull {expected_model}")
+                print(f"  ❌ Ollama returned status {response.status_code}")
                 all_ok = False
-        else:
-            print(f"  ❌ Ollama returned status {response.status_code}")
+        except Exception as e:
+            print(f"  ❌ Ollama connection failed: {e}")
+            print("  💡 Start Ollama: ollama serve")
             all_ok = False
-    except Exception as e:
-        print(f"  ❌ Ollama connection failed: {e}")
-        print("  💡 Start Ollama: ollama serve")
-        all_ok = False
+    else:
+        print(f"\n[2/2] Checking vLLM at {vllm_base_url}...")
+        try:
+            # vLLM exposes OpenAI-compatible /models endpoint
+            health_url = vllm_base_url.rstrip('/').replace('/v1', '') + '/health'
+            response = requests.get(health_url, timeout=10)
+            if response.status_code == 200:
+                print(f"  ✅ vLLM running with {expected_model}")
+            else:
+                print(f"  ⚠️  vLLM returned status {response.status_code}")
+                print(f"  💡 vLLM may still be loading the model...")
+                all_ok = False
+        except Exception as e:
+            print(f"  ⚠️  vLLM connection failed: {e}")
+            print(f"  💡 vLLM may not be started yet (start via systemctl start omni-vllm)")
+            # Don't fail hard — vLLM takes time to load
+            print(f"  ℹ️  Continuing startup (vLLM will be checked via /health endpoint)")
     
     print("\n" + "="*60)
     if all_ok:
@@ -308,30 +329,47 @@ async def health_check():
         health_status["status"] = "unhealthy"
         health_status["services"]["database"]["error"] = str(e)
     
-    # Check Ollama
+    # Check LLM Backend (Ollama or vLLM)
     try:
         import requests
-        ollama_start = time.time()
-        response = requests.get("http://localhost:11434/api/tags", timeout=2)
-        ollama_latency = int((time.time() - ollama_start) * 1000)
+        vllm_base_url = os.environ.get("VLLM_BASE_URL", "http://localhost:11434/v1")
+        expected_model = os.environ.get("VLLM_MODEL", "llama3.1:8b")
+        is_ollama = ":11434" in vllm_base_url
         
-        if response.status_code == 200:
-            models = response.json().get("models", [])
-            expected_model = os.environ.get("VLLM_MODEL", "llama3.1:8b")
-            model_loaded = any(expected_model in m.get("name", "") for m in models)
-            health_status["services"]["ollama"] = {
-                "status": "up",
-                "latency_ms": ollama_latency,
-                "model_loaded": model_loaded
-            }
-            if not model_loaded:
+        llm_start = time.time()
+        
+        if is_ollama:
+            response = requests.get("http://localhost:11434/api/tags", timeout=2)
+            llm_latency = int((time.time() - llm_start) * 1000)
+            if response.status_code == 200:
+                models = response.json().get("models", [])
+                model_loaded = any(expected_model in m.get("name", "") for m in models)
+                health_status["services"]["llm"] = {
+                    "status": "up",
+                    "backend": "ollama",
+                    "latency_ms": llm_latency,
+                    "model_loaded": model_loaded
+                }
+                if not model_loaded:
+                    health_status["status"] = "degraded"
+            else:
                 health_status["status"] = "degraded"
         else:
-            health_status["status"] = "degraded"
+            health_url = vllm_base_url.rstrip('/').replace('/v1', '') + '/health'
+            response = requests.get(health_url, timeout=2)
+            llm_latency = int((time.time() - llm_start) * 1000)
+            health_status["services"]["llm"] = {
+                "status": "up" if response.status_code == 200 else "degraded",
+                "backend": "vllm",
+                "latency_ms": llm_latency,
+                "model": expected_model
+            }
+            if response.status_code != 200:
+                health_status["status"] = "degraded"
     except Exception as e:
-        logging.error(f"Ollama health check failed: {e}")
+        logging.error(f"LLM health check failed: {e}")
         health_status["status"] = "unhealthy"
-        health_status["services"]["ollama"]["error"] = str(e)
+        health_status["services"]["llm"] = {"status": "down", "error": str(e)}
     
     # Cache result
     _health_cache["result"] = health_status

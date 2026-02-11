@@ -32,17 +32,20 @@ PID_DIR = BASE_DIR / "storage" / "pids"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 PID_DIR.mkdir(parents=True, exist_ok=True)
 
+# Read model from environment (or .env file via dotenv loaded above)
+VLLM_MODEL = os.getenv("VLLM_MODEL", "nvidia/Llama-3.1-8B-Instruct-NVFP4")
+
 # Service Configurations
 SERVICES = {
     "vllm": {
         "cmd": [
             "python", "-m", "vllm.entrypoints.openai.api_server",
-            "--model", "nvidia/Llama-3.1-8B-Instruct-NVFP4",
+            "--model", VLLM_MODEL,
             "--host", "0.0.0.0",
             "--port", "8080",
             "--dtype", "auto",
             "--max-model-len", "8192",
-            "--gpu-memory-utilization", "0.90",
+            "--gpu-memory-utilization", "0.45",
             "--max-num-seqs", "100",
             "--disable-log-requests"
         ],

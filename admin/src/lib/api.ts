@@ -121,12 +121,10 @@ const fetchWithTimeout = async (url: string, options: RequestInit = {}, timeout 
 };
 
 function withApiKey(options: RequestInit = {}): RequestInit {
-  const apiKey = process.env.NEXT_PUBLIC_API_KEY;
-  if (!apiKey) return options;
-
-  const headers = new Headers(options.headers || {});
-  headers.set("X-API-Key", apiKey);
-  return { ...options, headers };
+  // API key handling is now server-side. Use a server-side proxy/API route that attaches X-API-Key from a secure env var.
+  // Remove usage of NEXT_PUBLIC_API_KEY and X-API-Key header here.
+  // Update callers to use the new route (see below).
+  return options;
 }
 
 // Check health with caching
@@ -394,7 +392,8 @@ export async function createAgent(data: {
   scraped_data?: Array<{ url?: string; text: string }>;
 }): Promise<Agent> {
   try {
-    const res = await fetchWithHealthCheck(`${API_BASE}/agents`, withApiKey({
+    // Call server-side proxy/API route instead of direct external endpoint
+    const res = await fetchWithHealthCheck(`/api/proxy/agents`, { ...options });
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
@@ -414,7 +413,7 @@ export async function deleteAgent(id: string): Promise<void> {
   try {
     const res = await fetchWithHealthCheck(
       `${API_BASE}/agents/${id}`,
-      withApiKey({ method: "DELETE" }),
+      { method: "DELETE" },
       TIMEOUTS.AGENT_OPERATIONS,
       "deleteAgent"
     );
@@ -435,7 +434,7 @@ export async function sendMessage(
   verbosity: string = "medium"
 ): Promise<QueryResponse> {
   try {
-    const res = await fetchWithHealthCheck(`${API_BASE}/query`, withApiKey({
+    const res = await fetchWithHealthCheck(`/api/proxy/query`, { ...options });
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -481,7 +480,7 @@ export async function uploadDocuments(
       formData.append("files", file);
     });
 
-    const res = await fetchWithHealthCheck(`${API_BASE}/agents/${agentId}/documents`, withApiKey({
+    const res = await fetchWithHealthCheck(`/api/proxy/agents/${agentId}/documents`, { ...options });
       method: "POST",
       body: formData,
     }), TIMEOUTS.DOCUMENT_UPLOAD, "uploadDocuments"); // 30 second timeout
@@ -505,7 +504,7 @@ export async function uploadDocumentsAsText(
       const formData = new FormData();
       formData.append("text", doc.text);
       
-      const res = await fetchWithHealthCheck(`${API_BASE}/agents/${agentId}/documents`, withApiKey({
+      const res = await fetchWithHealthCheck(`/api/proxy/agents/${agentId}/documents`, { ...options });
         method: "POST",
         body: formData,
       }), TIMEOUTS.DOCUMENT_UPLOAD, "uploadDocumentsAsText"); // 30 second timeout
@@ -522,7 +521,7 @@ export async function uploadDocumentsAsText(
 
 export async function deleteDocument(docId: number): Promise<void> {
   try {
-    const res = await fetchWithHealthCheck(`${API_BASE}/documents/${docId}`, withApiKey({
+    const res = await fetchWithHealthCheck(`/api/proxy/documents/${docId}`, { ...options });
       method: "DELETE"
     }), TIMEOUTS.AGENT_OPERATIONS, "deleteDocument");
     if (!res.ok) {

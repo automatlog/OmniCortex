@@ -195,7 +195,10 @@ export default function AgentsPage() {
         image_urls: splitList(imageUrlsText),
         video_urls: splitList(videoUrlsText),
       };
-
+        // Add personal_role if agentType is Personal and personalRole is set
+        if (agentType === "Personal" && personalRole) {
+          payload.personal_role = personalRole;
+        }
       if (agentType === "Business") {
         payload.industry = businessIndustry;
       }
@@ -219,16 +222,27 @@ export default function AgentsPage() {
       }
 
       const agent = await createAgent(payload);
-      if (uploadedFiles.length > 0) {
-        await uploadDocuments(
-          agent.id,
-          uploadedFiles.map((item) => item.file)
-        );
-      }
+        let uploadError = null;
+        if (uploadedFiles.length > 0) {
+          try {
+            await uploadDocuments(
+              agent.id,
+              uploadedFiles.map((item) => item.file)
+            );
+          } catch (err) {
+            uploadError = err;
+          }
+        }
 
-      resetCreateForm();
-      setIsCreateOpen(false);
-      await loadAgents();
+        resetCreateForm();
+        setIsCreateOpen(false);
+        await loadAgents();
+
+        if (uploadError) {
+          alert("Agent created but document upload failed. You can retry upload from agent details.");
+          // Optionally: store agent.id for retry
+          console.error("Document upload failed for agent", agent.id, uploadError);
+        }
     } catch (error) {
       console.error("Failed to create agent:", error);
       alert("Failed to create agent. Check API key and backend logs.");

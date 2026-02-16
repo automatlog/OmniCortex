@@ -492,10 +492,32 @@ async def metrics():
 
 
 @app.post("/auth/keys")
-async def create_api_key_endpoint(owner: str, db: Session = Depends(get_db)):
-    """Generate a new API Key (Unprotected for setup)"""
+async def create_api_key_endpoint(owner: str, request: Request, db: Session = Depends(get_db)):
+    """Generate a new API key. If MASTER_API_KEY is configured, require X-Master-Key."""
+    master_key = os.getenv("MASTER_API_KEY")
+    if master_key:
+        provided = request.headers.get("X-Master-Key")
+        if provided != master_key:
+            raise HTTPException(status_code=403, detail="Invalid master key")
     new_key = create_new_api_key(owner, db)
     return {"key": new_key, "owner": owner}
+
+
+@app.post("/auth/keys/{key}/revoke")
+async def revoke_api_key_endpoint(key: str, request: Request, db: Session = Depends(get_db)):
+    """Revoke an API key. If MASTER_API_KEY is configured, require X-Master-Key."""
+    master_key = os.getenv("MASTER_API_KEY")
+    if master_key:
+        provided = request.headers.get("X-Master-Key")
+        if provided != master_key:
+            raise HTTPException(status_code=403, detail="Invalid master key")
+
+    rec = db.query(ApiKey).filter(ApiKey.key == key).first()
+    if not rec:
+        raise HTTPException(status_code=404, detail="API key not found")
+    rec.is_active = False
+    db.commit()
+    return {"status": "revoked", "key": key}
 
 
 @app.get("/stats/dashboard")

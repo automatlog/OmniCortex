@@ -38,6 +38,13 @@ export function AgentCard({ agent, onDelete }: AgentCardProps) {
               <p className="text-xs text-neutral-500">
                 Created {new Date(agent.created_at).toLocaleDateString()}
               </p>
+              {(agent.role_type || agent.industry) && (
+                <p className="text-xs text-blue-300 mt-1">
+                  {agent.role_type ? `Role: ${agent.role_type}` : ""}
+                  {agent.role_type && agent.industry ? " | " : ""}
+                  {agent.industry ? `Industry: ${agent.industry}` : ""}
+                </p>
+              )}
             </div>
           </div>
 

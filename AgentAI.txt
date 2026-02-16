@@ -1,0 +1,608 @@
+@using OmniApp.Data.DBModels
+@addTagHelper *, Microsoft.AspNetCore.Mvc.TagHelpers
+@{
+    string selectedAgentType = ViewBag.SelectedAgentType ?? "";
+    bool isEdit = !string.IsNullOrEmpty(ViewBag.Id?.ToString());
+}
+
+@* <style>
+    .agent-card {
+        transition: all 0.25s ease;
+    }
+    .agent-card:hover .card {
+        transform: translateY(-6px);
+        box-shadow: 0 12px 30px rgba(0,0,0,0.12) !important;
+    }
+    .hover-lift {
+        transition: transform 0.25s ease, box-shadow 0.25s ease;
+    }
+    .hover-lift:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.1) !important;
+    }
+    .icon-circle {
+        width: 70px;
+        height: 70px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+    .cursor-pointer {
+        cursor: pointer;
+    }
+    .bg-gradient {
+        background: linear-gradient(180deg, #f8f9fa, #e9ecef);
+    }
+    #agent-details-section {
+        display: @(isEdit ? "block" : "none");
+        opacity: 0;
+        transition: opacity 0.4s ease;
+    }
+    #agent-details-section.show {
+        opacity: 1;
+    }
+    .template-card .card {
+        transition: all 0.2s ease;
+        cursor: pointer;
+    }
+    .template-card input:checked + .card {
+        border-color: #0d6efd !important;
+        border-width: 2px !important;
+        background-color: #f8f9ff;
+    }
+    .template-card:hover .card {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 12px rgba(0,0,0,0.1) !important;
+    }
+
+    /* File preview styles */
+    .upload-wrapper {
+        border: 2px dashed #d0d5dd;
+        padding: 15px;
+        border-radius: 10px;
+        background: #fafafa;
+        transition: 0.2s ease;
+    }
+
+        .upload-wrapper.dragover {
+            background: #e7f1ff;
+            border-color: #0d6efd;
+        }
+
+    .file-item {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 10px 14px;
+        border: 1px solid #e5e7eb;
+        border-radius: 10px;
+        margin-bottom: 8px;
+        background: #fff;
+    }
+
+    .file-left {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+    }
+
+    .file-icon {
+        font-size: 22px;
+    }
+
+    .file-info {
+        display: flex;
+        flex-direction: column;
+    }
+
+    .file-name {
+        font-weight: 500;
+    }
+
+    .file-size {
+        font-size: 12px;
+        color: gray;
+    }
+
+    .file-right {
+        display: flex;
+        align-items: center;
+        gap: 15px;
+    }
+
+    .file-status {
+        font-size: 13px;
+    }
+
+    .status-processing {
+        color: #0d6efd;
+    }
+
+    .status-processed {
+        color: #198754;
+    }
+
+    .delete-btn {
+        cursor: pointer;
+        color: #dc3545;
+        font-size: 16px;
+    }
+
+
+</style> *@
+<style>
+    /* Agent Type Cards (Top Section) */
+    .agent-card {
+        transition: all 0.25s ease;
+        cursor: pointer;
+    }
+
+        .agent-card .card {
+            border-radius: 16px;
+            transition: all 0.25s ease;
+            border: 1px solid #e9ecef;
+            background: #ffffff;
+        }
+
+        .agent-card:hover .card {
+            transform: translateY(-6px);
+            box-shadow: 0 12px 30px rgba(0,0,0,0.12) !important;
+        }
+
+    .hover-lift {
+        transition: transform 0.25s ease, box-shadow 0.25s ease;
+    }
+
+        .hover-lift:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1) !important;
+        }
+
+    .icon-circle {
+        width: 70px;
+        height: 70px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .cursor-pointer {
+        cursor: pointer;
+    }
+
+    .bg-gradient {
+        background: linear-gradient(180deg, #f8f9fa, #e9ecef);
+    }
+
+    #agent-details-section {
+        display: @(isEdit ? "block" : "none");
+        opacity: 0;
+        transition: opacity 0.4s ease;
+    }
+
+        #agent-details-section.show {
+            opacity: 1;
+        }
+
+    /* Template Cards (Personal Section) */
+    .template-card {
+        width: 100%;
+        cursor: pointer;
+    }
+
+        .template-card .card {
+            min-height: 130px;
+            border-radius: 12px;
+            border: 1px solid #e5e7eb;
+            transition: all 0.25s ease;
+        }
+
+        .template-card:hover .card {
+            transform: translateY(-4px);
+            box-shadow: 0 8px 20px rgba(0,0,0,0.08);
+        }
+
+        .template-card input:checked + .card {
+            border: 2px solid #0d6efd !important;
+            background-color: #f4f8ff;
+            box-shadow: 0 8px 22px rgba(13,110,253,0.15);
+        }
+
+        .template-card .card-title,
+        .template-card h6 {
+            font-weight: 600;
+        }
+
+        .template-card p {
+            font-size: 13px;
+            color: #6c757d;
+        }
+
+    /* Blank Agent Header */
+    .blank-header {
+        background: #f8f9fa;
+        border-radius: 10px;
+        padding: 12px 18px;
+        margin-bottom: 25px;
+        border: 1px solid #e9ecef;
+    }
+
+        .blank-header h5 {
+            margin: 0;
+            font-weight: 600;
+        }
+
+    /* Upload Area */
+    .upload-wrapper {
+        border: 2px dashed #d0d5dd;
+        padding: 20px;
+        border-radius: 12px;
+        background: #fafafa;
+        transition: 0.2s ease;
+    }
+
+        .upload-wrapper:hover {
+            border-color: #0d6efd;
+        }
+
+    /* File Items */
+    .file-item {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 12px 16px;
+        border-radius: 10px;
+        border: 1px solid #e5e7eb;
+        margin-bottom: 8px;
+        background: #fff;
+    }
+
+        .file-item:hover {
+            box-shadow: 0 4px 12px rgba(0,0,0,0.05);
+        }
+
+    .file-left {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+    }
+
+    .file-icon {
+        font-size: 20px;
+        color: #0d6efd;
+    }
+
+    .file-info {
+        display: flex;
+        flex-direction: column;
+    }
+
+    .file-name {
+        font-weight: 500;
+        font-size: 14px;
+    }
+
+    .file-size {
+        font-size: 12px;
+        color: #6c757d;
+    }
+
+    .file-right {
+        display: flex;
+        align-items: center;
+        gap: 15px;
+    }
+
+    .file-status {
+        font-size: 13px;
+    }
+
+    .status-processing {
+        color: #0d6efd;
+    }
+
+    .status-processed {
+        color: #198754;
+    }
+
+    .delete-btn {
+        cursor: pointer;
+        color: #dc3545;
+        font-size: 16px;
+        transition: 0.2s;
+    }
+
+        .delete-btn:hover {
+            transform: scale(1.1);
+        }
+</style>
+
+<form asp-area="AI" asp-controller="AgentManagement" asp-action="AddOrEditAgent" method="post" id="AddOrEditAgentForm" enctype="multipart/form-data">
+    <div class="container my-4">
+
+        <!-- Agent Type Selection -->
+        <div class="row g-4 mb-5 justify-content-center" id="agent-type-selection">
+
+            <!-- Blank Agent -->
+            <div class="col-md-4 col-sm-6">
+                <label class="agent-card position-relative d-block cursor-pointer">
+                    <input type="radio" name="AgentType" value="Blank" class="d-none agent-type-radio"
+                           @(selectedAgentType == "Blank" ? "checked" : "") required />
+                    <div class="card h-100 shadow-sm border @(selectedAgentType == "Blank" ? "border-primary border-3" : "border-light") hover-lift">
+                        <div class="card-body text-center p-4">
+                            <div class="icon-circle bg-warning-subtle text-warning mb-3 mx-auto">
+                                <i class="bi bi-lightning-fill fs-3"></i>
+                            </div>
+                            <h5 class="card-title mb-2">Blank Agent</h5>
+                            <p class="card-text text-muted small">Start from scratch with a basic agent</p>
+                        </div>
+                        <span class="position-absolute top-0 end-0 m-3 badge bg-primary rounded-pill @(selectedAgentType == "Blank" ? "d-inline" : "d-none") selected-badge">
+                            Selected
+                        </span>
+                    </div>
+                </label>
+            </div>
+
+            <!-- Personal Assistant -->
+            <div class="col-md-4 col-sm-6">
+                <label class="agent-card position-relative d-block cursor-pointer">
+                    <input type="radio" name="AgentType" value="Personal" class="d-none agent-type-radio"
+                           @(selectedAgentType == "Personal" ? "checked" : "") />
+                    <div class="card h-100 shadow-sm border @(selectedAgentType == "Personal" ? "border-primary border-3" : "border-light") hover-lift">
+                        <div class="card-body text-center p-4">
+                            <div class="icon-circle bg-primary-subtle text-primary mb-3 mx-auto">
+                                <i class="bi bi-person-fill fs-3"></i>
+                            </div>
+                            <h5 class="card-title mb-2">Personal Assistant</h5>
+                            <p class="card-text text-muted small">Designed for personal tasks and assistance</p>
+                        </div>
+                        <span class="position-absolute top-0 end-0 m-3 badge bg-primary rounded-pill @(selectedAgentType == "Personal" ? "d-inline" : "d-none") selected-badge">
+                            Selected
+                        </span>
+                    </div>
+                </label>
+            </div>
+
+            <!-- Business Agent -->
+            <div class="col-md-4 col-sm-6">
+                <label class="agent-card position-relative d-block cursor-pointer">
+                    <input type="radio" name="AgentType" value="Business" class="d-none agent-type-radio"
+                           @(selectedAgentType == "Business" ? "checked" : "") />
+                    <div class="card h-100 shadow-sm border @(selectedAgentType == "Business" ? "border-primary border-3" : "border-light") hover-lift">
+                        <div class="card-body text-center p-4">
+                            <div class="icon-circle bg-success-subtle text-success mb-3 mx-auto">
+                                <i class="bi bi-building fs-3"></i>
+                            </div>
+                            <h5 class="card-title mb-2">Business Agent</h5>
+                            <p class="card-text text-muted small">Professional agent for business operations</p>
+                        </div>
+                        <span class="position-absolute top-0 end-0 m-3 badge bg-primary rounded-pill @(selectedAgentType == "Business" ? "d-inline" : "d-none") selected-badge">
+                            Selected
+                        </span>
+                    </div>
+                </label>
+            </div>
+        </div>
+
+        <!-- Agent Details -->
+        <div class="card shadow border-0" id="agent-details-section">
+            <div class="card-body">
+
+                <input type="hidden" name="Id" value="@(ViewBag.Id ?? "")" />
+
+                <!-- Blank Agent Form -->
+                <div id="blank-agent-form" class="agent-type-form" style="display:none;">
+
+                    <!-- Header ONLY for Blank -->
+                    <div class="blank-header">
+                        <h5>Agent Details</h5>
+                    </div>              
+
+                    <div class="mb-3">
+                        <label class="form-label fw-medium">Agent Name <span class="text-danger">*</span></label>
+                        <input name="AgentName" class="form-control" placeholder="Enter agent name" value="@ViewBag.AgentName" required />
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label fw-medium">Description <span class="text-danger">*</span></label>
+                        <textarea name="MainGoal" class="form-control" rows="4"
+                                  placeholder="Describe the main goal of this agent..." required>@ViewBag.MainGoal</textarea>
+                    </div>
+
+                    <div class="mb-4">
+                        <label class="form-label fw-medium">Website (Optional)</label>
+                        <input name="Website" type="url" class="form-control"
+                               placeholder="https://example.com" value="@ViewBag.Website" />
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label fw-medium">Instructions <span class="text-danger">*</span></label>
+                        <textarea name="Instructions" class="form-control" rows="2"
+                                  placeholder="Example: You are an AI that answers questions over a knowledge base. Be brief and polite." required>@ViewBag.Instructions</textarea>
+                    </div>
+
+                    <div class="mb-3">
+                        <label class="form-label fw-medium">Add Logic <span class="text-danger">*</span></label>
+                        <textarea name="AgentLogic" class="form-control" rows="2"
+                                  placeholder="Define logic, behavior rules, or constraints for the agent..." required>@ViewBag.Instructions</textarea>
+                    </div>
+
+                    <!-- ✅ NEW FIELD 3: Conversation Starters -->
+                    <div class="mb-4">
+                        <label class="form-label fw-medium">Conversation Starters</label>
+                        <input type="text" name="ConversationStarters"
+                               class="form-control"
+                               placeholder="Add a conversation starter (e.g., Ask about pricing)">
+                    </div>
+
+                    <!-- Multiple File Upload -->
+                    <div class="mb-4">
+                        <label class="form-label fw-medium">Upload Files</label>
+
+                        <div id="upload-wrapper" class="upload-wrapper">
+                            <div class="input-group">
+                                <input type="file"
+                                       name="KnowledgeFiles"
+                                       class="form-control"
+                                       id="blankAgentFiles"
+                                       accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.mp4,.webm,.ogg,.txt,.csv,.doc,.docx,.md"
+                                       multiple />
+                                <button class="btn btn-outline-secondary" type="button" id="clear-files-btn" style="display:none;">
+                                    Clear
+                                </button>
+                            </div>
+                            <small class="text-muted d-block mt-2">
+                                Drag & drop files here or click to browse
+                            </small>
+                        </div>
+
+                        <div class="alert alert-info small mb-3 py-2 px-3 mt-3">
+                            Supported formats: PDF, TXT, CSV, images, videos, DOC/DOCX, Markdown
+                        </div>
+
+                        <div id="file-preview"></div>
+                    </div>
+                </div>
+
+
+                <!-- Personal Assistant Form -->
+                <div id="personal-assistant-form" class="agent-type-form" style="display:none;">
+                    <p class="text-muted mb-4">
+                        Select a personal assistant template to get started:
+                    </p>
+                    <div class="row g-3">
+
+                        <!-- 1. Personal Assistant -->
+                        <div class="col-md-6">
+                            <label class="template-card cursor-pointer">
+                                <input type="radio" name="PersonalTemplate" value="PersonalAssistant" class="d-none" />
+                                <div class="card h-100 border hover-lift">
+                                    <div class="card-body text-center p-4">
+                                        <h6 class="card-title mb-2">Personal Assistant</h6>
+                                        <p class="card-text text-muted small mb-0">
+                                            General personal assistant for daily tasks and organization
+                                        </p>
+                                    </div>
+                                </div>
+                            </label>
+                        </div>
+
+                        <!-- 2. Learning Companion -->
+                        <div class="col-md-6">
+                            <label class="template-card cursor-pointer">
+                                <input type="radio" name="PersonalTemplate" value="LearningCompanion" class="d-none" />
+                                <div class="card h-100 border hover-lift">
+                                    <div class="card-body text-center p-4">
+                                        <h6 class="card-title mb-2">Learning Companion</h6>
+                                        <p class="card-text text-muted small mb-0">
+                                            Educational support and learning assistance
+                                        </p>
+                                    </div>
+                                </div>
+                            </label>
+                        </div>
+
+                        <!-- 3. Creative Helper -->
+                        <div class="col-md-6">
+                            <label class="template-card cursor-pointer">
+                                <input type="radio" name="PersonalTemplate" value="CreativeHelper" class="d-none" />
+                                <div class="card h-100 border hover-lift">
+                                    <div class="card-body text-center p-4">
+                                        <h6 class="card-title mb-2">Creative Helper</h6>
+                                        <p class="card-text text-muted small mb-0">
+                                            Creative projects, writing, and artistic endeavors
+                                        </p>
+                                    </div>
+                                </div>
+                            </label>
+                        </div>
+
+                        <!-- 4. Health Wellness -->
+                        <div class="col-md-6">
+                            <label class="template-card cursor-pointer">
+                                <input type="radio" name="PersonalTemplate" value="HealthWellness" class="d-none" />
+                                <div class="card h-100 border hover-lift">
+                                    <div class="card-body text-center p-4">
+                                        <h6 class="card-title mb-2">Health Wellness</h6>
+                                        <p class="card-text text-muted small mb-0">
+                                            Health tracking, wellness tips, and lifestyle guidance
+                                        </p>
+                                    </div>
+                                </div>
+                            </label>
+                        </div>
+
+                        <!-- 5. Task Management -->
+                        <div class="col-md-6">
+                            <label class="template-card cursor-pointer">
+                                <input type="radio" name="PersonalTemplate" value="TaskManagement" class="d-none" />
+                                <div class="card h-100 border hover-lift">
+                                    <div class="card-body text-center p-4">
+                                        <h6 class="card-title mb-2">Task Management</h6>
+                                        <p class="card-text text-muted small mb-0">
+                                            Project organization, scheduling, and productivity
+                                        </p>
+                                    </div>
+                                </div>
+                            </label>
+                        </div>
+
+                        <!-- 6. Research Assistant -->
+                        <div class="col-md-6">
+                            <label class="template-card cursor-pointer">
+                                <input type="radio" name="PersonalTemplate" value="ResearchAssistant" class="d-none" />
+                                <div class="card h-100 border hover-lift">
+                                    <div class="card-body text-center p-4">
+                                        <h6 class="card-title mb-2">Research Assistant</h6>
+                                        <p class="card-text text-muted small mb-0">
+                                            Information gathering and research support
+                                        </p>
+                                    </div>
+                                </div>
+                            </label>
+                        </div>
+
+                    </div>
+                </div>
+
+                <!-- Business Agent Form -->
+                <div id="business-agent-form" class="agent-type-form" style="display: none;">
+                    <p class="text-muted mb-4">Select a business category for your agent:</p>
+                    <div class="row g-3">
+                        <!-- ... your existing business templates (kept unchanged) ... -->
+                    </div>
+
+                    <!-- Common fields for Business -->
+                    <div class="mt-4" id="common-fields-business" style="display: none;">
+                        <hr class="my-4" />
+                        <div class="mb-3">
+                            <label class="form-label fw-medium">Flow Name <span class="text-danger">*</span></label>
+                            <input name="FlowName" class="form-control" placeholder="Enter Flow Name" value="@ViewBag.FlowName" required />
+                        </div>
+                        <div class="mb-4">
+                            <div class="form-check form-switch">
+                                <input type="checkbox" class="form-check-input" name="IsActive" id="IsActive"
+                                       @(ViewBag.IsActive == true ? "checked" : "") />
+                                <label class="form-check-label" for="IsActive">Is Active</label>
+                            </div>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label fw-medium">Description (optional)</label>
+                            <textarea name="Description" class="form-control" rows="3" placeholder="Brief description...">@ViewBag.Description</textarea>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+            <hr />
+            <div class="card-footer bg-light text-end border-top-0">
+                <button type="button" class="btn btn-outline-secondary me-2" data-bs-dismiss="modal">Cancel</button>
+                <button type="submit" class="btn btn-primary px-4">Create Agent</button>
+            </div>
+        </div>
+    </div>
+</form>
+
+<script src="~/projectlibs/ai/agentmanagement.js"></script>

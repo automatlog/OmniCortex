@@ -22,8 +22,32 @@ export interface Agent {
   name: string;
   description: string;
   created_at: string;
+  system_prompt?: string;
+  role_type?: string;
+  industry?: string;
+  urls?: string[];
+  conversation_starters?: string[];
+  image_urls?: string[];
+  video_urls?: string[];
+  scraped_data?: Array<{ url?: string; text: string }>;
   document_count?: number;
   webhook_url?: string;
+}
+
+export type AgentRoleType = "personal" | "business" | "knowledge";
+
+export interface AgentCreatePayload {
+  name: string;
+  description?: string;
+  system_prompt?: string;
+  role_type?: AgentRoleType;
+  industry?: string;
+  urls?: string[];
+  conversation_starters?: string[];
+  image_urls?: string[];
+  video_urls?: string[];
+  documents_text?: Array<{ filename: string; text: string }>;
+  scraped_data?: Array<{ url?: string; text: string }>;
 }
 
 export interface ChatMessage {
@@ -96,6 +120,15 @@ const fetchWithTimeout = async (url: string, options: RequestInit = {}, timeout 
   }
 };
 
+function withApiKey(options: RequestInit = {}): RequestInit {
+  const apiKey = process.env.NEXT_PUBLIC_API_KEY;
+  if (!apiKey) return options;
+
+  const headers = new Headers(options.headers || {});
+  headers.set("X-API-Key", apiKey);
+  return { ...options, headers };
+}
+
 // Check health with caching
 async function checkHealthWithCache(): Promise<boolean> {
   const now = Date.now();
@@ -112,7 +145,7 @@ async function checkHealthWithCache(): Promise<boolean> {
     
     healthCache = { isHealthy, timestamp: now };
     return isHealthy;
-  } catch (error) {
+  } catch {
     healthCache = { isHealthy: false, timestamp: now };
     return false;
   }
@@ -350,13 +383,22 @@ export async function getAgent(id: string): Promise<Agent> {
 export async function createAgent(data: {
   name: string;
   description?: string;
+  system_prompt?: string;
+  role_type?: AgentRoleType;
+  industry?: string;
+  urls?: string[];
+  conversation_starters?: string[];
+  image_urls?: string[];
+  video_urls?: string[];
+  documents_text?: Array<{ filename: string; text: string }>;
+  scraped_data?: Array<{ url?: string; text: string }>;
 }): Promise<Agent> {
   try {
-    const res = await fetchWithHealthCheck(`${API_BASE}/agents`, {
+    const res = await fetchWithHealthCheck(`${API_BASE}/agents`, withApiKey({
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(data),
-    }, TIMEOUTS.AGENT_OPERATIONS, "createAgent");
+    }), TIMEOUTS.AGENT_OPERATIONS, "createAgent");
     
     if (!res.ok) {
       const error = await res.json().catch(() => ({ detail: "Failed to create agent" }));
@@ -370,7 +412,12 @@ export async function createAgent(data: {
 
 export async function deleteAgent(id: string): Promise<void> {
   try {
-    const res = await fetchWithHealthCheck(`${API_BASE}/agents/${id}`, { method: "DELETE" }, TIMEOUTS.AGENT_OPERATIONS, "deleteAgent");
+    const res = await fetchWithHealthCheck(
+      `${API_BASE}/agents/${id}`,
+      withApiKey({ method: "DELETE" }),
+      TIMEOUTS.AGENT_OPERATIONS,
+      "deleteAgent"
+    );
     if (!res.ok) {
       const error = await res.json().catch(() => ({ detail: "Failed to delete agent" }));
       throw classifyError(new Error(error.detail || "Failed to delete agent"), res, "deleteAgent");
@@ -388,7 +435,7 @@ export async function sendMessage(
   verbosity: string = "medium"
 ): Promise<QueryResponse> {
   try {
-    const res = await fetchWithHealthCheck(`${API_BASE}/query`, {
+    const res = await fetchWithHealthCheck(`${API_BASE}/query`, withApiKey({
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -398,7 +445,7 @@ export async function sendMessage(
         max_history: maxHistory,
         verbosity: verbosity,
       }),
-    }, TIMEOUTS.CHAT_QUERY, "sendMessage"); // 90s timeout for chat
+    }), TIMEOUTS.CHAT_QUERY, "sendMessage"); // 90s timeout for chat
     
     if (!res.ok) {
       const error = await res.json().catch(() => ({ detail: "Failed to send message" }));
@@ -434,10 +481,10 @@ export async function uploadDocuments(
       formData.append("files", file);
     });
 
-    const res = await fetchWithHealthCheck(`${API_BASE}/agents/${agentId}/documents`, {
+    const res = await fetchWithHealthCheck(`${API_BASE}/agents/${agentId}/documents`, withApiKey({
       method: "POST",
       body: formData,
-    }, TIMEOUTS.DOCUMENT_UPLOAD, "uploadDocuments"); // 30 second timeout
+    }), TIMEOUTS.DOCUMENT_UPLOAD, "uploadDocuments"); // 30 second timeout
     
     if (!res.ok) {
       const error = await res.text();
@@ -458,10 +505,10 @@ export async function uploadDocumentsAsText(
       const formData = new FormData();
       formData.append("text", doc.text);
       
-      const res = await fetchWithHealthCheck(`${API_BASE}/agents/${agentId}/documents`, {
+      const res = await fetchWithHealthCheck(`${API_BASE}/agents/${agentId}/documents`, withApiKey({
         method: "POST",
         body: formData,
-      }, TIMEOUTS.DOCUMENT_UPLOAD, "uploadDocumentsAsText"); // 30 second timeout
+      }), TIMEOUTS.DOCUMENT_UPLOAD, "uploadDocumentsAsText"); // 30 second timeout
       
       if (!res.ok) {
         const error = await res.text();
@@ -475,9 +522,9 @@ export async function uploadDocumentsAsText(
 
 export async function deleteDocument(docId: number): Promise<void> {
   try {
-    const res = await fetchWithHealthCheck(`${API_BASE}/documents/${docId}`, {
+    const res = await fetchWithHealthCheck(`${API_BASE}/documents/${docId}`, withApiKey({
       method: "DELETE"
-    }, TIMEOUTS.AGENT_OPERATIONS, "deleteDocument");
+    }), TIMEOUTS.AGENT_OPERATIONS, "deleteDocument");
     if (!res.ok) {
       const error = await res.json().catch(() => ({ detail: "Failed to delete document" }));
       throw classifyError(new Error(error.detail || "Failed to delete document"), res, "deleteDocument");

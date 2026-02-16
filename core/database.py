@@ -2,7 +2,7 @@
 PostgreSQL Database Models with pgvector support
 """
 from typing import List, Dict, Optional
-from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey, Index, JSON, Float, text
+from sqlalchemy import create_engine, Column, Integer, String, Text, DateTime, ForeignKey, Index, JSON, Float, text, Boolean
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from sqlalchemy.sql import func
@@ -41,11 +41,123 @@ class Agent(Base):
     document_count = Column(Integer, default=0)
     message_count = Column(Integer, default=0)
     extra_data = Column(JSON, default={})  # For future extension (renamed from metadata)
+
+    # Added features
+    role_type = Column(String, nullable=True) # e.g., "Personal Assistant", "Creative Helper"
+    industry = Column(String, nullable=True) # e.g., "Healthcare", "Retail", etc. for business agents
+    urls = Column(JSON, nullable=True) # List of URLs for scraping
+    conversation_starters = Column(JSON, nullable=True) # List of example conversation starters
+    image_urls = Column(JSON, nullable=True) # Optional image URLs
+    video_urls = Column(JSON, nullable=True) # Optional video URLs
+    scraped_data = Column(JSON, nullable=True) # Optional raw scraped content payload
     
     # Relationships
     messages = relationship("Message", back_populates="agent", cascade="all, delete-orphan")
     documents = relationship("Document", back_populates="agent", cascade="all, delete-orphan")
+    channels = relationship("Channel", back_populates="agent", cascade="all, delete-orphan")
+    tools = relationship("Tool", back_populates="agent", cascade="all, delete-orphan")
 
+
+# ============== MESSAGING MODELS (PHASE 2) ==============
+
+class Channel(Base):
+    """Channel configuration (WhatsApp, Voice, etc.)"""
+    __tablename__ = "omni_channels"
+    
+    id = Column(String, primary_key=True) # UUID
+    name = Column(String, nullable=False)
+    type = Column(String, nullable=False) # 'whatsapp', 'voice', 'email'
+    provider = Column(String) # 'meta', 'twilio', 'liquid'
+    config = Column(JSON, default={}) # Credentials, tokens
+    agent_id = Column(String, ForeignKey("omni_agents.id", ondelete="SET NULL"), nullable=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    agent = relationship("Agent", back_populates="channels")
+
+
+class Tool(Base):
+    """Messaging Tools (Flows, Buttons, Webhooks)"""
+    __tablename__ = "omni_tools"
+    
+    id = Column(String, primary_key=True) # UUID
+    name = Column(String, nullable=False)
+    type = Column(String, nullable=False) # 'flow', 'button_reply', 'webhook', 'schedule', 'faq'
+    content = Column(JSON, default={}) # Payload template
+    agent_id = Column(String, ForeignKey("omni_agents.id", ondelete="CASCADE"), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    agent = relationship("Agent", back_populates="tools")
+
+
+def ensure_schema_updates(engine):
+    """Run ALTER TABLE commands to ensure new columns exist"""
+    with engine.connect() as conn:
+        with conn.begin():
+            # role_type
+            try:
+                conn.execute(text("ALTER TABLE omni_agents ADD COLUMN IF NOT EXISTS role_type VARCHAR"))
+            except Exception as e:
+                print(f"Schema update (role_type) skipped/failed: {e}")
+                
+            # urls
+            try:
+                conn.execute(text("ALTER TABLE omni_agents ADD COLUMN IF NOT EXISTS urls JSON"))
+            except Exception as e:
+                print(f"Schema update (urls) skipped/failed: {e}")
+                
+            # conversation_starters
+            try:
+                conn.execute(text("ALTER TABLE omni_agents ADD COLUMN IF NOT EXISTS conversation_starters JSON"))
+            except Exception as e:
+                print(f"Schema update (conversation_starters) skipped/failed: {e}")
+
+            # industry
+            try:
+                conn.execute(text("ALTER TABLE omni_agents ADD COLUMN IF NOT EXISTS industry VARCHAR"))
+            except Exception as e:
+                print(f"Schema update (industry) skipped/failed: {e}")
+
+            # image_urls
+            try:
+                conn.execute(text("ALTER TABLE omni_agents ADD COLUMN IF NOT EXISTS image_urls JSON"))
+            except Exception as e:
+                print(f"Schema update (image_urls) skipped/failed: {e}")
+
+            # video_urls
+            try:
+                conn.execute(text("ALTER TABLE omni_agents ADD COLUMN IF NOT EXISTS video_urls JSON"))
+            except Exception as e:
+                print(f"Schema update (video_urls) skipped/failed: {e}")
+
+            # scraped_data
+            try:
+                conn.execute(text("ALTER TABLE omni_agents ADD COLUMN IF NOT EXISTS scraped_data JSON"))
+            except Exception as e:
+                print(f"Schema update (scraped_data) skipped/failed: {e}")
+
+            # Phase 3: Document Status
+            try:
+                conn.execute(text("ALTER TABLE omni_documents ADD COLUMN IF NOT EXISTS status VARCHAR DEFAULT 'uploading'"))
+            except Exception as e:
+                print(f"Schema update (document.status) skipped/failed: {e}")
+
+
+
+
+class Session(Base):
+    """Session model for tracking user interactions"""
+    __tablename__ = "omni_sessions"
+    
+    id = Column(String, primary_key=True) # UUID
+    agent_id = Column(String, ForeignKey("omni_agents.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(String, nullable=False) # Phone number or session ID
+    start_time = Column(DateTime(timezone=True), server_default=func.now())
+    end_time = Column(DateTime(timezone=True), nullable=True)
+    duration = Column(Float, default=0.0) # Seconds
+    status = Column(String, default="active") # active, completed, timeout
+    channel_type = Column(String, default="web") # whatsapp, voice, web
+    
+    agent = relationship("Agent")
 
 class Message(Base):
     """Message model for conversation history"""
@@ -78,6 +190,7 @@ class Document(Base):
     uploaded_at = Column(DateTime(timezone=True), server_default=func.now())
     extra_data = Column(JSON, default={})
     embedding_time = Column(Float, default=0.0)  # Time taken to embed
+    status = Column(String, default="uploading") # uploading, indexing, ready, error
     
     agent = relationship("Agent", back_populates="documents")
     
@@ -101,6 +214,16 @@ class UsageLog(Base):
     latency = Column(Float, default=0.0)  # API latency in seconds
     
     agent = relationship("Agent")
+
+
+class ApiKey(Base):
+    """API Key for authentication"""
+    __tablename__ = "omni_api_keys"
+    
+    key = Column(String, primary_key=True)
+    owner = Column(String)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class WebhookLog(Base):
@@ -154,6 +277,7 @@ class SemanticCache(Base):
 def init_db():
     """Initialize database tables and performance indexes"""
     Base.metadata.create_all(bind=engine)
+    ensure_schema_updates(engine) # Run manual schema updates (ALTER TABLE)
     print("[OK] OmniCortex database tables created")
     
     # Create performance indexes (idempotent)

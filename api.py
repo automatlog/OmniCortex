@@ -3,8 +3,9 @@ OmniCortex FastAPI Backend
 REST API for chat, agents, and documents
 """
 import time
-from typing import Optional, List
-from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request
+import uuid
+from typing import Optional, List, Dict
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
@@ -27,6 +28,7 @@ from core import (
     get_all_agents,
     get_agent,
     create_agent,
+    update_agent,
     delete_agent,
     get_agent_documents,
     delete_document,
@@ -34,7 +36,9 @@ from core import (
     process_question,
     process_documents,
 )
+from core.database import Channel, Tool, Session, SessionLocal, ApiKey # Phase 2 & 3 & 4 support
 from core.graph import create_rag_agent
+from core.processing.scraper import process_urls
 
 # Import metrics from core.monitoring
 from core.monitoring import (
@@ -43,6 +47,12 @@ from core.monitoring import (
     CHAT_REQUESTS,
     PrometheusMiddleware
 )
+from core.manager.connection_manager import ConnectionManager
+from core.auth import get_api_key, create_new_api_key, get_db
+from fastapi import Depends
+
+# Initialize Connection Manager
+manager = ConnectionManager()
 
 # ============== APP SETUP ==============
 from core.database import init_db
@@ -191,6 +201,8 @@ _health_cache = {"result": None, "timestamp": 0}
 class QueryRequest(BaseModel):
     question: str
     agent_id: Optional[str] = None
+    user_id: Optional[str] = "anonymous" # For session tracking
+    session_id: Optional[str] = None # Resume existing session
     max_history: int = 5
     model_selection: Optional[str] = None
     mock_mode: bool = False  # True = bypass LLM for load testing
@@ -199,21 +211,101 @@ class QueryRequest(BaseModel):
 class QueryResponse(BaseModel):
     answer: str
     agent_id: Optional[str] = None
+    session_id: Optional[str] = None
+
+
+class AgentDocumentText(BaseModel):
+    filename: str
+    text: str
+
+
+class ScrapedContent(BaseModel):
+    url: Optional[str] = None
+    text: str
 
 
 class AgentCreate(BaseModel):
     name: str
     description: Optional[str] = ""
-    file_paths: Optional[List[str]] = []  # List of absolute paths on server
+    system_prompt: Optional[str] = None
+    role_type: Optional[str] = None
+    industry: Optional[str] = None
+    urls: Optional[List[str]] = None
+    conversation_starters: Optional[List[str]] = None
+    image_urls: Optional[List[str]] = None
+    video_urls: Optional[List[str]] = None
+    documents_text: Optional[List[AgentDocumentText]] = None
+    scraped_data: Optional[List[ScrapedContent]] = None
+    file_paths: Optional[List[str]] = None  # Backward-compatible local files path list
 
 
 class AgentResponse(BaseModel):
     id: str
     name: str
     description: Optional[str]
+    system_prompt: Optional[str]
+    
+    role_type: Optional[str]
+    industry: Optional[str]
+    urls: Optional[List[str]]
+    conversation_starters: Optional[List[str]]
+    image_urls: Optional[List[str]]
+    video_urls: Optional[List[str]]
+    scraped_data: Optional[List[Dict[str, str]]]
+    
     document_count: int
     message_count: int
     webhook_url: Optional[str] = None
+
+
+class AgentUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    system_prompt: Optional[str] = None
+    role_type: Optional[str] = None
+    industry: Optional[str] = None
+    urls: Optional[List[str]] = None
+    conversation_starters: Optional[List[str]] = None
+    image_urls: Optional[List[str]] = None
+    video_urls: Optional[List[str]] = None
+    scraped_data: Optional[List[ScrapedContent]] = None
+
+
+# ============== MESSAGING MODELS (PHASE 2) ==============
+class ChannelCreate(BaseModel):
+    name: str
+    type: str # whatsapp, voice
+    provider: str # meta, twilio
+    config: Optional[Dict] = {}
+    agent_id: Optional[str] = None
+
+class ChannelResponse(BaseModel):
+    id: str
+    name: str
+    type: str
+    provider: Optional[str]
+    config: Optional[Dict]
+    agent_id: Optional[str]
+    created_at: Optional[str]
+
+class ToolCreate(BaseModel):
+    name: str
+    type: str # flow, button_reply, webhook, schedule
+    content: Dict
+    agent_id: str
+
+class ToolResponse(BaseModel):
+    id: str
+    name: str
+    type: str
+    content: Dict
+    agent_id: str
+    created_at: Optional[str]
+
+
+class ToolDispatchRequest(BaseModel):
+    to_number: str
+    dry_run: bool = True
 
 
 # ============== MIDDLEWARE ==============
@@ -399,6 +491,86 @@ async def metrics():
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
+@app.post("/auth/keys")
+async def create_api_key_endpoint(owner: str, db: Session = Depends(get_db)):
+    """Generate a new API Key (Unprotected for setup)"""
+    new_key = create_new_api_key(owner, db)
+    return {"key": new_key, "owner": owner}
+
+
+@app.get("/stats/dashboard")
+async def dashboard_stats():
+    """Get aggregated metrics for dashboard graphs"""
+    from core.database import SessionLocal, Agent, Document, Session, UsageLog
+    from sqlalchemy import func, desc
+    
+    db = SessionLocal()
+    try:
+        # 1. Counts
+        total_agents = db.query(Agent).count()
+        total_documents = db.query(Document).count()
+        total_sessions = db.query(Session).count()
+        
+        # 2. Document Status
+        doc_status = db.query(
+            Document.status, func.count(Document.id)
+        ).group_by(Document.status).all()
+        doc_stats = {status: count for status, count in doc_status}
+        
+        # 3. Usage Stats (Last 24h or total)
+        # For simplicity, we return total cost and tokens
+        total_cost = db.query(func.sum(UsageLog.cost)).scalar() or 0.0
+        total_tokens = db.query(func.sum(UsageLog.total_tokens)).scalar() or 0
+        
+        # 4. Recent Activity (Sessions)
+        recent_sessions = db.query(Session).order_by(desc(Session.start_time)).limit(5).all()
+        activity_log = [
+            {
+                "id": s.id,
+                "user": s.user_id,
+                "agent_id": s.agent_id,
+                "start": s.start_time.isoformat(),
+                "duration": s.duration,
+                "status": s.status
+            }
+            for s in recent_sessions
+        ]
+        
+        return {
+            "counts": {
+                "agents": total_agents,
+                "documents": total_documents,
+                "sessions": total_sessions
+            },
+            "documents": {
+                "total": total_documents,
+                "by_status": doc_stats
+            },
+            "usage": {
+                "total_cost": round(total_cost, 4),
+                "total_tokens": total_tokens
+            },
+            "recent_activity": activity_log
+        }
+    finally:
+        db.close()
+
+@app.get("/documents/{document_id}/chunks")
+async def get_document_chunks_api(document_id: int):
+    """Get chunks for a specific document (Parent Chunks)"""
+    # Note: We currently store parent chunks in 'omni_parent_chunks' linked by source_doc_id
+    from core.database import ParentChunk, SessionLocal
+    db = SessionLocal()
+    try:
+         chunks = db.query(ParentChunk).filter(ParentChunk.source_doc_id == document_id).all()
+         return [
+             {"id": c.id, "content": c.content[:200] + "..." if len(c.content) > 200 else c.content} 
+             for c in chunks
+         ]
+    finally:
+        db.close()
+
+
 @app.get("/stats/agents")
 async def agent_stats():
     """Get comprehensive stats for all agents including tokens and latency"""
@@ -450,11 +622,38 @@ async def agent_stats():
 
 # --- Chat ---
 @app.post("/query", response_model=QueryResponse)
-async def query(request: QueryRequest):
+async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
     """Chat with an agent using RAG"""
     try:
         # Track metrics
         CHAT_REQUESTS.labels(agent_id=request.agent_id or "default").inc()
+        
+        # Session Tracking
+        session_id = request.session_id
+        db = SessionLocal()
+        try:
+            if not session_id:
+                # Create new session
+                import uuid
+                session_id = str(uuid.uuid4())
+                if request.agent_id:
+                    new_sess = Session(
+                        id=session_id,
+                        agent_id=request.agent_id,
+                        user_id=request.user_id or "anonymous",
+                        status="active",
+                        channel_type="web"
+                    )
+                    db.add(new_sess)
+                    db.commit()
+            
+            # Update existing session duration/end_time is usually done on completion or heartbeat
+            # For now, we just ensure it exists
+        except Exception as e:
+            print(f"⚠️ Session tracking error: {e}")
+        finally:
+            db.close()
+            
         
         # Mock Mode: Skip LLM for load testing (tests DB + vector store only)
         if request.mock_mode:
@@ -463,7 +662,8 @@ async def query(request: QueryRequest):
             time.sleep(0.1)  # Simulate network latency
             return QueryResponse(
                 answer="[MOCK] Load test response - LLM bypassed",
-                agent_id=request.agent_id
+                agent_id=request.agent_id,
+                session_id=session_id
             )
         
         # Get conversation history
@@ -483,7 +683,7 @@ async def query(request: QueryRequest):
             model_selection=request.model_selection
         )
         
-        return QueryResponse(answer=answer, agent_id=request.agent_id)
+        return QueryResponse(answer=answer, agent_id=request.agent_id, session_id=session_id)
     
     except FileNotFoundError:
         raise HTTPException(status_code=400, detail="Upload documents first")
@@ -491,7 +691,173 @@ async def query(request: QueryRequest):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+
+@app.websocket("/ws/chat/{agent_id}")
+async def websocket_endpoint(websocket: WebSocket, agent_id: str):
+    """
+    WebSocket endpoint for real-time chat.
+    Connects to the agent's channel.
+    Supports JSON protocol: {"content": "message"}
+    """
+    await manager.connect(websocket, agent_id)
+    import json
+    try:
+        while True:
+            data = await websocket.receive_text()
+            try:
+                payload = json.loads(data)
+                question = payload.get("content")
+            except json.JSONDecodeError:
+                question = data # Fallback to raw text
+
+            if question:
+                # 1. Send "Thinking" status
+                await manager.send_personal_message(json.dumps({"type": "status", "status": "thinking"}), websocket)
+                
+                # 2. Process (Simulated)
+                # In real scenario: answer = await process_question_async(...)
+                import asyncio
+                await asyncio.sleep(1) # Simulate thinking
+                
+                answer = f"Echo: {question}" # Placeholder
+                
+                # 3. Send Answer
+                await manager.send_personal_message(json.dumps({"type": "message", "content": answer}), websocket)
+                
+                # 4. Send "Idle" status
+                await manager.send_personal_message(json.dumps({"type": "status", "status": "idle"}), websocket)
+
+    except WebSocketDisconnect:
+        manager.disconnect(websocket, agent_id)
+
+
 # --- Agents ---
+ROLE_TYPES = {"personal", "business", "knowledge"}
+PERSONAL_ROLES = {
+    "Personal Assistant",
+    "Learning Companion",
+    "Creative Helper",
+    "Health Wellness Companion",
+}
+BUSINESS_INDUSTRIES = {
+    "Retail Commerce Assistant",
+    "Healthcare Assistant",
+    "Finance Banking Assistant",
+    "Real Estate Sales Assistant",
+    "Education Enrollment Assistant",
+    "Hospitality Concierge",
+    "Automotive Service Assistant",
+    "Professional Services Consultant",
+    "Tech Support Assistant",
+    "Public Services Assistant (Government)",
+    "Food Service Assistant",
+    "Manufacturing Support Assistant",
+    "Fitness Wellness Assistant",
+    "Legal Services Coordinator",
+    "Non-Profit Outreach Assistant",
+    "Entertainment Services Assistant",
+}
+MAX_URLS = 25
+MAX_CONVERSATION_STARTERS = 25
+MAX_MEDIA_URLS = 25
+
+
+def _model_to_dict(item):
+    if item is None:
+        return None
+    if hasattr(item, "model_dump"):
+        return item.model_dump()
+    return item.dict()
+
+
+def _normalize_role_and_industry(role_type: Optional[str], industry: Optional[str]) -> tuple:
+    if role_type is None:
+        return None, industry
+
+    role_raw = role_type.strip()
+    if not role_raw:
+        return None, industry
+
+    role_lower = role_raw.lower()
+
+    # Backward compatibility: allow old role names and map them to categories.
+    if role_raw in PERSONAL_ROLES:
+        return "personal", industry
+    if role_raw in BUSINESS_INDUSTRIES:
+        return "business", industry or role_raw
+
+    if role_lower not in ROLE_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"role_type must be one of {sorted(ROLE_TYPES)}",
+        )
+
+    if role_lower == "business":
+        if not industry or not industry.strip():
+            raise HTTPException(
+                status_code=400,
+                detail="industry is required when role_type is 'business'",
+            )
+        if industry not in BUSINESS_INDUSTRIES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"industry must be one of {sorted(BUSINESS_INDUSTRIES)}",
+            )
+    elif industry:
+        raise HTTPException(
+            status_code=400,
+            detail="industry is only valid when role_type is 'business'",
+        )
+
+    return role_lower, industry
+
+
+def _validate_list_limits(agent_payload):
+    if agent_payload.urls and len(agent_payload.urls) > MAX_URLS:
+        raise HTTPException(status_code=400, detail=f"urls limit exceeded ({MAX_URLS})")
+    if agent_payload.conversation_starters and len(agent_payload.conversation_starters) > MAX_CONVERSATION_STARTERS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"conversation_starters limit exceeded ({MAX_CONVERSATION_STARTERS})",
+        )
+    if agent_payload.image_urls and len(agent_payload.image_urls) > MAX_MEDIA_URLS:
+        raise HTTPException(status_code=400, detail=f"image_urls limit exceeded ({MAX_MEDIA_URLS})")
+    if agent_payload.video_urls and len(agent_payload.video_urls) > MAX_MEDIA_URLS:
+        raise HTTPException(status_code=400, detail=f"video_urls limit exceeded ({MAX_MEDIA_URLS})")
+
+
+def _ingest_documents_text(documents_text: Optional[List[AgentDocumentText]], agent_id: str):
+    if not documents_text:
+        return
+
+    blocks = []
+    for idx, doc in enumerate(documents_text, start=1):
+        filename = (doc.filename or f"document_{idx}.txt").strip()
+        text = (doc.text or "").strip()
+        if not text:
+            continue
+        blocks.append(f"[Document: {filename}]\n{text}")
+
+    if blocks:
+        process_documents(text_input="\n\n".join(blocks), agent_id=agent_id)
+
+
+def _ingest_scraped_data(scraped_data: Optional[List[ScrapedContent]], agent_id: str):
+    if not scraped_data:
+        return
+
+    blocks = []
+    for idx, row in enumerate(scraped_data, start=1):
+        source_url = (row.url or f"scraped_source_{idx}").strip()
+        text = (row.text or "").strip()
+        if not text:
+            continue
+        blocks.append(f"Source URL: {source_url}\n\n{text}")
+
+    if blocks:
+        process_documents(text_input="\n\n".join(blocks), agent_id=agent_id)
+
+
 def generate_agent_webhook_url(agent_name: str, agent_id: str) -> str:
     """Generate a unique webhook URL for an agent"""
     from datetime import datetime
@@ -510,6 +876,14 @@ def agent_to_response(agent: dict, base_url: str = None) -> AgentResponse:
         id=agent['id'],
         name=agent['name'],
         description=agent.get('description'),
+        system_prompt=agent.get('system_prompt'),
+        role_type=agent.get('role_type'),
+        industry=agent.get('industry'),
+        urls=agent.get('urls'),
+        conversation_starters=agent.get('conversation_starters'),
+        image_urls=agent.get('image_urls'),
+        video_urls=agent.get('video_urls'),
+        scraped_data=agent.get('scraped_data'),
         document_count=agent.get('document_count', 0),
         message_count=agent.get('message_count', 0),
         webhook_url=full_url
@@ -535,10 +909,32 @@ async def get_agent_detail(agent_id: str, request: Request):
 
 
 @app.post("/agents", response_model=AgentResponse)
-async def create_new_agent(agent_request: AgentCreate, request: Request):
+async def create_new_agent(agent_request: AgentCreate, request: Request, background_tasks: BackgroundTasks, api_key: ApiKey = Depends(get_api_key)):
     """Create a new agent (optionally from local files)"""
     try:
-        agent_id = create_agent(agent_request.name, agent_request.description)
+        _validate_list_limits(agent_request)
+        role_type, industry = _normalize_role_and_industry(
+            agent_request.role_type, agent_request.industry
+        )
+        if role_type is None and agent_request.industry:
+            raise HTTPException(
+                status_code=400,
+                detail="industry is only valid when role_type is 'business'",
+            )
+        scraped_data = [_model_to_dict(row) for row in agent_request.scraped_data] if agent_request.scraped_data else None
+
+        agent_id = create_agent(
+            name=agent_request.name, 
+            description=agent_request.description,
+            system_prompt=agent_request.system_prompt,
+            role_type=role_type,
+            industry=industry,
+            urls=agent_request.urls,
+            conversation_starters=agent_request.conversation_starters,
+            image_urls=agent_request.image_urls,
+            video_urls=agent_request.video_urls,
+            scraped_data=scraped_data,
+        )
         
         # Handle Local File Paths (for bulk creation/scripting)
         if agent_request.file_paths:
@@ -569,16 +965,81 @@ async def create_new_agent(agent_request: AgentCreate, request: Request):
                     except:
                         pass
 
+        # Handle direct extracted text payloads (document words/text)
+        if agent_request.documents_text:
+            _ingest_documents_text(agent_request.documents_text, agent_id)
+
+        # Handle pre-scraped web content payload
+        if agent_request.scraped_data:
+            _ingest_scraped_data(agent_request.scraped_data, agent_id)
+        
+        # Trigger URL Scraping in Background
+        if agent_request.urls:
+            background_tasks.add_task(process_urls, agent_request.urls, agent_id)
+
         agent = get_agent(agent_id)
         base_url = str(request.base_url).rstrip("/")
         return agent_to_response(agent, base_url)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
+@app.put("/agents/{agent_id}", response_model=AgentResponse)
+async def update_agent_endpoint(agent_id: str, agent_request: AgentUpdate, request: Request, api_key: ApiKey = Depends(get_api_key)):
+    """Update an existing agent"""
+    current = get_agent(agent_id)
+    if not current:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    _validate_list_limits(agent_request)
+    role_type, industry = _normalize_role_and_industry(agent_request.role_type, agent_request.industry)
+    scraped_data = [_model_to_dict(row) for row in agent_request.scraped_data] if agent_request.scraped_data else None
+
+    current_role, _ = _normalize_role_and_industry(current.get("role_type"), current.get("industry"))
+    target_role = role_type if agent_request.role_type is not None else current_role
+    target_industry = industry if agent_request.industry is not None else current.get("industry")
+    if agent_request.role_type is not None and target_role != "business":
+        target_industry = None
+
+    if target_role == "business":
+        if not target_industry:
+            raise HTTPException(
+                status_code=400,
+                detail="industry is required when role_type is 'business'",
+            )
+        if target_industry not in BUSINESS_INDUSTRIES:
+            raise HTTPException(
+                status_code=400,
+                detail=f"industry must be one of {sorted(BUSINESS_INDUSTRIES)}",
+            )
+    elif target_industry and agent_request.industry is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="industry is only valid when role_type is 'business'",
+        )
+
+    success = update_agent(
+        agent_id=agent_id,
+        name=agent_request.name,
+        description=agent_request.description,
+        system_prompt=agent_request.system_prompt,
+        role_type=role_type if agent_request.role_type is not None else None,
+        industry=target_industry if (agent_request.industry is not None or agent_request.role_type is not None) else None,
+        urls=agent_request.urls,
+        conversation_starters=agent_request.conversation_starters,
+        image_urls=agent_request.image_urls,
+        video_urls=agent_request.video_urls,
+        scraped_data=scraped_data,
+    )
+    if not success:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    agent = get_agent(agent_id)
+    base_url = str(request.base_url).rstrip("/")
+    return agent_to_response(agent, base_url)
 
 
 @app.delete("/agents/{agent_id}")
-async def delete_agent_endpoint(agent_id: str):
+async def delete_agent_endpoint(agent_id: str, api_key: ApiKey = Depends(get_api_key)):
     """Delete an agent"""
     success = delete_agent(agent_id)
     if not success:
@@ -601,7 +1062,8 @@ async def list_documents(agent_id: str):
 async def upload_documents(
     agent_id: str,
     files: List[UploadFile] = File(None),
-    text: Optional[str] = Form(None)
+    text: Optional[str] = Form(None),
+    api_key: ApiKey = Depends(get_api_key)
 ):
     """Upload documents to an agent"""
     agent = get_agent(agent_id)
@@ -624,7 +1086,7 @@ async def upload_documents(
 
 
 @app.delete("/documents/{document_id}")
-async def delete_document_endpoint(document_id: int):
+async def delete_document_endpoint(document_id: int, api_key: ApiKey = Depends(get_api_key)):
     """Delete a document"""
     success = delete_document(document_id)
     if not success:
@@ -756,6 +1218,190 @@ async def voice_chat(
         raise HTTPException(status_code=501, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# --- Channels (Phase 2) ---
+@app.get("/channels", response_model=List[ChannelResponse])
+async def list_channels(api_key: ApiKey = Depends(get_api_key)):
+    """List all configured channels"""
+    db = SessionLocal()
+    try:
+        channels = db.query(Channel).all()
+        return [
+            ChannelResponse(
+                id=c.id, name=c.name, type=c.type, provider=c.provider,
+                config=c.config, agent_id=c.agent_id,
+                created_at=c.created_at.isoformat() if c.created_at else None
+            )
+            for c in channels
+        ]
+    finally:
+        db.close()
+
+@app.post("/channels", response_model=ChannelResponse)
+async def create_channel(channel: ChannelCreate, api_key: ApiKey = Depends(get_api_key)):
+    """Create a new channel"""
+    db = SessionLocal()
+    try:
+        new_channel = Channel(
+            id=str(uuid.uuid4()),
+            name=channel.name,
+            type=channel.type,
+            provider=channel.provider,
+            config=channel.config,
+            agent_id=channel.agent_id
+        )
+        db.add(new_channel)
+        db.commit()
+        db.refresh(new_channel)
+        return ChannelResponse(
+            id=new_channel.id, name=new_channel.name, type=new_channel.type,
+            provider=new_channel.provider, config=new_channel.config,
+            agent_id=new_channel.agent_id,
+            created_at=new_channel.created_at.isoformat() if new_channel.created_at else None
+        )
+    finally:
+        db.close()
+
+@app.delete("/channels/{channel_id}")
+async def delete_channel(channel_id: str, api_key: ApiKey = Depends(get_api_key)):
+    """Delete a channel"""
+    db = SessionLocal()
+    try:
+        channel = db.query(Channel).filter(Channel.id == channel_id).first()
+        if not channel:
+            raise HTTPException(status_code=404, detail="Channel not found")
+        db.delete(channel)
+        db.commit()
+        return {"status": "deleted", "id": channel_id}
+    finally:
+        db.close()
+
+
+# --- Tools (Phase 2) ---
+@app.get("/agents/{agent_id}/tools", response_model=List[ToolResponse])
+async def list_agent_tools(agent_id: str, api_key: ApiKey = Depends(get_api_key)):
+    """List tools for a specific agent"""
+    db = SessionLocal()
+    try:
+        tools = db.query(Tool).filter(Tool.agent_id == agent_id).all()
+        return [
+            ToolResponse(
+                id=t.id, name=t.name, type=t.type, content=t.content,
+                agent_id=t.agent_id,
+                created_at=t.created_at.isoformat() if t.created_at else None
+            )
+            for t in tools
+        ]
+    finally:
+        db.close()
+
+@app.post("/agents/{agent_id}/tools", response_model=ToolResponse)
+async def create_tool(agent_id: str, tool: ToolCreate, api_key: ApiKey = Depends(get_api_key)):
+    """Create a new messaging tool for an agent"""
+    if tool.agent_id != agent_id:
+        raise HTTPException(status_code=400, detail="Agent ID mismatch")
+        
+    db = SessionLocal()
+    try:
+        # Check if agent exists
+        if not get_agent(agent_id):
+             raise HTTPException(status_code=404, detail="Agent not found")
+             
+        new_tool = Tool(
+            id=str(uuid.uuid4()),
+            name=tool.name,
+            type=tool.type,
+            content=tool.content,
+            agent_id=agent_id
+        )
+        db.add(new_tool)
+        db.commit()
+        db.refresh(new_tool)
+        return ToolResponse(
+            id=new_tool.id, name=new_tool.name, type=new_tool.type,
+            content=new_tool.content, agent_id=new_tool.agent_id,
+            created_at=new_tool.created_at.isoformat() if new_tool.created_at else None
+        )
+    finally:
+        db.close()
+
+@app.delete("/tools/{tool_id}")
+async def delete_tool(tool_id: str, api_key: ApiKey = Depends(get_api_key)):
+    """Delete a tool"""
+    db = SessionLocal()
+    try:
+        tool = db.query(Tool).filter(Tool.id == tool_id).first()
+        if not tool:
+            raise HTTPException(status_code=404, detail="Tool not found")
+        db.delete(tool)
+        db.commit()
+        return {"status": "deleted", "id": tool_id}
+    finally:
+        db.close()
+
+
+@app.post("/tools/{tool_id}/dispatch")
+async def dispatch_tool(tool_id: str, payload: ToolDispatchRequest, api_key: ApiKey = Depends(get_api_key)):
+    """
+    Dispatch a tool (flow/button) to a WhatsApp user.
+    Use dry_run=true to preview payload without sending.
+    """
+    db = SessionLocal()
+    try:
+        tool = db.query(Tool).filter(Tool.id == tool_id).first()
+        if not tool:
+            raise HTTPException(status_code=404, detail="Tool not found")
+
+        content = tool.content or {}
+        tool_type = (tool.type or "").strip().lower()
+
+        if tool_type == "flow":
+            flow_payload = {
+                "to_number": payload.to_number,
+                "flow_id": content.get("flow_id"),
+                "flow_token": content.get("flow_token"),
+                "header": content.get("header", "Flow"),
+                "body": content.get("body", "Please continue"),
+                "footer": content.get("footer", ""),
+                "cta": content.get("cta", "Open"),
+                "screen": content.get("screen", "START"),
+                "data": content.get("data", {}),
+            }
+            if payload.dry_run:
+                return {"status": "preview", "tool_type": "flow", "payload": flow_payload}
+
+            from core.whatsapp import WhatsAppHandler
+
+            wa = WhatsAppHandler()
+            result = wa.send_flow_message(**flow_payload)
+            return {"status": "sent", "tool_type": "flow", "result": result}
+
+        if tool_type == "button_reply":
+            button_payload = {
+                "to_number": payload.to_number,
+                "text": content.get("text", "Choose an option"),
+                "buttons": content.get("buttons", []),
+            }
+            if payload.dry_run:
+                return {"status": "preview", "tool_type": "button_reply", "payload": button_payload}
+
+            from core.whatsapp import WhatsAppHandler
+
+            wa = WhatsAppHandler()
+            result = wa.send_interactive_message(
+                to_number=button_payload["to_number"],
+                text=button_payload["text"],
+                buttons=button_payload["buttons"],
+            )
+            return {"status": "sent", "tool_type": "button_reply", "result": result}
+
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported tool type. Supported: flow, button_reply",
+        )
+    finally:
+        db.close()
 
 
 # --- WhatsApp ---

@@ -4,11 +4,10 @@ Advanced Retrieval Module
 - Reciprocal Rank Fusion (RRF)
 - Cross-Encoder Reranking
 """
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from sqlalchemy import text
 from ..database import get_session, ParentChunk
 from .vector_store import search_documents as vector_search_func
-from sentence_transformers import CrossEncoder
 import os
 
 # Lazy load reranker model to save startup time/memory if not used
@@ -19,6 +18,8 @@ def get_reranker():
     if _RERANKER_MODEL is None:
         model_name = os.getenv("RERANKER_MODEL_NAME", "cross-encoder/ms-marco-MiniLM-L-6-v2")
         print(f"🔹 Loading Reranker: {model_name}...")
+        # Lazy import prevents import-time dependency crashes when reranker is disabled.
+        from sentence_transformers import CrossEncoder
         _RERANKER_MODEL = CrossEncoder(model_name)
     return _RERANKER_MODEL
 
@@ -121,12 +122,12 @@ def rerank_documents(query: str, docs: List[Any], top_n: int = 4) -> List[Any]:
         return docs[:top_n]
 
 
-def hybrid_search(query: str, agent_id: str = None, top_k: int = 5) -> List[Any]:
+def hybrid_search(query: str, agent_id: str = None, top_k: int = 5, rerank: Optional[bool] = None) -> List[Any]:
     """
     Main entry point: Hybrid Search (Vector + Keyword) -> RRF -> Rerank
     """
     # Check if reranking is enabled
-    use_reranker = os.getenv("USE_RERANKER", "false").lower() == "true"
+    use_reranker = (os.getenv("USE_RERANKER", "false").lower() == "true") if rerank is None else rerank
     
     # 1. Parallel Retrieval
     print(f"🔍 Hybrid Search: '{query}'")

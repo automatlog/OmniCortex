@@ -40,6 +40,98 @@ class WhatsAppHandler:
                 print(f"Response: {e.response.text}")
             return {"error": str(e)}
 
+    def send_interactive_message(self, to_number: str, text: str, buttons: list) -> Dict[str, Any]:
+        """
+        Send an interactive message with buttons
+        buttons: List of {"id": "1", "title": "Buy"}
+        """
+        url = f"{self.base_url}/{self.phone_id}/messages"
+        
+        button_actions = []
+        for btn in buttons:
+            button_actions.append({
+                "type": "reply",
+                "reply": {
+                    "id": btn.get("id"),
+                    "title": btn.get("title")
+                }
+            })
+            
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": to_number,
+            "type": "interactive",
+            "interactive": {
+                "type": "button",
+                "body": {
+                    "text": text
+                },
+                "action": {
+                    "buttons": button_actions
+                }
+            }
+        }
+        
+        try:
+            response = requests.post(url, headers=self.headers, json=payload, timeout=10)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            print(f"❌ WhatsApp Interactive Send Failed: {e}")
+            return {"error": str(e)}
+
+    def send_flow_message(self, to_number: str, flow_id: str, flow_token: str, 
+                         header: str, body: str, footer: str, cta: str,
+                         screen: str, data: dict = {}) -> Dict[str, Any]:
+        """
+        Send a WhatsApp Flow message
+        """
+        url = f"{self.base_url}/{self.phone_id}/messages"
+        
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": to_number,
+            "type": "interactive",
+            "interactive": {
+                "type": "flow",
+                "header": {
+                    "type": "text",
+                    "text": header
+                },
+                "body": {
+                    "text": body
+                },
+                "footer": {
+                    "text": footer
+                },
+                "action": {
+                    "name": "flow",
+                    "parameters": {
+                        "mode": "draft", # Change to "published" in prod
+                        "flow_message_version": "3",
+                        "flow_token": flow_token,
+                        "flow_id": flow_id,
+                        "flow_cta": cta,
+                        "flow_action": "navigate",
+                        "flow_action_payload": {
+                            "screen": screen,
+                            "data": data
+                        }
+                    }
+                }
+            }
+        }
+        
+        try:
+            response = requests.post(url, headers=self.headers, json=payload, timeout=10)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            print(f"❌ WhatsApp Flow Send Failed: {e}")
+            return {"error": str(e)}
+
     @staticmethod
     def extract_message_from_webhook(payload: Dict[str, Any]) -> Optional[Dict[str, str]]:
         """
@@ -75,6 +167,23 @@ class WhatsAppHandler:
                     "id": audio_meta.get("id"),
                     "mime_type": audio_meta.get("mime_type")
                 }
+                return result
+            
+            elif msg_type == "interactive":
+                interactive = msg.get("interactive", {})
+                itype = interactive.get("type")
+                
+                if itype == "button_reply":
+                    result["text"] = interactive.get("button_reply", {}).get("title") # Treat title as text query
+                    result["payload"] = interactive.get("button_reply", {}).get("id")
+                    result["interaction_type"] = "button_reply"
+                
+                elif itype == "nfm_reply": # Flow response
+                    result["response_json"] = interactive.get("nfm_reply", {}).get("response_json")
+                    result["interaction_type"] = "flow_response"
+                    # We might want to construct a text representation or just set a special flag
+                    result["text"] = "[FLOW_RESPONSE]" 
+                
                 return result
 
             return None

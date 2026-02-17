@@ -51,9 +51,11 @@ secrets/
 # Local data (never commit)
 local_pg_data/
 .pytest_cache/
-nul
-logfile
 
-# Nested git repos
-personaplex/.git/
+# Only ignore logfile in root
+logfile
+# If you want to ignore log files, use:
+# *.log
+
+
 

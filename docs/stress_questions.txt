@@ -36,6 +36,7 @@ Bank Service Assistant
 9. Can you help me raise a complaint?
 10. How long will the issue take to resolve?
 11. Is my account secure?
+## SECURITY NOTE: Items referencing account details, transactions, balances, and card operations require strong authentication (e.g., MFA/session tokens), role-based authorization, encryption in transit and at rest, and audit logging. Sensitive flows should be annotated as 'requires_auth', 'requires_mfa', 'audit_required'.
 
 Business Analytics Reporter
 1. Hello, I want to see my business data.
@@ -44,13 +45,13 @@ Business Analytics Reporter
 4. Are my sales increasing or decreasing?
 5. Which product is performing best?
 6. Where am I losing money?
-7. Can you show monthly comparison?
+7. Can you show a monthly comparison?
 8. What are my key metrics?
 9. Can you generate a summary report?
 10. What actions should I take based on this data?
 
 RAG Document Manager
-1. Hello, who is this?
+1. How do I upload and index a new document?
 2. I want to manage documents for my AI.
 3. What is RAG in simple words?
 4. Can you help upload documents?

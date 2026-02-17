@@ -101,7 +101,11 @@ async def list_agents(client: httpx.AsyncClient, api_base: str) -> List[Dict]:
     if resp.status_code != 200:
         logger.error("Failed to list agents: %s %s", resp.status_code, _preview(resp.text, 300))
         return []
-    return resp.json()
+    try:
+        return resp.json()
+    except (ValueError, Exception) as e:
+        logger.error("Failed to decode agent list JSON: %s %s", resp.status_code, _preview(resp.text, 300))
+        return []
 
 
 async def delete_all_agents(client: httpx.AsyncClient, api_base: str, headers: Dict[str, str]) -> Tuple[int, int]:
@@ -115,7 +119,7 @@ async def delete_all_agents(client: httpx.AsyncClient, api_base: str, headers: D
         name = agent.get("name", "unknown")
         try:
             resp = await client.delete(f"{api_base}/agents/{agent_id}", headers=headers)
-            if resp.status_code == 200:
+            if resp.is_success:
                 ok += 1
                 print(f"  [OK] Deleted {name} ({agent_id})")
             else:
@@ -157,10 +161,21 @@ async def create_agents_from_docs(
         }
         try:
             resp = await client.post(f"{api_base}/agents", headers=headers, json=payload)
-            if resp.status_code == 200:
-                body = resp.json()
-                created.append({"id": body["id"], "name": body["name"], "source_file": filename})
-                print(f"  [OK] Created {body['name']} ({body['id']})")
+            if resp.is_success:
+                try:
+                    body = resp.json()
+                except (ValueError, Exception) as e:
+                    failed += 1
+                    print(f"  [ERR] Create failed {agent_name} -> JSON decode error: {e} {resp.status_code} {_preview(resp.text, 300)}")
+                    continue
+                id = body.get("id")
+                name = body.get("name")
+                if id is not None and name is not None:
+                    created.append({"id": id, "name": name, "source_file": filename})
+                    print(f"  [OK] Created {name} ({id})")
+                else:
+                    failed += 1
+                    print(f"  [ERR] Create failed {agent_name} -> missing id/name {resp.status_code} {body}")
             else:
                 failed += 1
                 print(f"  [ERR] Create failed {agent_name} -> {resp.status_code}")
@@ -205,7 +220,7 @@ async def run_all_questions(
                 dt = time.perf_counter() - t0
                 total += 1
                 latencies.append(dt)
-                if resp.status_code == 200:
+                if resp.is_success:
                     ok += 1
                     print(f"    [OK] Q{q_idx}/{len(questions)} ({dt:.2f}s)")
                 else:
@@ -265,7 +280,7 @@ async def text_worker(
 
             stats["requests"] += 1
             stats["latency"].append(dt)
-            if resp.status_code == 200:
+            if resp.is_success:
                 stats["text_ok"] += 1
             else:
                 stats["errors"] += 1
@@ -284,6 +299,9 @@ async def text_worker(
             stats["latency"].append(dt)
             logger.exception("TEXT_EX worker=%s latency=%.3fs err=%s", worker_id, dt, str(e))
 
+        # Small delay to avoid tight-loop resource exhaustion
+        await asyncio.sleep(0.05)
+
 
 async def continuous_mode(args, question_bank: List[str]):
     stats = {
@@ -294,17 +312,15 @@ async def continuous_mode(args, question_bank: List[str]):
         "start_time": time.time(),
     }
     timeout = httpx.Timeout(connect=10.0, read=120.0, write=60.0, pool=120.0)
-    limits = httpx.Limits(max_connections=500, max_keepalive_connections=200)
+    limits = httpx.Limits(max_connections=100, max_keepalive_connections=50)
     stop_event = asyncio.Event()
 
     try:
         loop = asyncio.get_running_loop()
-        for sig in (signal.SIGINT, signal.SIGTERM):
-            try:
+        if os.name != "nt":  # Signal handlers not supported on Windows
+            for sig in (signal.SIGINT, signal.SIGTERM):
                 loop.add_signal_handler(sig, stop_event.set)
-            except NotImplementedError:
-                pass
-    except RuntimeError:
+    except (RuntimeError, NotImplementedError):
         pass
 
     async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
@@ -451,7 +467,7 @@ async def main():
     parser.add_argument("--model-selection", default=os.getenv("STRESS_MODEL_SELECTION", "Meta Llama 3.1"))
     parser.add_argument("--questions-file", default=os.getenv("STRESS_QUESTIONS_FILE", ""))
     parser.add_argument("--mock-mode", action="store_true", default=os.getenv("STRESS_MOCK_MODE", "false").lower() == "true")
-    parser.add_argument("--delete-existing-first", action="store_true", default=True)
+    parser.add_argument("--delete-existing-first", action="store_true", default=False)
     parser.add_argument("--continuous", action="store_true", help="Use continuous mode instead of 3-step batch flow.")
     args = parser.parse_args()
 

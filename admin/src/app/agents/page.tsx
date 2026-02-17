@@ -195,10 +195,8 @@ export default function AgentsPage() {
         image_urls: splitList(imageUrlsText),
         video_urls: splitList(videoUrlsText),
       };
-        // Add personal_role if agentType is Personal and personalRole is set
-        if (agentType === "Personal" && personalRole) {
-          payload.personal_role = personalRole;
-        }
+        // Personal role detail is currently UI-only; API accepts role_type category.
+        // Keep role_type as "personal" and avoid sending unsupported payload keys.
       if (agentType === "Business") {
         payload.industry = businessIndustry;
       }

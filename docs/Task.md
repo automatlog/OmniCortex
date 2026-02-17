@@ -2371,12 +2371,8 @@ This reveals credibility quickly."
 - Lab reports and datasets
 
 **Legal Research:**
-- Case law databases (Westlaw, LexisNexis)
-- Statutes and codes
-- Regulations
-- Legislative history
-- Legal commentary
-- Court records
+
+This information is provided for informational purposes only and does not constitute legal advice—consult a qualified attorney for legal guidance.
 
 **Investigative Research:**
 - Public records requests (FOIA)

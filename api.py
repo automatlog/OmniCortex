@@ -5,6 +5,7 @@ REST API for chat, agents, and documents
 import time
 import uuid
 import json
+import hmac
 import asyncio
 import datetime
 from typing import Optional, List, Dict
@@ -525,7 +526,7 @@ async def create_api_key_endpoint(body: CreateKeyRequest, request: Request, db: 
     if not master_key:
         raise HTTPException(status_code=503, detail="MASTER_API_KEY not configured on server")
     provided = request.headers.get("X-Master-Key")
-    if provided != master_key:
+    if not hmac.compare_digest(str(provided or ""), str(master_key or "")):
         raise HTTPException(status_code=403, detail="Invalid master key")
     new_key = create_new_api_key(body.owner, db)
     return {"key": new_key, "owner": body.owner}
@@ -538,7 +539,7 @@ async def revoke_api_key_endpoint(key: str, request: Request, db: SQLASession = 
     if not master_key:
         raise HTTPException(status_code=503, detail="MASTER_API_KEY not configured on server")
     provided = request.headers.get("X-Master-Key")
-    if provided != master_key:
+    if not hmac.compare_digest(str(provided or ""), str(master_key or "")):
         raise HTTPException(status_code=403, detail="Invalid master key")
 
     rec = db.query(ApiKey).filter(ApiKey.key == key).first()
@@ -679,15 +680,41 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
     started = time.perf_counter()
     question_preview = (request.question or "")[:500].replace("\n", " ").strip()
 
+    # Privacy/Logging config
+    PRIVACY_PSEUDONYMIZE = os.getenv("LOG_PSEUDONYMIZE", "true").lower() == "true"
+    PRIVACY_REDACT = os.getenv("LOG_REDACT_QUESTION", "true").lower() == "true"
+
+    import hashlib, re
+    _PSEUDONYMIZE_SECRET = os.getenv("PSEUDONYMIZE_SECRET", "default_secret")
+
+    def pseudonymize_user_id(user_id):
+        if not PRIVACY_PSEUDONYMIZE or not user_id:
+            return user_id
+        # Stable HMAC hash, truncate for log
+        h = hmac.new(_PSEUDONYMIZE_SECRET.encode(), str(user_id).encode(), hashlib.sha256)
+        return h.hexdigest()[:12]
+
+    def redact_question_preview(q):
+        if not PRIVACY_REDACT or not q:
+            return q
+        # Redact emails, phone numbers, credit cards
+        q = re.sub(r"[\w\.-]+@[\w\.-]+", "[REDACTED_EMAIL]", q)
+        q = re.sub(r"\b\d{10,16}\b", "[REDACTED_NUMBER]", q)
+        q = re.sub(r"\b(?:\d{3}[-.\s]?){2}\d{4}\b", "[REDACTED_PHONE]", q)
+        # Optionally redact long free-text
+        if len(q) > 100:
+            return "[REDACTED_LONG_TEXT]"
+        return q
+
     query_logger.info(json.dumps({
         "event": "query_in",
         "request_id": request_id,
         "agent_id": request.agent_id,
         "session_id": request.session_id,
-        "user_id": request.user_id,
+        "user_id": pseudonymize_user_id(request.user_id),
         "model_selection": request.model_selection,
         "mock_mode": request.mock_mode,
-        "question_preview": question_preview,
+        "question_preview": redact_question_preview(question_preview),
     }, ensure_ascii=False))
 
     try:
@@ -722,7 +749,6 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
         
         # Mock Mode: Skip LLM for load testing (tests DB + vector store only)
         if request.mock_mode:
-            import time
             # Simulate minimal processing
             time.sleep(0.1)  # Simulate network latency
             response = QueryResponse(
@@ -1247,22 +1273,41 @@ async def transcribe_voice(audio: UploadFile = File(...)):
 
 
 @app.post("/voice/speak")
-async def speak_text(text: str = Form(...), voice: str = Form(None)):
+async def speak_text(
+    text: str = Form(...),
+    voice: str = Form(None),
+    allow_fallback: bool = Form(False)
+):
     """
-    Convert text to speech using Moshi/PersonaPlex
-    Returns: audio/wav file
+    Convert text to speech using Moshi/PersonaPlex.
+    If Moshi returns empty, returns 202 asking client to retry or allow fallback.
+    Set allow_fallback=true to auto-use LiquidVoice when Moshi fails.
     """
     try:
         from core.voice import speak
+        from core.voice.voice_engine import MoshiEmptyResponseError
         from starlette.responses import Response
         
-        audio_bytes = speak(text, voice=voice)
+        audio_bytes = speak(text, voice=voice, allow_fallback=allow_fallback)
         return Response(
             content=audio_bytes,
             media_type="audio/wav",
             headers={"Content-Disposition": "attachment; filename=speech.wav"}
         )
     
+    except MoshiEmptyResponseError:
+        return JSONResponse(
+            status_code=202,
+            content={
+                "status": "moshi_empty_response",
+                "message": "Moshi returned an empty response. You can retry or request fallback.",
+                "actions": {
+                    "retry": "POST /voice/speak with same parameters",
+                    "fallback": "POST /voice/speak with allow_fallback=true to use LiquidVoice",
+                },
+                "backend_tried": "moshi",
+            }
+        )
     except ImportError:
         raise HTTPException(
             status_code=501,
@@ -1277,13 +1322,17 @@ async def speak_text(text: str = Form(...), voice: str = Form(None)):
 @app.post("/voice/chat")
 async def voice_chat(
     audio: UploadFile = File(...),
-    agent_id: str = Form(None)
+    agent_id: str = Form(None),
+    allow_fallback: bool = Form(False)
 ):
     """
-    Voice-to-voice chat: Transcribe audio -> RAG -> TTS response
+    Voice-to-voice chat: Transcribe audio → RAG → TTS response.
+    If Moshi TTS returns empty, returns 202 asking client to retry or allow fallback.
+    Set allow_fallback=true to auto-use LiquidVoice when Moshi fails.
     """
     try:
         from core.voice import transcribe_audio, speak
+        from core.voice.voice_engine import MoshiEmptyResponseError
         import tempfile
         import os
         
@@ -1310,17 +1359,35 @@ async def voice_chat(
             conversation_history=history
         )
         
-        # 3. Convert to speech
-        audio_bytes = speak(answer)
+        # 3. Convert to speech (may raise MoshiEmptyResponseError)
+        audio_bytes = speak(answer, allow_fallback=allow_fallback)
         
         # Return both text and audio
         import base64
         return {
             "question": question,
             "answer": answer,
-            "audio_base64": base64.b64encode(audio_bytes).decode()
+            "audio_base64": base64.b64encode(audio_bytes).decode() if audio_bytes else None,
+            "backend": "moshi" if audio_bytes else "none",
         }
     
+    except MoshiEmptyResponseError:
+        # Moshi TTS failed — return the text answer + ask client to decide on TTS
+        return JSONResponse(
+            status_code=202,
+            content={
+                "status": "moshi_empty_response",
+                "question": question,
+                "answer": answer,
+                "message": "RAG answered successfully but Moshi TTS returned empty. Retry or request fallback.",
+                "actions": {
+                    "retry": "POST /voice/chat with same audio",
+                    "fallback": "POST /voice/chat with allow_fallback=true",
+                    "text_only": "Use the answer field above (TTS skipped)",
+                },
+                "backend_tried": "moshi",
+            }
+        )
     except ImportError as e:
         raise HTTPException(status_code=501, detail=str(e))
     except Exception as e:

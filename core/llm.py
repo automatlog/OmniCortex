@@ -158,7 +158,15 @@ def invoke_chain(question: str, context: str, conversation_history: str, agent_i
         
         # Provide helpful error messages
         if "Connection" in error_msg or "timeout" in error_msg.lower():
-            raise RuntimeError(f"Cannot connect to Ollama. Please ensure Ollama is running on port 11434 and the model '{DEFAULT_MODEL}' is loaded. Error: {error_msg}")
+                # Derive actual model and backend URL
+                resolved_model = DEFAULT_MODEL
+                resolved_backend = DEFAULT_BASE_URL
+                if model_key and model_key in MODEL_BACKENDS:
+                    resolved_model = MODEL_BACKENDS[model_key]["model"]
+                    resolved_backend = MODEL_BACKENDS[model_key]["base_url"]
+                raise RuntimeError(
+                    f"Cannot connect to LLM backend. Please ensure the backend is running at '{resolved_backend}' and the model '{resolved_model}' is loaded. Error: {error_msg}"
+                )
         elif "memory" in error_msg.lower():
             raise RuntimeError(f"Out of memory. Try freeing up RAM or using a smaller model. Error: {error_msg}")
         else:

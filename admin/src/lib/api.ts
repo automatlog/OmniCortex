@@ -120,9 +120,16 @@ const fetchWithTimeout = async (url: string, options: RequestInit = {}, timeout 
   }
 };
 
+/**
+ * Adds API key header to requests.
+ * Uses NEXT_PUBLIC_API_KEY so it works on both client and server side.
+ */
 function withApiKey(options: RequestInit = {}): RequestInit {
   const apiKey = process.env.NEXT_PUBLIC_API_KEY;
-  if (!apiKey) return options;
+  if (!apiKey) {
+    console.warn("[API] No NEXT_PUBLIC_API_KEY set — requests will be unauthenticated");
+    return options;
+  }
 
   const headers = new Headers(options.headers || {});
   headers.set("X-API-Key", apiKey);

@@ -4,7 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
 import { Send, Plus, Loader2, Settings } from "lucide-react";
-import { sendMessage, sendVoice, type ChatMessage } from "@/lib/api";
+import { sendMessage, sendVoice, type ApiError, type ChatMessage } from "@/lib/api";
 import { VoiceRecorder } from "./VoiceRecorder";
 import {
   Dialog,
@@ -85,10 +85,13 @@ export function ChatInterface({
 
       setMessages((prev) => [...prev, assistantMessage]);
     } catch (error) {
-      console.error("Failed to send message:", error);
-      
-      const errorMsg = error instanceof Error ? error.message : "Unknown error";
-      setError(errorMsg);
+      const apiError = error as Partial<ApiError>;
+      const errorMsg =
+        apiError?.message ||
+        (error instanceof Error ? error.message : String(error));
+      const errorDetails = apiError?.details;
+      console.error("Failed to send message:", errorMsg, errorDetails || "");
+      setError(errorDetails ? `${errorMsg} (${errorDetails})` : errorMsg);
       
       // Provide helpful error message based on error type
       let userFriendlyMsg = "Sorry, I encountered an error. ";
@@ -97,8 +100,8 @@ export function ChatInterface({
         userFriendlyMsg += "The request took too long. The model might be loading or busy. Please try again.";
       } else if (errorMsg.includes("Connection") || errorMsg.includes("Failed to fetch")) {
         userFriendlyMsg += "Cannot connect to the server. Please check if the API is running.";
-      } else if (errorMsg.includes("500")) {
-        userFriendlyMsg += "Server error. The model might be out of memory. Try a shorter question.";
+      } else if (errorMsg.includes("Server error") || apiError?.type === "server") {
+        userFriendlyMsg += errorDetails || errorMsg;
       } else {
         userFriendlyMsg += "Please try again.";
       }

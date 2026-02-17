@@ -4,7 +4,11 @@ REST API for chat, agents, and documents
 """
 import time
 import uuid
+import json
+import asyncio
+import datetime
 from typing import Optional, List, Dict
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -23,6 +27,13 @@ wa_handler = logging.FileHandler(log_dir / "whatsapp.log")
 wa_handler.setFormatter(logging.Formatter("%(asctime)s | %(message)s"))
 wa_logger.addHandler(wa_handler)
 
+# Setup Query Trace Logger (query + response + latency)
+query_logger = logging.getLogger("query_trace")
+query_logger.setLevel(logging.INFO)
+query_handler = logging.FileHandler(log_dir / "query_trace.log")
+query_handler.setFormatter(logging.Formatter("%(asctime)s | %(message)s"))
+query_logger.addHandler(query_handler)
+
 # Import core modules
 from core import (
     get_all_agents,
@@ -36,7 +47,8 @@ from core import (
     process_question,
     process_documents,
 )
-from core.database import Channel, Tool, Session, SessionLocal, ApiKey # Phase 2 & 3 & 4 support
+from core.database import Channel, Tool, Session as DBSession, SessionLocal, ApiKey # Phase 2 & 3 & 4 support
+from sqlalchemy.orm import Session as SQLASession
 from core.graph import create_rag_agent
 from core.processing.scraper import process_urls
 
@@ -60,15 +72,9 @@ from core.database import init_db
 # Initialize Database
 init_db()
 
-app = FastAPI(
-    title="OmniCortex API",
-    description="Modern RAG Chatbot API with LangGraph, Prometheus metrics",
-    version="1.0.0"
-)
-
 
 # ============== STARTUP VALIDATION ==============
-@app.on_event("startup")
+# Using modern lifespan context manager (replaces deprecated @app.on_event)
 async def validate_dependencies():
     """
     Validate all required dependencies on startup
@@ -174,14 +180,28 @@ async def validate_dependencies():
     
     print("="*60 + "\n")
 
-# CORS Configuration - Enhanced with explicit origins
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Modern lifespan handler (replaces deprecated on_event)"""
+    await validate_dependencies()
+    yield
+
+
+app = FastAPI(
+    title="OmniCortex API",
+    description="Modern RAG Chatbot API with LangGraph, Prometheus metrics",
+    version="1.0.0",
+    lifespan=lifespan
+)
+
+# CORS Configuration - reads from CORS_ORIGINS env var for production flexibility
+_default_origins = "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001"
+_cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", _default_origins).split(",") if o.strip()]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:3001",  # Alternative port
-    ],
+    allow_origins=_cors_origins,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
@@ -190,7 +210,6 @@ app.add_middleware(
 )
 
 # Track startup time for uptime calculation
-import datetime
 STARTUP_TIME = datetime.datetime.now()
 
 # Health check cache
@@ -237,6 +256,16 @@ class AgentCreate(BaseModel):
     documents_text: Optional[List[AgentDocumentText]] = None
     scraped_data: Optional[List[ScrapedContent]] = None
     file_paths: Optional[List[str]] = None  # Backward-compatible local files path list
+
+
+class CreateKeyRequest(BaseModel):
+    owner: str
+
+
+class StatusResponse(BaseModel):
+    status: str
+    agent_id: Optional[str] = None
+    document_id: Optional[int] = None
 
 
 class AgentResponse(BaseModel):
@@ -396,7 +425,7 @@ async def health_check():
         "timestamp": datetime.datetime.now().isoformat(),
         "services": {
             "database": {"status": "down", "latency_ms": 0},
-            "ollama": {"status": "down", "latency_ms": 0, "model_loaded": False}
+            "llm": {"status": "down", "latency_ms": 0, "model_loaded": False}
         },
         "uptime_seconds": int((datetime.datetime.now() - STARTUP_TIME).total_seconds())
     }
@@ -486,31 +515,31 @@ async def options_handler(full_path: str):
 @app.get("/metrics")
 async def metrics():
     """Expose Prometheus metrics"""
-    from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
-    from starlette.responses import Response
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
 @app.post("/auth/keys")
-async def create_api_key_endpoint(owner: str, request: Request, db: Session = Depends(get_db)):
-    """Generate a new API key. If MASTER_API_KEY is configured, require X-Master-Key."""
+async def create_api_key_endpoint(body: CreateKeyRequest, request: Request, db: SQLASession = Depends(get_db)):
+    """Generate a new API key. Requires X-Master-Key header."""
     master_key = os.getenv("MASTER_API_KEY")
-    if master_key:
-        provided = request.headers.get("X-Master-Key")
-        if provided != master_key:
-            raise HTTPException(status_code=403, detail="Invalid master key")
-    new_key = create_new_api_key(owner, db)
-    return {"key": new_key, "owner": owner}
+    if not master_key:
+        raise HTTPException(status_code=503, detail="MASTER_API_KEY not configured on server")
+    provided = request.headers.get("X-Master-Key")
+    if provided != master_key:
+        raise HTTPException(status_code=403, detail="Invalid master key")
+    new_key = create_new_api_key(body.owner, db)
+    return {"key": new_key, "owner": body.owner}
 
 
 @app.post("/auth/keys/{key}/revoke")
-async def revoke_api_key_endpoint(key: str, request: Request, db: Session = Depends(get_db)):
-    """Revoke an API key. If MASTER_API_KEY is configured, require X-Master-Key."""
+async def revoke_api_key_endpoint(key: str, request: Request, db: SQLASession = Depends(get_db)):
+    """Revoke an API key. Requires X-Master-Key header."""
     master_key = os.getenv("MASTER_API_KEY")
-    if master_key:
-        provided = request.headers.get("X-Master-Key")
-        if provided != master_key:
-            raise HTTPException(status_code=403, detail="Invalid master key")
+    if not master_key:
+        raise HTTPException(status_code=503, detail="MASTER_API_KEY not configured on server")
+    provided = request.headers.get("X-Master-Key")
+    if provided != master_key:
+        raise HTTPException(status_code=403, detail="Invalid master key")
 
     rec = db.query(ApiKey).filter(ApiKey.key == key).first()
     if not rec:
@@ -646,6 +675,21 @@ async def agent_stats():
 @app.post("/query", response_model=QueryResponse)
 async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
     """Chat with an agent using RAG"""
+    request_id = str(uuid.uuid4())
+    started = time.perf_counter()
+    question_preview = (request.question or "")[:500].replace("\n", " ").strip()
+
+    query_logger.info(json.dumps({
+        "event": "query_in",
+        "request_id": request_id,
+        "agent_id": request.agent_id,
+        "session_id": request.session_id,
+        "user_id": request.user_id,
+        "model_selection": request.model_selection,
+        "mock_mode": request.mock_mode,
+        "question_preview": question_preview,
+    }, ensure_ascii=False))
+
     try:
         # Track metrics
         CHAT_REQUESTS.labels(agent_id=request.agent_id or "default").inc()
@@ -656,10 +700,9 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
         try:
             if not session_id:
                 # Create new session
-                import uuid
                 session_id = str(uuid.uuid4())
                 if request.agent_id:
-                    new_sess = Session(
+                    new_sess = DBSession(
                         id=session_id,
                         agent_id=request.agent_id,
                         user_id=request.user_id or "anonymous",
@@ -682,11 +725,21 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
             import time
             # Simulate minimal processing
             time.sleep(0.1)  # Simulate network latency
-            return QueryResponse(
+            response = QueryResponse(
                 answer="[MOCK] Load test response - LLM bypassed",
                 agent_id=request.agent_id,
                 session_id=session_id
             )
+            latency_ms = round((time.perf_counter() - started) * 1000, 2)
+            query_logger.info(json.dumps({
+                "event": "query_out",
+                "request_id": request_id,
+                "status": 200,
+                "latency_ms": latency_ms,
+                "answer_preview": response.answer[:500].replace("\n", " ").strip(),
+                "answer_chars": len(response.answer or ""),
+            }, ensure_ascii=False))
+            return response
         
         # Get conversation history
         history = []
@@ -705,11 +758,37 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
             model_selection=request.model_selection
         )
         
-        return QueryResponse(answer=answer, agent_id=request.agent_id, session_id=session_id)
+        response = QueryResponse(answer=answer, agent_id=request.agent_id, session_id=session_id)
+        latency_ms = round((time.perf_counter() - started) * 1000, 2)
+        query_logger.info(json.dumps({
+            "event": "query_out",
+            "request_id": request_id,
+            "status": 200,
+            "latency_ms": latency_ms,
+            "answer_preview": (answer or "")[:500].replace("\n", " ").strip(),
+            "answer_chars": len(answer or ""),
+        }, ensure_ascii=False))
+        return response
     
     except FileNotFoundError:
+        latency_ms = round((time.perf_counter() - started) * 1000, 2)
+        query_logger.error(json.dumps({
+            "event": "query_error",
+            "request_id": request_id,
+            "status": 400,
+            "latency_ms": latency_ms,
+            "error": "Upload documents first",
+        }, ensure_ascii=False))
         raise HTTPException(status_code=400, detail="Upload documents first")
     except Exception as e:
+        latency_ms = round((time.perf_counter() - started) * 1000, 2)
+        query_logger.error(json.dumps({
+            "event": "query_error",
+            "request_id": request_id,
+            "status": 500,
+            "latency_ms": latency_ms,
+            "error": str(e),
+        }, ensure_ascii=False))
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -722,7 +801,6 @@ async def websocket_endpoint(websocket: WebSocket, agent_id: str):
     Supports JSON protocol: {"content": "message"}
     """
     await manager.connect(websocket, agent_id)
-    import json
     try:
         while True:
             data = await websocket.receive_text()
@@ -736,12 +814,19 @@ async def websocket_endpoint(websocket: WebSocket, agent_id: str):
                 # 1. Send "Thinking" status
                 await manager.send_personal_message(json.dumps({"type": "status", "status": "thinking"}), websocket)
                 
-                # 2. Process (Simulated)
-                # In real scenario: answer = await process_question_async(...)
-                import asyncio
-                await asyncio.sleep(1) # Simulate thinking
-                
-                answer = f"Echo: {question}" # Placeholder
+                # 2. Process with actual RAG pipeline (run in thread to avoid blocking)
+                try:
+                    history = get_conversation_history(agent_id=agent_id, limit=10)
+                    answer = await asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: process_question(
+                            question=question,
+                            agent_id=agent_id,
+                            conversation_history=history,
+                        )
+                    )
+                except Exception as e:
+                    answer = f"Error: {str(e)}"
                 
                 # 3. Send Answer
                 await manager.send_personal_message(json.dumps({"type": "message", "content": answer}), websocket)
@@ -804,7 +889,7 @@ def _normalize_role_and_industry(role_type: Optional[str], industry: Optional[st
 
     # Backward compatibility: allow old role names and map them to categories.
     if role_raw in PERSONAL_ROLES:
-        return "personal", industry
+        return "personal", industry or role_raw  # Preserve subtype in industry
     if role_raw in BUSINESS_INDUSTRIES:
         return "business", industry or role_raw
 
@@ -920,7 +1005,7 @@ async def list_agents(request: Request):
     return [agent_to_response(a, base_url) for a in agents]
 
 
-@app.get("/agents/{agent_id}")
+@app.get("/agents/{agent_id}", response_model=AgentResponse)
 async def get_agent_detail(agent_id: str, request: Request):
     """Get agent details with webhook URL"""
     agent = get_agent(agent_id)
@@ -1060,7 +1145,7 @@ async def update_agent_endpoint(agent_id: str, agent_request: AgentUpdate, reque
     return agent_to_response(agent, base_url)
 
 
-@app.delete("/agents/{agent_id}")
+@app.delete("/agents/{agent_id}", response_model=StatusResponse)
 async def delete_agent_endpoint(agent_id: str, api_key: ApiKey = Depends(get_api_key)):
     """Delete an agent"""
     success = delete_agent(agent_id)
@@ -1107,7 +1192,7 @@ async def upload_documents(
     return {"status": "success", "warning": result.get("warning")}
 
 
-@app.delete("/documents/{document_id}")
+@app.delete("/documents/{document_id}", response_model=StatusResponse)
 async def delete_document_endpoint(document_id: int, api_key: ApiKey = Depends(get_api_key)):
     """Delete a document"""
     success = delete_document(document_id)

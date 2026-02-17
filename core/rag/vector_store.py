@@ -5,6 +5,7 @@ from typing import List
 from langchain_postgres import PGVector
 from .embeddings import get_embeddings
 from ..config import DATABASE_URL
+from ..database import engine as shared_engine
 
 
 def get_collection_name(agent_id: str = None) -> str:
@@ -76,11 +77,10 @@ def delete_vector_store(agent_id: str) -> bool:
 def get_vector_count(agent_id: str = None) -> int:
     """Get number of vectors in store"""
     try:
-        from sqlalchemy import text, create_engine
+        from sqlalchemy import text
         collection = get_collection_name(agent_id)
-        engine = create_engine(DATABASE_URL)
         
-        with engine.connect() as conn:
+        with shared_engine.connect() as conn:
             result = conn.execute(
                 text("""
                     SELECT COUNT(*) FROM langchain_pg_embedding e
@@ -90,5 +90,6 @@ def get_vector_count(agent_id: str = None) -> int:
                 {"c": collection}
             )
             return result.scalar() or 0
-    except:
+    except Exception as e:
+        print(f"⚠️ get_vector_count failed: {e}")
         return 0

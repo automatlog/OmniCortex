@@ -121,10 +121,12 @@ const fetchWithTimeout = async (url: string, options: RequestInit = {}, timeout 
 };
 
 function withApiKey(options: RequestInit = {}): RequestInit {
-  // API key handling is now server-side. Use a server-side proxy/API route that attaches X-API-Key from a secure env var.
-  // Remove usage of NEXT_PUBLIC_API_KEY and X-API-Key header here.
-  // Update callers to use the new route (see below).
-  return options;
+  const apiKey = process.env.NEXT_PUBLIC_API_KEY;
+  if (!apiKey) return options;
+
+  const headers = new Headers(options.headers || {});
+  headers.set("X-API-Key", apiKey);
+  return { ...options, headers };
 }
 
 // Check health with caching
@@ -203,9 +205,13 @@ function classifyError(error: unknown, response?: Response, operation?: string):
   
   // Server errors (5xx) - if we have a response
   if (response && response.status >= 500) {
+    const normalizedMessage =
+      errorMessage && errorMessage !== "[object Object]"
+        ? errorMessage
+        : "Server error occurred. Please try again later.";
     return createApiError(
       "server",
-      "Server error occurred. Please try again later.",
+      normalizedMessage,
       errorMessage,
       operation
     );
@@ -392,12 +398,16 @@ export async function createAgent(data: {
   scraped_data?: Array<{ url?: string; text: string }>;
 }): Promise<Agent> {
   try {
-    // Call server-side proxy/API route instead of direct external endpoint
-    const res = await fetchWithHealthCheck(`/api/proxy/agents`, { ...options });
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(data),
-    }), TIMEOUTS.AGENT_OPERATIONS, "createAgent");
+    const res = await fetchWithHealthCheck(
+      `${API_BASE}/agents`,
+      withApiKey({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(data),
+      }),
+      TIMEOUTS.AGENT_OPERATIONS,
+      "createAgent"
+    );
     
     if (!res.ok) {
       const error = await res.json().catch(() => ({ detail: "Failed to create agent" }));
@@ -413,7 +423,7 @@ export async function deleteAgent(id: string): Promise<void> {
   try {
     const res = await fetchWithHealthCheck(
       `${API_BASE}/agents/${id}`,
-      { method: "DELETE" },
+      withApiKey({ method: "DELETE" }),
       TIMEOUTS.AGENT_OPERATIONS,
       "deleteAgent"
     );
@@ -434,17 +444,22 @@ export async function sendMessage(
   verbosity: string = "medium"
 ): Promise<QueryResponse> {
   try {
-    const res = await fetchWithHealthCheck(`/api/proxy/query`, { ...options });
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        question,
-        agent_id: agentId,
-        model_selection: modelSelection,
-        max_history: maxHistory,
-        verbosity: verbosity,
+    const res = await fetchWithHealthCheck(
+      `${API_BASE}/query`,
+      withApiKey({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          question,
+          agent_id: agentId,
+          model_selection: modelSelection,
+          max_history: maxHistory,
+          verbosity: verbosity,
+        }),
       }),
-    }), TIMEOUTS.CHAT_QUERY, "sendMessage"); // 90s timeout for chat
+      TIMEOUTS.CHAT_QUERY,
+      "sendMessage"
+    ); // 90s timeout for chat
     
     if (!res.ok) {
       const error = await res.json().catch(() => ({ detail: "Failed to send message" }));
@@ -480,10 +495,15 @@ export async function uploadDocuments(
       formData.append("files", file);
     });
 
-    const res = await fetchWithHealthCheck(`/api/proxy/agents/${agentId}/documents`, { ...options });
-      method: "POST",
-      body: formData,
-    }), TIMEOUTS.DOCUMENT_UPLOAD, "uploadDocuments"); // 30 second timeout
+    const res = await fetchWithHealthCheck(
+      `${API_BASE}/agents/${agentId}/documents`,
+      withApiKey({
+        method: "POST",
+        body: formData,
+      }),
+      TIMEOUTS.DOCUMENT_UPLOAD,
+      "uploadDocuments"
+    ); // 30 second timeout
     
     if (!res.ok) {
       const error = await res.text();
@@ -504,10 +524,15 @@ export async function uploadDocumentsAsText(
       const formData = new FormData();
       formData.append("text", doc.text);
       
-      const res = await fetchWithHealthCheck(`/api/proxy/agents/${agentId}/documents`, { ...options });
-        method: "POST",
-        body: formData,
-      }), TIMEOUTS.DOCUMENT_UPLOAD, "uploadDocumentsAsText"); // 30 second timeout
+      const res = await fetchWithHealthCheck(
+        `${API_BASE}/agents/${agentId}/documents`,
+        withApiKey({
+          method: "POST",
+          body: formData,
+        }),
+        TIMEOUTS.DOCUMENT_UPLOAD,
+        "uploadDocumentsAsText"
+      ); // 30 second timeout
       
       if (!res.ok) {
         const error = await res.text();
@@ -521,9 +546,14 @@ export async function uploadDocumentsAsText(
 
 export async function deleteDocument(docId: number): Promise<void> {
   try {
-    const res = await fetchWithHealthCheck(`/api/proxy/documents/${docId}`, { ...options });
-      method: "DELETE"
-    }), TIMEOUTS.AGENT_OPERATIONS, "deleteDocument");
+    const res = await fetchWithHealthCheck(
+      `${API_BASE}/documents/${docId}`,
+      withApiKey({
+        method: "DELETE",
+      }),
+      TIMEOUTS.AGENT_OPERATIONS,
+      "deleteDocument"
+    );
     if (!res.ok) {
       const error = await res.json().catch(() => ({ detail: "Failed to delete document" }));
       throw classifyError(new Error(error.detail || "Failed to delete document"), res, "deleteDocument");

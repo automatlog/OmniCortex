@@ -47,3 +47,13 @@ storage/
 *.pem
 *.key
 secrets/
+
+# Local data (never commit)
+local_pg_data/
+.pytest_cache/
+nul
+logfile
+
+# Nested git repos
+personaplex/.git/
+

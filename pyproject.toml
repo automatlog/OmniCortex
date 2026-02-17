@@ -33,6 +33,7 @@ dependencies = [
     "clickhouse-connect",
     "ragas",
     "datasets",
+    "pyarrow<21",
     "pandas",
     "numpy<2",
 ]

@@ -94,6 +94,10 @@ SERVICES = {
     }
 }
 
+# Ensure service log files exist up front.
+for _service in SERVICES.values():
+    (LOG_DIR / _service["log_file"]).touch(exist_ok=True)
+
 
 # ============== LOGGING SETUP ==============
 def setup_logger(name: str, log_file: str, level=logging.INFO) -> logging.Logger:

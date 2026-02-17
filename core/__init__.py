@@ -64,6 +64,7 @@ __all__ = [
     # Database
     'save_message', 'get_conversation_history', 'clear_history',
     'get_agent_documents', 'delete_document', 'save_document_metadata',
+    'log_usage', 'get_usage_stats',
     
     # Agents
     'create_agent', 'get_agent', 'get_all_agents', 

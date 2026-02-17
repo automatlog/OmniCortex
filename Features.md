@@ -1,5 +1,5 @@
 Features
-├── DashBoard
+├── Dashboard
 │   ├── Overview Metrics ( with filtering )
 |   ├── Live calls 
 |   ├── Total calls
@@ -73,7 +73,7 @@ Features
 |       ├── source (pdf, web, doc, txt)
 |       ├── status (draft, saved, active)
 |       ├── created date
-|       ├── ACtion buttons 
+|       ├── Action buttons
 |               ├── view 
 |               ├── delete
 |

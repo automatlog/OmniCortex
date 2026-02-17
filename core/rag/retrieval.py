@@ -133,7 +133,11 @@ def hybrid_search(query: str, agent_id: str = None, top_k: int = 5, rerank: Opti
     print(f"🔍 Hybrid Search: '{query}'")
     
     # Vector Search (Semantic) - getting slightly more candidates
-    vector_docs = vector_search_func(query, agent_id, k=top_k*2)
+    try:
+        vector_docs = vector_search_func(query, agent_id, k=top_k * 2)
+    except Exception as e:
+        print(f"[WARN] Vector search failed: {e}")
+        vector_docs = []
     
     # Keyword Search (Lexical)
     keyword_docs = keyword_search(query, agent_id, k=top_k*2)

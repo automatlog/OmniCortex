@@ -158,7 +158,7 @@ def invoke_chain(question: str, context: str, conversation_history: str, agent_i
         
         # Provide helpful error messages
         if "Connection" in error_msg or "timeout" in error_msg.lower():
-            raise RuntimeError(f"Cannot connect to Ollama. Please ensure Ollama is running on port 11434 and the model 'llama3.2:3b' is loaded. Error: {error_msg}")
+            raise RuntimeError(f"Cannot connect to Ollama. Please ensure Ollama is running on port 11434 and the model '{DEFAULT_MODEL}' is loaded. Error: {error_msg}")
         elif "memory" in error_msg.lower():
             raise RuntimeError(f"Out of memory. Try freeing up RAM or using a smaller model. Error: {error_msg}")
         else:

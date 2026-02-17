@@ -1,0 +1,64 @@
+AI Agent Configurator
+1. Hi, I want to create a new AI agent.
+2. What details do you need from me?
+3. What is an agent persona?
+4. Can you help me define the agent's role?
+5. What tasks can this agent handle?
+6. How do I write a system prompt?
+7. Can I change the agent later?
+8. How do I connect data or documents?
+9. Can this agent talk to users directly?
+10. How do I test if the agent works properly?
+11. Can I save and reuse this agent?
+12. Is this agent ready to deploy?
+
+Automotive and Mobility Agent
+1. Hello, I need help with a vehicle service.
+2. Can you explain my car issue?
+3. What could be the reason for this problem?
+4. Is it safe to drive right now?
+5. How much will the repair cost?
+6. How long will the service take?
+7. Can you help me book a service appointment?
+8. Do I need to replace any parts?
+9. Is this covered under warranty?
+10. Can you suggest regular maintenance tips?
+
+Bank Service Assistant
+1. Hi, I need help with my bank account.
+2. Can you check my account details?
+3. Why was this amount deducted?
+4. Can you explain this bank charge?
+5. How can I check my balance?
+6. What is my last transaction?
+7. How do I apply for a debit or credit card?
+8. My transaction failed, what should I do?
+9. Can you help me raise a complaint?
+10. How long will the issue take to resolve?
+11. Is my account secure?
+
+Business Analytics Reporter
+1. Hello, I want to see my business data.
+2. Can you explain this report in simple words?
+3. What do these numbers mean?
+4. Are my sales increasing or decreasing?
+5. Which product is performing best?
+6. Where am I losing money?
+7. Can you show monthly comparison?
+8. What are my key metrics?
+9. Can you generate a summary report?
+10. What actions should I take based on this data?
+
+RAG Document Manager
+1. Hello, who is this?
+2. I want to manage documents for my AI.
+3. What is RAG in simple words?
+4. Can you help upload documents?
+5. How does AI use these documents?
+6. Can I update or delete documents?
+7. How do I organize documents properly?
+8. Can you improve AI answers using docs?
+9. Is my data secure here?
+10. Can multiple agents use these documents?
+11. How do I test document responses?
+12. What is the next step?

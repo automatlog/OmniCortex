@@ -1,3 +1,4 @@
+import os
 import requests
 import json
 from typing import Dict, Any, Optional
@@ -109,7 +110,7 @@ class WhatsAppHandler:
                 "action": {
                     "name": "flow",
                     "parameters": {
-                        "mode": "draft", # Change to "published" in prod
+                        "mode": os.getenv("WHATSAPP_FLOW_MODE", "published"),
                         "flow_message_version": "3",
                         "flow_token": flow_token,
                         "flow_id": flow_id,

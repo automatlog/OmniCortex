@@ -68,7 +68,7 @@ echo "✅ Main Environment Ready!"
 deactivate
 
 # ==========================================
-# 2. Moshi Environment (PersonaPlex)
+# 2. Moshi Voice Server (.moshi-venv — separate to avoid conflicts)
 # ==========================================
 echo "--------------------------------------------------"
 echo "Setting up Moshi Environment (.moshi-venv)..."
@@ -102,14 +102,6 @@ else
         fi
     fi
 
-    # Clone PersonaPlex (if not present)
-    if [ ! -d "personaplex" ]; then
-        echo "📥 Cloning PersonaPlex..."
-        git clone https://github.com/NVIDIA/personaplex.git || echo "Clone failed or repo already exists"
-    else
-        echo "✅ PersonaPlex directory already exists"
-    fi
-
     # Export Hugging Face Token for Model Download
     if [ -f .env ]; then
         export $(grep -v '^#' .env | xargs)
@@ -121,11 +113,15 @@ else
         fi
     fi
 
-    # Install Moshi
-    echo "🗣️ Installing Moshi..."
-    uv pip install moshi
+    # Install Moshi from local package
+    if [ -d "moshi" ]; then
+        echo "🗣️ Installing Moshi from local moshi/ directory..."
+        uv pip install moshi/.
+        echo "✅ Moshi installed into .moshi-venv"
+    else
+        echo "⚠️  moshi/ directory not found. Skipping Moshi install."
+    fi
 
-    echo "✅ Moshi Environment Ready!"
     deactivate
 fi
 

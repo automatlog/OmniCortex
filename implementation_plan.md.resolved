@@ -1,0 +1,113 @@
+# Moshi × vLLM: Can You Replace the Built-in LM?
+
+## How Moshi's LM Actually Works
+
+Moshi is **not** a standard text LLM with a TTS layer on top. It's a **multi-stream audio‑language model**:
+
+```mermaid
+graph TB
+    subgraph "Moshi's Architecture (Single Model)"
+        MIC[🎤 User Audio] --> MIMI_ENC[Mimi Encoder]
+        MIMI_ENC --> |"8 audio codebook tokens<br/>@ 12.5 Hz"| LM
+        
+        subgraph LM["Main Transformer (7B params)"]
+            direction TB
+            T[1 text stream] 
+            A1[8 user audio streams]
+            A2[8 agent audio streams]
+            note["All 17 streams processed<br/>simultaneously per frame"]
+        end
+        
+        LM --> DEP[Depformer]
+        DEP --> |"8 audio tokens"| MIMI_DEC[Mimi Decoder]  
+        LM --> |"1 text token"| TEXT[📝 Text Output]
+        MIMI_DEC --> SPK[🔊 Agent Audio]
+    end
+```
+
+**Key numbers from code** ([lm.py:54-55](file:///c:/Users/AMAN/Downloads/MetaCortex/OmniCortex/personaplex/moshi/moshi/models/lm.py#L54-L55)):
+- `AUDIO_TOKENS_PER_STREAM = 8` — 8 parallel audio codebook streams
+- `FRAME_RATE_HZ = 12.5` — runs at 12.5 frames/second (80ms per frame)
+- `n_q = 8` audio codebooks + `1` text stream = **17 total streams** processed together
+- The LM generates **both text AND audio tokens simultaneously** at each step
+
+## Why vLLM Can't Directly Replace It
+
+| Aspect | Moshi's LM | vLLM (Standard LLM) |
+|--------|-----------|---------------------|
+| **Input** | 17 parallel streams (1 text + 16 audio codebooks) | Text tokens only |
+| **Output** | Text token + 8 audio tokens per step | Text tokens only |
+| **Frame rate** | 12.5 Hz (real-time audio sync) | Variable (text generation speed) |
+| **Architecture** | Custom Transformer + Depformer | Standard Transformer (Llama, Mistral, etc.) |
+| **Audio codec** | Tightly coupled with Mimi codec | No audio concept |
+
+**Bottom line**: vLLM serves standard **text-in → text-out** models. Moshi's LM is a **multimodal audio+text model** with a completely different architecture. You can't swap one for the other — it's like trying to replace a video codec with a text editor.
+
+---
+
+## Three Approaches (Compared)
+
+### Approach 1: Text Prompt Injection ⭐ Easiest
+**Keep moshi as-is**, inject RAG context into the [text_prompt](file:///c:/Users/AMAN/Downloads/MetaCortex/OmniCortex/personaplex/moshi/moshi/models/lm.py#1107-1111) before connecting.
+
+| Pros | Cons |
+|------|------|
+| Zero code changes to moshi server | No mid-conversation RAG |
+| Works today with current architecture | Token limit on system prompt |
+| Real-time full-duplex voice maintained | Moshi's 7B LM quality (not GPT-4 level) |
+| Simple, reliable | Context is static for the session |
+
+**Effort**: ~1 day. **Risk**: None.
+
+---
+
+### Approach 2: Traditional STT → vLLM → TTS Pipeline
+**Don't use moshi at all**. Build a classic pipeline:
+
+```
+Audio → Whisper (STT) → vLLM + RAG → TTS → Audio
+```
+
+| Pros | Cons |
+|------|------|
+| Full RAG access at every turn | **NOT real-time/full-duplex** — turn-based only |
+| Use any LLM via vLLM (Llama 3.1, Nemotron, etc.) | 2-5 second latency per turn (STT + LLM + TTS) |
+| Full tool calling, function calling support | Need separate TTS service (Coqui, XTTS, etc.) |
+| Leverages your existing [api.py](file:///c:/Users/AMAN/Downloads/MetaCortex/OmniCortex/api.py) RAG pipeline | Completely different UX — no natural conversation |
+| vLLM optimizations (PagedAttention, batching) | More services to manage |
+
+**Effort**: ~1-2 weeks. **Risk**: Medium — latency may be unacceptable for voice.
+
+---
+
+### Approach 3: Hybrid — Moshi Audio Codec + vLLM Brain 🧪 Research-Level
+Keep Mimi (audio codec) but replace moshi's LM with vLLM for text reasoning, then feed text back through Mimi for audio generation.
+
+```
+Audio → Mimi Encode → Extract text → vLLM + RAG → Text → Mimi Decode → Audio
+```
+
+| Pros | Cons |
+|------|------|
+| Best of both worlds in theory | **Extremely complex** — requires deep moshi modifications |
+| Real-time audio + smart LLM | Mimi codec was trained jointly with moshi's LM — may produce garbage audio with a different LM |
+| RAG at every turn | Breaking the joint training assumption is a research problem |
+| | No existing implementation exists anywhere |
+| | 1-3 months of work, possibly more |
+
+**Effort**: 1-3 months, research-level. **Risk**: Very high — may not work well.
+
+---
+
+## Recommendation
+
+```mermaid
+graph TD
+    Q1{Need mid-conversation RAG?} -->|No| A1["✅ Approach 1: Text Prompt Injection<br/>(Do this NOW)"]
+    Q1 -->|Yes| Q2{Need real-time voice?}
+    Q2 -->|No, turn-based is OK| A2["✅ Approach 2: STT → vLLM → TTS Pipeline<br/>(1-2 weeks)"]
+    Q2 -->|Yes, real-time is must| A3["⚠️ Approach 3: Hybrid<br/>(Research project, risky)"]
+```
+
+> [!TIP]
+> **Practical advice**: Start with **Approach 1** (text prompt injection). It works today with minimal changes. If you find the 7B moshi LM too limited for your use case, then evaluate **Approach 2** (traditional pipeline via vLLM), which gives you full RAG but sacrifices the real-time conversational feel.

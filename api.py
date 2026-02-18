@@ -127,7 +127,7 @@ async def validate_dependencies():
         all_ok = False
     
     # Check LLM Backend (Ollama or vLLM)
-    expected_model = os.environ.get("VLLM_MODEL", "llama3.1:8b")
+    expected_model = os.environ.get("VLLM_MODEL", "meta-llama/Llama-3.1-8B-Instruct")
     vllm_base_url = os.environ.get("VLLM_BASE_URL", "http://localhost:11434/v1")
     is_ollama = ":11434" in vllm_base_url
     
@@ -455,7 +455,7 @@ async def health_check():
     try:
         import requests
         vllm_base_url = os.environ.get("VLLM_BASE_URL", "http://localhost:11434/v1")
-        expected_model = os.environ.get("VLLM_MODEL", "llama3.1:8b")
+        expected_model = os.environ.get("VLLM_MODEL", "meta-llama/Llama-3.1-8B-Instruct")
         is_ollama = ":11434" in vllm_base_url
         
         llm_start = time.time()
@@ -1236,6 +1236,115 @@ async def get_history(agent_id: str, limit: int = 20):
         raise HTTPException(status_code=404, detail="Agent not found")
     
     return get_conversation_history(agent_id=agent_id, limit=limit)
+
+
+# --- Voice WebSocket Proxy (Moshi) ---
+@app.websocket("/voice/ws")
+async def voice_ws_proxy(websocket: WebSocket):
+    """
+    WebSocket proxy to Moshi voice server.
+    Fetches agent context for RAG-enriched text_prompt, then relays binary frames.
+    
+    Query params (from client):
+      - agent_id: (optional) Agent whose system_prompt becomes Moshi's text_prompt
+      - text_prompt: (optional) Override/additional text prompt
+      - voice_prompt: (optional) Voice prompt filename (default: NATF0.pt)
+      - seed: (optional) Random seed
+    """
+    import aiohttp
+    from core.config import PERSONAPLEX_URL
+
+    await websocket.accept()
+
+    # --- Build the text_prompt from agent context ---
+    agent_id = websocket.query_params.get("agent_id")
+    client_text_prompt = websocket.query_params.get("text_prompt", "")
+    voice_prompt = websocket.query_params.get("voice_prompt", "NATF0.pt")
+    seed = websocket.query_params.get("seed", "-1")
+
+    text_prompt = client_text_prompt
+    if agent_id:
+        try:
+            agent = get_agent(agent_id)
+            if agent and agent.get("system_prompt"):
+                # Prepend agent's system prompt (RAG-enriched context)
+                agent_prompt = agent["system_prompt"]
+                if client_text_prompt:
+                    text_prompt = f"{agent_prompt}\n\n{client_text_prompt}"
+                else:
+                    text_prompt = agent_prompt
+                logging.info(f"🎤 Voice proxy: Using agent '{agent.get('name')}' system_prompt ({len(text_prompt)} chars)")
+        except Exception as e:
+            logging.warning(f"⚠️ Voice proxy: Could not load agent {agent_id}: {e}")
+
+    # --- Build target Moshi WebSocket URL ---
+    moshi_base = PERSONAPLEX_URL.rstrip("/")
+    # Ensure ws:// or wss:// protocol
+    if moshi_base.startswith("https"):
+        moshi_ws_base = moshi_base.replace("https", "wss", 1)
+    elif moshi_base.startswith("http"):
+        moshi_ws_base = moshi_base.replace("http", "ws", 1)
+    else:
+        moshi_ws_base = moshi_base
+
+    from urllib.parse import urlencode
+    query_params = urlencode({
+        "text_prompt": text_prompt,
+        "voice_prompt": voice_prompt,
+        "seed": seed,
+    })
+    moshi_url = f"{moshi_ws_base}/api/chat?{query_params}"
+    logging.info(f"🎤 Voice proxy: Connecting to Moshi at {moshi_ws_base}/api/chat")
+
+    # --- Relay WebSocket frames bidirectionally ---
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.ws_connect(moshi_url) as moshi_ws:
+                async def client_to_moshi():
+                    """Forward binary frames from admin client to moshi server."""
+                    try:
+                        while True:
+                            data = await websocket.receive_bytes()
+                            await moshi_ws.send_bytes(data)
+                    except Exception:
+                        pass  # Client disconnected
+
+                async def moshi_to_client():
+                    """Forward binary frames from moshi server to admin client."""
+                    try:
+                        async for msg in moshi_ws:
+                            if msg.type == aiohttp.WSMsgType.BINARY:
+                                await websocket.send_bytes(msg.data)
+                            elif msg.type == aiohttp.WSMsgType.TEXT:
+                                await websocket.send_text(msg.data)
+                            elif msg.type in (aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                                break
+                    except Exception:
+                        pass  # Moshi disconnected
+
+                # Run both relay tasks concurrently; when either ends, cancel the other
+                tasks = [
+                    asyncio.create_task(client_to_moshi()),
+                    asyncio.create_task(moshi_to_client()),
+                ]
+                done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                for task in pending:
+                    task.cancel()
+
+    except aiohttp.ClientError as e:
+        logging.error(f"❌ Voice proxy: Cannot connect to Moshi server: {e}")
+        try:
+            await websocket.close(code=1011, reason=f"Moshi server unavailable: {e}")
+        except Exception:
+            pass
+    except WebSocketDisconnect:
+        logging.info("🎤 Voice proxy: Client disconnected")
+    except Exception as e:
+        logging.error(f"❌ Voice proxy error: {e}")
+        try:
+            await websocket.close(code=1011, reason=str(e))
+        except Exception:
+            pass
 
 
 # --- Voice ---

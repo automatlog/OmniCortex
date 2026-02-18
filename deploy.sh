@@ -12,9 +12,36 @@ else
     echo "✅ Environments already exist."
 fi
 
-# 2. Service Management
-echo "🔄 Starting Service Manager..."
+# 2. vLLM install + runtime checks (commands from manual session)
+echo "🔍 Running runtime checks and vLLM install verification..."
 source .venv/bin/activate
+
+echo "Checking toolchain..."
+uv --version || true
+python --version
+nvidia-smi || true
+
+echo "Checking Python packages in .venv..."
+python -c "import torch; print(torch.__version__)" || true
+python -c "import vllm,sys; print(vllm.__version__)" || true
+
+if ! python -c "import vllm" >/dev/null 2>&1; then
+    echo "📦 vLLM missing in .venv; installing required packages..."
+    python -m pip install --upgrade pip
+    python -m pip install torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu121
+    python -m pip install vllm==0.6.3
+fi
+
+# Export HF token for model pulls if token exists in .env
+if [ -n "${HUGGING_FACE_HUB_TOKEN}" ] && [ -z "${HF_TOKEN}" ]; then
+    export HF_TOKEN="${HUGGING_FACE_HUB_TOKEN}"
+fi
+
+# Ensure vLLM model defaults to meta-llama gated repo
+export VLLM_MODEL="${VLLM_MODEL:-meta-llama/Llama-3.1-8B-Instruct}"
+
+# 3. Service Management
+echo "🔄 Starting Service Manager..."
 
 # Check if already running
 if pgrep -f "service_manager.py monitor" > /dev/null; then

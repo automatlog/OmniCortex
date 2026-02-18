@@ -28,10 +28,14 @@ export const VoiceQueue: FC = () => {
   const theme = useSystemTheme();
   const modelParams = useModelParams();
 
-  // The Moshi WebSocket URL — proxied through nginx on prod
+  // The Moshi WebSocket URL — proxied through api.py
   const moshiWsUrl =
     typeof window !== "undefined"
-      ? `${window.location.protocol === "https:" ? "wss:" : "ws:"}//${window.location.host}/voice/ws`
+      ? (() => {
+          const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+          const wsUrl = apiUrl.replace(/^http/, "ws");
+          return `${wsUrl}/voice/ws`;
+        })()
       : "";
 
   const getMicrophoneAccess = useCallback(async () => {

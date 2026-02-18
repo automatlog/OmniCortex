@@ -1,6 +1,6 @@
 llm:
   provider: "vllm"  # options: vllm, ollama
-  default_model: "meta-llama/Meta-Llama-3.1-8B-Instruct"
+  default_model: "meta-llama/Llama-3.1-8B-Instruct"
   temperature: 0.6
   max_tokens: 2048
   timeout: 30
@@ -11,7 +11,7 @@ vllm:
   
 ollama:
   base_url: "http://localhost:11434"
-  model: "llama3.1:8b"
+  model: "meta-llama/Llama-3.1-8B-Instruct"
 
 rag:
   embedding_model: "sentence-transformers/all-MiniLM-L6-v2"

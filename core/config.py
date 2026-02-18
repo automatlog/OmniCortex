@@ -19,8 +19,8 @@ if not DATABASE_URL:
 # Hybrid Model Configuration
 MODEL_BACKENDS = {
     "default": {
-        "base_url": os.getenv("VLLM_BASE_URL", "https://api.groq.com/openai/v1"),
-        "model": os.getenv("VLLM_MODEL", "llama3-70b-8192"),
+        "base_url": os.getenv("VLLM_BASE_URL", "http://localhost:8080/v1"),
+        "model": os.getenv("VLLM_MODEL", "meta-llama/Llama-3.1-8B-Instruct"),
         "api_key": os.getenv("VLLM_API_KEY", ""),
     },
     "Meta Llama 3.1": {
@@ -33,9 +33,9 @@ MODEL_BACKENDS = {
     }
 }
 
-# Voice Model (PersonaPlex for persona-based voice interactions)
+# Voice Model (Moshi/PersonaPlex — runs locally)
 PERSONAPLEX_MODEL = os.getenv("PERSONAPLEX_MODEL", "nvidia/personaplex-7b-v1")
-PERSONAPLEX_URL = os.getenv("PERSONAPLEX_URL", "https://jj8s2oaqa396jo-8998.proxy.runpod.net")
+PERSONAPLEX_URL = os.getenv("PERSONAPLEX_URL", "http://localhost:8998")
 
 # Defaults (from primary backend)
 VLLM_BASE_URL = MODEL_BACKENDS["default"]["base_url"]

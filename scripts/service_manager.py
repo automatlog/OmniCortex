@@ -33,7 +33,7 @@ LOG_DIR.mkdir(parents=True, exist_ok=True)
 PID_DIR.mkdir(parents=True, exist_ok=True)
 
 # Read model from environment (or .env file via dotenv loaded above)
-VLLM_MODEL = os.getenv("VLLM_MODEL", "nvidia/Llama-3.1-8B-Instruct-NVFP4")
+VLLM_MODEL = os.getenv("VLLM_MODEL", "meta-llama/Llama-3.1-8B-Instruct")
 
 # Service Configurations
 SERVICES = {

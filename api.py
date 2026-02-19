@@ -14,7 +14,7 @@ from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, Bac
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from prometheus_client import Counter, Histogram, generate_latest, CONTENT_TYPE_LATEST
-from starlette.responses import Response
+from starlette.responses import Response, JSONResponse
 import logging
 import os
 from pathlib import Path
@@ -78,24 +78,23 @@ init_db()
 # Using modern lifespan context manager (replaces deprecated @app.on_event)
 async def validate_dependencies():
     """
-    Validate all required dependencies on startup
-    Exit if critical dependencies are unavailable
+    Validate required dependencies on startup.
+    Exit if critical dependencies are unavailable.
     """
     import sys
     import requests
-    
-    print("\n" + "="*60)
+
+    print("\n" + "=" * 60)
     print("  OmniCortex Backend - Startup Validation")
-    print("="*60)
-    
+    print("=" * 60)
+
     all_ok = True
-    
+
     # Check Database
     print("\n[1/2] Checking PostgreSQL...")
     try:
         from core.database import SessionLocal
         from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
-        
         from sqlalchemy import text as sa_text
 
         def check_db():
@@ -105,82 +104,59 @@ async def validate_dependencies():
                 return True
             finally:
                 db.close()
-        
-        # Use ThreadPoolExecutor with 10-second timeout
+
         with ThreadPoolExecutor(max_workers=1) as executor:
             future = executor.submit(check_db)
             try:
                 future.result(timeout=10)
-                print("  ✅ PostgreSQL connected")
+                print("  PostgreSQL connected")
             except FutureTimeoutError:
-                print("  ❌ PostgreSQL connection timeout (10s)")
-                print("  💡 Start PostgreSQL: docker-compose up -d postgres")
+                print("  PostgreSQL connection timeout (10s)")
                 all_ok = False
             except Exception as e:
-                print(f"  ❌ PostgreSQL connection failed: {e}")
-                print("  💡 Start PostgreSQL: docker-compose up -d postgres")
+                print(f"  PostgreSQL connection failed: {e}")
                 all_ok = False
-                
     except Exception as e:
-        print(f"  ❌ PostgreSQL connection failed: {e}")
-        print("  💡 Start PostgreSQL: docker-compose up -d postgres")
+        print(f"  PostgreSQL connection failed: {e}")
         all_ok = False
-    
-    # Check LLM Backend (Ollama or vLLM)
-    expected_model = os.environ.get("VLLM_MODEL", "meta-llama/Llama-3.1-8B-Instruct")
-    vllm_base_url = os.environ.get("VLLM_BASE_URL", "http://localhost:11434/v1")
-    is_ollama = ":11434" in vllm_base_url
-    
-    if is_ollama:
-        print("\n[2/2] Checking Ollama...")
-        try:
-            response = requests.get("http://localhost:11434/api/tags", timeout=10)
-            if response.status_code == 200:
-                models = response.json().get("models", [])
-                if any(expected_model in m.get("name", "") for m in models):
-                    print(f"  ✅ Ollama running with {expected_model}")
-                else:
-                    print(f"  ⚠️  Ollama running but {expected_model} not found")
-                    print(f"  💡 Pull model: ollama pull {expected_model}")
-                    all_ok = False
-            else:
-                print(f"  ❌ Ollama returned status {response.status_code}")
-                all_ok = False
-        except Exception as e:
-            print(f"  ❌ Ollama connection failed: {e}")
-            print("  💡 Start Ollama: ollama serve")
-            all_ok = False
-    else:
-        print(f"\n[2/2] Checking vLLM at {vllm_base_url}...")
-        try:
-            # vLLM exposes OpenAI-compatible /models endpoint
-            health_url = vllm_base_url.rstrip('/').replace('/v1', '') + '/health'
-            response = requests.get(health_url, timeout=10)
-            if response.status_code == 200:
-                print(f"  ✅ vLLM running with {expected_model}")
-            else:
-                print(f"  ⚠️  vLLM returned status {response.status_code}")
-                print(f"  💡 vLLM may still be loading the model...")
-                all_ok = False
-        except Exception as e:
-            print(f"  ⚠️  vLLM connection failed: {e}")
-            print(f"  💡 vLLM may not be started yet (start via systemctl start omni-vllm)")
-            # Don't fail hard — vLLM takes time to load
-            print(f"  ℹ️  Continuing startup (vLLM will be checked via /health endpoint)")
-    
-    print("\n" + "="*60)
-    if all_ok:
-        print("  ✅ All dependencies validated")
-        print("  🚀 Backend ready on http://localhost:8000")
-        print("  📚 API docs: http://localhost:8000/docs")
-    else:
-        print("  ❌ Dependency validation failed")
-        print("  🛑 Backend will exit")
-        print("="*60 + "\n")
-        sys.exit(1)
-    
-    print("="*60 + "\n")
 
+    # Check LLM backend (vLLM/OpenAI-compatible endpoint)
+    expected_model = os.environ.get("VLLM_MODEL", "meta-llama/Llama-3.1-8B-Instruct")
+    vllm_base_url = os.environ.get("VLLM_BASE_URL", "http://localhost:8080/v1")
+
+    print(f"\n[2/2] Checking vLLM at {vllm_base_url}...")
+    try:
+        base = vllm_base_url.rstrip("/")
+        health_url = base.replace("/v1", "") + "/health"
+        models_url = f"{base}/models"
+
+        # Prefer /health for local vLLM and fall back to OpenAI-compatible /v1/models.
+        response = requests.get(health_url, timeout=10)
+        if response.status_code == 200:
+            print(f"  vLLM running with {expected_model}")
+        else:
+            response = requests.get(models_url, timeout=10)
+            if response.status_code == 200:
+                print(f"  vLLM/OpenAI endpoint reachable with model target {expected_model}")
+            else:
+                print(f"  vLLM returned status {response.status_code}")
+                all_ok = False
+    except Exception as e:
+        print(f"  vLLM connection failed: {e}")
+        all_ok = False
+
+    print("\n" + "=" * 60)
+    if all_ok:
+        print("  All dependencies validated")
+        print("  Backend ready on http://localhost:8000")
+        print("  API docs: http://localhost:8000/docs")
+    else:
+        print("  Dependency validation failed")
+        print("  Backend will exit")
+        print("=" * 60 + "\n")
+        sys.exit(1)
+
+    print("=" * 60 + "\n")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -351,12 +327,7 @@ async def cors_error_logging_middleware(request, call_next):
     
     # Log requests with Origin header
     if origin:
-        allowed_origins = [
-            "http://localhost:3000",
-            "http://127.0.0.1:3000",
-            "http://localhost:3001"
-        ]
-        if origin not in allowed_origins:
+        if origin not in _cors_origins:
             logging.warning(f"CORS Blocked: Origin '{origin}' not in allowlist for {request.url.path}")
     
     response = await call_next(request)
@@ -451,48 +422,38 @@ async def health_check():
         health_status["status"] = "unhealthy"
         health_status["services"]["database"]["error"] = str(e)
     
-    # Check LLM Backend (Ollama or vLLM)
+    # Check LLM backend (vLLM/OpenAI-compatible endpoint)
     try:
         import requests
-        vllm_base_url = os.environ.get("VLLM_BASE_URL", "http://localhost:11434/v1")
+        vllm_base_url = os.environ.get("VLLM_BASE_URL", "http://localhost:8080/v1")
         expected_model = os.environ.get("VLLM_MODEL", "meta-llama/Llama-3.1-8B-Instruct")
-        is_ollama = ":11434" in vllm_base_url
-        
+
         llm_start = time.time()
-        
-        if is_ollama:
-            response = requests.get("http://localhost:11434/api/tags", timeout=2)
-            llm_latency = int((time.time() - llm_start) * 1000)
-            if response.status_code == 200:
-                models = response.json().get("models", [])
-                model_loaded = any(expected_model in m.get("name", "") for m in models)
-                health_status["services"]["llm"] = {
-                    "status": "up",
-                    "backend": "ollama",
-                    "latency_ms": llm_latency,
-                    "model_loaded": model_loaded
-                }
-                if not model_loaded:
-                    health_status["status"] = "degraded"
-            else:
-                health_status["status"] = "degraded"
-        else:
-            health_url = vllm_base_url.rstrip('/').replace('/v1', '') + '/health'
-            response = requests.get(health_url, timeout=2)
-            llm_latency = int((time.time() - llm_start) * 1000)
-            health_status["services"]["llm"] = {
-                "status": "up" if response.status_code == 200 else "degraded",
-                "backend": "vllm",
-                "latency_ms": llm_latency,
-                "model": expected_model
-            }
-            if response.status_code != 200:
-                health_status["status"] = "degraded"
+        base = vllm_base_url.rstrip("/")
+        health_url = base.replace("/v1", "") + "/health"
+        models_url = f"{base}/models"
+
+        response = requests.get(health_url, timeout=2)
+        llm_latency = int((time.time() - llm_start) * 1000)
+        status = "up" if response.status_code == 200 else "degraded"
+
+        if response.status_code != 200:
+            response = requests.get(models_url, timeout=2)
+            status = "up" if response.status_code == 200 else "degraded"
+
+        health_status["services"]["llm"] = {
+            "status": status,
+            "backend": "vllm",
+            "latency_ms": llm_latency,
+            "model": expected_model
+        }
+        if status != "up":
+            health_status["status"] = "degraded"
     except Exception as e:
         logging.error(f"LLM health check failed: {e}")
         health_status["status"] = "unhealthy"
         health_status["services"]["llm"] = {"status": "down", "error": str(e)}
-    
+
     # Cache result
     _health_cache["result"] = health_status
     _health_cache["timestamp"] = current_time
@@ -723,12 +684,13 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
         
         # Session Tracking
         session_id = request.session_id
-        db = SessionLocal()
+        db = None
         try:
             if not session_id:
                 # Create new session
                 session_id = str(uuid.uuid4())
                 if request.agent_id:
+                    db = SessionLocal()
                     new_sess = DBSession(
                         id=session_id,
                         agent_id=request.agent_id,
@@ -744,7 +706,8 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
         except Exception as e:
             print(f"⚠️ Session tracking error: {e}")
         finally:
-            db.close()
+            if db is not None:
+                db.close()
             
         
         # Mock Mode: Skip LLM for load testing (tests DB + vector store only)
@@ -1443,6 +1406,8 @@ async def voice_chat(
     If Moshi TTS returns empty, returns 202 asking client to retry or allow fallback.
     Set allow_fallback=true to auto-use LiquidVoice when Moshi fails.
     """
+    question = None
+    answer = None
     try:
         from core.voice import transcribe_audio, speak
         from core.voice.voice_engine import MoshiEmptyResponseError
@@ -1460,6 +1425,9 @@ async def voice_chat(
             question = transcribe_audio(temp_path)
         finally:
             os.unlink(temp_path)
+
+        if not question:
+            raise HTTPException(status_code=400, detail="Could not transcribe audio")
         
         # 2. Get RAG response
         history = []
@@ -1490,8 +1458,8 @@ async def voice_chat(
             status_code=202,
             content={
                 "status": "moshi_empty_response",
-                "question": question,
-                "answer": answer,
+                "question": question or "[transcription unavailable]",
+                "answer": answer or "[answer unavailable]",
                 "message": "RAG answered successfully but Moshi TTS returned empty. Retry or request fallback.",
                 "actions": {
                     "retry": "POST /voice/chat with same audio",
@@ -1712,6 +1680,7 @@ async def verify_whatsapp_webhook(request: Request):
 async def whatsapp_webhook(request: Request):
     """Receive WhatsApp Messages"""
     data = await request.json()
+    loop = asyncio.get_running_loop()
     
     # Simple extraction
     handler = WhatsAppHandler()
@@ -1753,7 +1722,7 @@ async def whatsapp_webhook(request: Request):
             
             try:
                 print("⏳ Transcribing audio...")
-                text = transcribe_audio(temp_path)
+                text = await loop.run_in_executor(None, transcribe_audio, temp_path)
                 print(f"📝 Transcribed: {text}")
                 wa_logger.info(f"TRANSCRIBED | {text}")
             finally:
@@ -1792,11 +1761,14 @@ async def whatsapp_webhook(request: Request):
         # Get conversation history
         conversation_history = wa_history.get_history_for_llm(user_phone, limit=5)
         
-        answer = process_question(
-            question=text,
-            agent_id=agent_id,
-            conversation_history=conversation_history,
-            max_history=5
+        answer = await loop.run_in_executor(
+            None,
+            lambda: process_question(
+                question=text,
+                agent_id=agent_id,
+                conversation_history=conversation_history,
+                max_history=5
+            )
         )
         
         # Save both user message and assistant response

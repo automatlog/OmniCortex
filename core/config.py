@@ -23,9 +23,11 @@ MODEL_BACKENDS = {
         "model": os.getenv("VLLM_MODEL", "meta-llama/Llama-3.1-8B-Instruct"),
         "api_key": os.getenv("VLLM_API_KEY", ""),
     },
+    # Keep this alias for UI/backward compatibility, but bind it to the
+    # same primary vLLM backend to avoid LLAMA_* env drift.
     "Meta Llama 3.1": {
-        "base_url": os.getenv("LLAMA_BASE_URL", "http://localhost:8080/v1"),
-        "model": os.getenv("LLAMA_MODEL", "meta-llama/Meta-Llama-3.1-8B-Instruct"),
+        "base_url": os.getenv("VLLM_BASE_URL", "http://localhost:8080/v1"),
+        "model": os.getenv("VLLM_MODEL", "meta-llama/Llama-3.1-8B-Instruct"),
     },
     "Nemotron": {
         "base_url": os.getenv("NEMOTRON_BASE_URL", "http://localhost:8081/v1"),

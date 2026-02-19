@@ -5,10 +5,9 @@ Persistent conversation storage for WhatsApp users.
 import time
 from typing import Dict, List, Optional, Tuple
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from threading import Lock
 import os
-from dateutil import parser  # Ensure robust date parsing if needed, or stick to datetime
 
 
 from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey
@@ -55,7 +54,7 @@ class ConversationTurn:
     """Single conversation turn"""
     role: str
     content: str
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class WhatsAppHistoryManager:
@@ -83,20 +82,27 @@ class WhatsAppHistoryManager:
         """Get or create a session for a phone number"""
         session = SessionLocal()
         try:
+            now_utc = datetime.now(timezone.utc)
             wa_session = session.query(WhatsAppSession).filter_by(
                 phone_number=phone_number
             ).first()
             
             if wa_session:
                 # Check if session expired
-                if wa_session.last_active < datetime.utcnow() - self.session_timeout:
-                    # Clear old messages
-                    self._clear_messages(phone_number)
+                last_active = wa_session.last_active
+                if last_active is not None and last_active.tzinfo is None:
+                    last_active = last_active.replace(tzinfo=timezone.utc)
+
+                if last_active and last_active < now_utc - self.session_timeout:
                     with self._lock:
+                        # Keep DB + cache clear in one critical section for cache coherence.
+                        session.query(WhatsAppMessage).filter_by(
+                            phone_number=phone_number
+                        ).delete()
                         self._cache.pop(phone_number, None)
                 
                 # Update session
-                wa_session.last_active = datetime.utcnow()
+                wa_session.last_active = now_utc
                 if agent_id:
                     wa_session.agent_id = agent_id
                 session.commit()
@@ -202,8 +208,8 @@ class WhatsAppHistoryManager:
     
     def clear_history(self, phone_number: str):
         """Clear conversation history for a phone number"""
-        self._clear_messages(phone_number)
         with self._lock:
+            self._clear_messages(phone_number)
             self._cache.pop(phone_number, None)
     
     def get_agent_for_phone(self, phone_number: str) -> Optional[str]:

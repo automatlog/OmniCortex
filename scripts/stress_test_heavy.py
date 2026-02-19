@@ -236,15 +236,23 @@ async def run_all_questions(
     
     semaphore = asyncio.Semaphore(concurrency)
     tasks = []
-
+    
+    # 1. Create all job pairs (agent, question)
+    jobs = []
     for agent in agents:
-        agent_id = agent["id"]
         for question in questions:
-            tasks.append(
-                run_single_question_safely(
-                    semaphore, client, api_base, headers, agent_id, question, model_selection, mock_mode
-                )
+            jobs.append((agent["id"], question))
+            
+    # 2. Shuffle to ensure we hit random agents concurrently
+    random.shuffle(jobs)
+    
+    # 3. Create tasks
+    for agent_id, question in jobs:
+        tasks.append(
+            run_single_question_safely(
+                semaphore, client, api_base, headers, agent_id, question, model_selection, mock_mode
             )
+        )
             
     results = await asyncio.gather(*tasks)
 

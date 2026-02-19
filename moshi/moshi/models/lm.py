@@ -29,14 +29,14 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from functools import partial
 from os.path import splitext
 import logging
 import numpy as np
 import sys
-from typing import Optional, Union, List, Tuple, Callable, Iterator
+from typing import Optional, Union, List, Tuple
 import sphn
 import torch
 from tqdm.auto import tqdm
@@ -53,8 +53,11 @@ logger = logging.getLogger(__name__)
 
 AUDIO_TOKENS_PER_STREAM = 8
 FRAME_RATE_HZ = 12.5
+# Mimi codebook indices used for bootstrap/system prompts.
+# WARNING: These values depend on the Mimi checkpoint and should be re-derived
+# if the underlying checkpoint changes.
 SILENCE_TOKENS = np.array([948, 243, 1178, 546, 1736, 1030, 1978, 2008], dtype=np.int64)
-SINE_TOKENS    = np.array([430, 1268, 381, 1611, 1095, 1495, 56, 472], dtype=np.int64)
+SINE_TOKENS = np.array([430, 1268, 381, 1611, 1095, 1495, 56, 472], dtype=np.int64)
 
 
 @dataclass
@@ -150,7 +153,7 @@ def _iterate_audio(sample_pcm, sample_interval_size, max_len=sys.maxsize, pad=Tr
         yield sample[0:1]  # shape: (1, T)
 
 
-def encode_from_sphn(mimi, samples, max_batch=sys.maxsize):
+def encode_from_sphn(mimi, samples, max_batch: int = 1):
     """
     Takes an iterator of samples, batches them, encodes them;
     and yields the encoded samples one sample at a time in the same order.
@@ -158,8 +161,9 @@ def encode_from_sphn(mimi, samples, max_batch=sys.maxsize):
     device = next(mimi.parameters()).device
     current_batch = []
     done_flag = False
-    # TO-DO: Fix the batching bug
-    max_batch = 1
+    if max_batch != 1:
+        logger.warning("encode_from_sphn currently supports max_batch=1; forcing to 1")
+        max_batch = 1
 
     while True:
         try:
@@ -578,6 +582,12 @@ def create_loss_report(
     sampled_audio_tokens: torch.Tensor,
     target_position: int,
 ) -> dict[str, torch.Tensor]:
+    def _select_target_channel(target_tensor: torch.Tensor, index: int) -> torch.Tensor:
+        selected = target_tensor[:, index]
+        if selected.ndim > 1:
+            selected = selected.squeeze(dim=-1)
+        return selected.clone()
+
     report = {}
     B = state_cache.shape[0]
     # model_tokens is the sampled output from model_logits
@@ -594,49 +604,49 @@ def create_loss_report(
         }
     )
     report["model_tokens"] = model_tokens.clone()
-    report["forced_tokens"] = target.clone()
+    report["forced_tokens"] = target.squeeze(dim=-1).clone() if target.ndim > 2 else target.clone()
 
     # Text Channel
     text_logits = text_logits.squeeze(dim=1).squeeze(dim=1)
-    target = target[:, 0].squeeze(1).clone()
+    text_target = _select_target_channel(target, 0)
 
     text_probs = torch.softmax(text_logits, dim=-1)
     text_ranks = torch.argsort(text_probs, dim=-1, descending=True)
     for b in range(B):
-        forced_token = target[b].item()
+        forced_token = text_target[b].item()
         try:
             rank = (text_ranks[b] == forced_token).nonzero().item()
         except RuntimeError:
             rank = lm_model.zero_token_id
         report["ranks_of_forced"][b, 0] = rank
 
-    target[target == lm_model.text_initial_token_id] = -100
+    text_target[text_target == lm_model.text_initial_token_id] = -100
     text_loss = torch.nn.functional.cross_entropy(
         text_logits,
-        target,
+        text_target,
         ignore_index=-100,
         )
     report["losses"][:, 0] = text_loss
 
     # Audio Channels
     for k in range(lm_model.dep_q):
-        target = target[:, k+1].squeeze(1).clone()
+        audio_target = _select_target_channel(target, k + 1)
         channel_logits = audio_logits[:, k, :]
 
         audio_probs = torch.softmax(channel_logits, dim=-1)
         audio_ranks = torch.argsort(audio_probs, dim=-1, descending=True)
         for b in range(B):
-            forced_token = target[b].item()
+            forced_token = audio_target[b].item()
             try:
                 rank = (audio_ranks[b] == forced_token).nonzero().item()
             except RuntimeError:
                 rank = lm_model.zero_token_id
             report["ranks_of_forced"][b, k + 1] = rank
 
-        target[target == lm_model.initial_token_id] = -100
+        audio_target[audio_target == lm_model.initial_token_id] = -100
         audio_loss = torch.nn.functional.cross_entropy(
             channel_logits,
-            target,
+            audio_target,
             ignore_index=-100,
         )
         report["losses"][:, k + 1] = audio_loss

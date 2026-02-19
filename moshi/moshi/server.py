@@ -133,6 +133,16 @@ class ServerState:
 
 
     async def handle_chat(self, request):
+        expected_token = os.environ.get("MOSHI_API_TOKEN", "")
+        if expected_token:
+            auth_token = request.query.get("token")
+            if not auth_token:
+                auth_header = request.headers.get("Authorization", "")
+                if auth_header.startswith("Bearer "):
+                    auth_token = auth_header[len("Bearer "):].strip()
+            if auth_token != expected_token:
+                return web.Response(status=401, text="Unauthorized")
+
         ws = web.WebSocketResponse()
         await ws.prepare(request)
         clog = ColorizedLog.randomize()
@@ -148,27 +158,24 @@ class ServerState:
         # Construct full voice prompt path
         requested_voice_prompt_path = None
         voice_prompt_path = None
+        voice_prompt_filename = request.query.get("voice_prompt", "").strip()
+        text_prompt = request.query.get("text_prompt", "")
         if self.voice_prompt_dir is not None:
-            voice_prompt_filename = request.query["voice_prompt"]
-            requested_voice_prompt_path = None
-            if voice_prompt_filename is not None:
+            if voice_prompt_filename:
                 requested_voice_prompt_path = os.path.join(self.voice_prompt_dir, voice_prompt_filename)
-            # If the voice prompt file does not exist, find a valid (s0) voiceprompt file in the directory
-            if requested_voice_prompt_path is None or not os.path.exists(requested_voice_prompt_path):
-                raise FileNotFoundError(
-                    f"Requested voice prompt '{voice_prompt_filename}' not found in '{self.voice_prompt_dir}'"
-                )
-            else:
+                # If the voice prompt file does not exist, fail fast.
+                if not os.path.exists(requested_voice_prompt_path):
+                    raise FileNotFoundError(
+                        f"Requested voice prompt '{voice_prompt_filename}' not found in '{self.voice_prompt_dir}'"
+                    )
                 voice_prompt_path = requested_voice_prompt_path
-                
-        if self.lm_gen.voice_prompt != voice_prompt_path:
-            if voice_prompt_path.endswith('.pt'):
-                # Load pre-saved voice prompt embeddings
-                self.lm_gen.load_voice_prompt_embeddings(voice_prompt_path)
-            else:
-                self.lm_gen.load_voice_prompt(voice_prompt_path)
-        self.lm_gen.text_prompt_tokens = self.text_tokenizer.encode(wrap_with_system_tags(request.query["text_prompt"])) if len(request.query["text_prompt"]) > 0 else None
-        seed = int(request["seed"]) if "seed" in request.query else None
+
+        seed = None
+        if "seed" in request.query:
+            try:
+                seed = int(request.query["seed"])
+            except ValueError as exc:
+                raise web.HTTPBadRequest(text="Invalid seed") from exc
 
         async def recv_loop():
             nonlocal close
@@ -240,6 +247,12 @@ class ServerState:
                             await ws.send_bytes(msg)
                         else:
                             text_token_map = ['EPAD', 'BOS', 'EOS', 'PAD']
+                            label = (
+                                text_token_map[text_token]
+                                if text_token < len(text_token_map)
+                                else f"UNK({text_token})"
+                            )
+                            await ws.send_bytes(b"\x03" + bytes(label, encoding="utf8"))
 
         async def send_loop():
             while True:
@@ -251,12 +264,29 @@ class ServerState:
                     await ws.send_bytes(b"\x01" + msg)
 
         clog.log("info", "accepted connection")
-        if len(request.query["text_prompt"]) > 0:
-            clog.log("info", f"text prompt: {request.query['text_prompt']}")
-        if len(request.query["voice_prompt"]) > 0:
+        if len(text_prompt) > 0:
+            clog.log("info", f"text prompt: {text_prompt}")
+        if len(voice_prompt_filename) > 0:
             clog.log("info", f"voice prompt: {voice_prompt_path} (requested: {requested_voice_prompt_path})")
         close = False
         async with self.lock:
+            if self.lm_gen.voice_prompt != voice_prompt_path:
+                if voice_prompt_path is None:
+                    self.lm_gen.voice_prompt = None
+                    self.lm_gen.voice_prompt_audio = None
+                    self.lm_gen.voice_prompt_cache = None
+                    self.lm_gen.voice_prompt_embeddings = None
+                elif voice_prompt_path.endswith('.pt'):
+                    # Load pre-saved voice prompt embeddings
+                    self.lm_gen.load_voice_prompt_embeddings(voice_prompt_path)
+                else:
+                    self.lm_gen.load_voice_prompt(voice_prompt_path)
+
+            self.lm_gen.text_prompt_tokens = (
+                self.text_tokenizer.encode(wrap_with_system_tags(text_prompt))
+                if len(text_prompt) > 0 else None
+            )
+
             if seed is not None and seed != -1:
                 seed_all(seed)
 
@@ -294,7 +324,13 @@ class ServerState:
                     asyncio.create_task(send_loop()),
                 ]
 
-                done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                done, pending = await asyncio.wait(
+                    tasks,
+                    return_when=asyncio.FIRST_COMPLETED,
+                    timeout=3600.0,
+                )
+                if not done:
+                    clog.log("warning", "session timeout reached, terminating tasks")
                 # Force-kill remaining tasks
                 for task in pending:
                     task.cancel()
@@ -479,5 +515,6 @@ def main():
     web.run_app(app, port=args.port, ssl_context=ssl_context)
 
 
-with torch.no_grad():
-    main()
+if __name__ == "__main__":
+    with torch.no_grad():
+        main()

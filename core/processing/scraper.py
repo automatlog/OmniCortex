@@ -3,6 +3,7 @@ from bs4 import BeautifulSoup
 from typing import List, Dict
 import os
 import tempfile
+import uuid
 from urllib.parse import urlparse
 from ..chat_service import process_documents
 from ..agent_manager import get_agent
@@ -84,7 +85,8 @@ def process_urls(urls: List[str], agent_id: str) -> Dict:
             # Let's create files in a temp dir.
             
             temp_dir = tempfile.gettempdir()
-            temp_path = os.path.join(temp_dir, filename)
+            unique_id = uuid.uuid4().hex[:8]
+            temp_path = os.path.join(temp_dir, f"{unique_id}_{filename}")
             
             with open(temp_path, "w", encoding="utf-8") as f:
                 f.write(f"Source URL: {url}\n\n")

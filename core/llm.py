@@ -19,7 +19,7 @@ LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", CONFIG.get("llm", {}).get("
 
 
 def get_llm(model_key: str = None):
-    """Get LLM instance (supports Groq, vLLM, Ollama, etc.)"""
+    """Get LLM instance (supports OpenAI-compatible providers, vLLM, Groq, etc.)."""
     # Determine config based on key
     if model_key and model_key in MODEL_BACKENDS:
         base_url = MODEL_BACKENDS[model_key]["base_url"]
@@ -36,7 +36,7 @@ def get_llm(model_key: str = None):
         model=model_name,
         temperature=LLM_TEMPERATURE,
         max_tokens=CONFIG.get("llm", {}).get("max_tokens", 2048),
-        timeout=180.0,  # Increase timeout to 180 seconds (3 minutes) for Ollama
+        timeout=180.0,  # Allow slower model responses on local/self-hosted backends
         max_retries=2   # Keep retries at 2 for faster failure detection
     )
 

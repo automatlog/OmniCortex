@@ -176,6 +176,13 @@ def delete_agent(agent_id: str) -> bool:
         if not agent:
             return False
 
+        # semantic cache rows are not FK-constrained; clear them explicitly
+        from sqlalchemy import text as sa_text
+        db.execute(
+            sa_text("DELETE FROM omni_semantic_cache WHERE agent_id = :agent_id"),
+            {"agent_id": agent_id},
+        )
+
         delete_vector_store(agent_id)
         db.delete(agent)
         db.commit()

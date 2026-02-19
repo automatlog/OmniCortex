@@ -27,45 +27,12 @@ SYSTEM_TORCH=$(python3 -c "import torch; print(torch.__version__)" 2>/dev/null |
 if [ -n "$SYSTEM_TORCH" ]; then
     echo "✅ System PyTorch detected: ${SYSTEM_TORCH} — will use --system-site-packages"
     USE_SYSTEM_PACKAGES="--system-site-packages"
+    VENV_SITE_PACKAGES_ARG=(--system-site-packages)
 else
     echo "ℹ️  No system PyTorch found — will install from ${TORCH_INDEX}"
     USE_SYSTEM_PACKAGES=""
+    VENV_SITE_PACKAGES_ARG=()
 fi
-
-# ==========================================
-# 1. Main Environment (vLLM, API, Next.js)
-# ==========================================
-echo "--------------------------------------------------"
-echo "Setting up Main Environment (.venv)..."
-echo "--------------------------------------------------"
-
-if [ -d ".venv" ]; then
-    echo "✅ .venv already exists, skipping creation"
-    source .venv/bin/activate
-else
-    uv venv .venv --python 3.12 --seed ${USE_SYSTEM_PACKAGES:+--system-site-packages}
-    source .venv/bin/activate
-
-    # Only install PyTorch if not inheriting from system
-    if [ -z "$SYSTEM_TORCH" ]; then
-        echo "⬇️ Installing PyTorch (${TORCH_INDEX})..."
-        uv pip install torch torchvision torchaudio --index-url "${TORCH_INDEX}"
-    else
-        echo "✅ Using system PyTorch ${SYSTEM_TORCH}"
-    fi
-
-    # Install vLLM
-    echo "🧠 Installing vLLM..."
-    uv pip install vllm
-
-    # Install App Dependencies
-    echo "📦 Installing App Dependencies..."
-    uv pip install transformers sentence-transformers
-    uv pip install accelerate hf_transfer langchain langchain-community langchain-openai psycopg2-binary sqlalchemy pgvector fastapi uvicorn python-multipart clickhouse-connect psutil requests python-dotenv
-fi
-
-echo "✅ Main Environment Ready!"
-deactivate
 
 # ==========================================
 # 2. Moshi Voice Server (.moshi-venv — separate to avoid conflicts)
@@ -77,7 +44,7 @@ echo "--------------------------------------------------"
 if [ -d ".moshi-venv" ]; then
     echo "✅ .moshi-venv already exists, skipping creation"
 else
-    uv venv .moshi-venv --python 3.12 --seed ${USE_SYSTEM_PACKAGES:+--system-site-packages}
+    uv venv .moshi-venv --python 3.12 --seed "${VENV_SITE_PACKAGES_ARG[@]}"
     source .moshi-venv/bin/activate
 
     # Only install PyTorch if not inheriting from system

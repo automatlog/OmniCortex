@@ -132,12 +132,11 @@ def process_question(
                 
                 # 3. Documents (Filenames)
                 try:
-                    from .database import get_agent_documents
+                    from .database import get_agent_document_names
                     # Simple fetch, optimize if too many docs
                     # We might need to cache this or limit it
-                    agent_docs = get_agent_documents(agent_id)
-                    if agent_docs:
-                        doc_names = [d['filename'] for d in agent_docs]
+                    doc_names = get_agent_document_names(agent_id, limit=50)
+                    if doc_names:
                         media_sections.append("Available Documents:\n" + "\n".join(doc_names))
                 except Exception as e:
                     print(f"⚠️ Failed to inject docs into context: {e}")

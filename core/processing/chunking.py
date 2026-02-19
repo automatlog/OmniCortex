@@ -9,7 +9,7 @@ from ..config import CHUNK_SIZE, CHUNK_OVERLAP, USE_SEMANTIC_CHUNKING
 
 
 def sanitize_text(text: str) -> str:
-    """Remove problematic Unicode characters that cause encoding issues on Windows"""
+    """Normalize problematic symbols while preserving multilingual text."""
     # Replace common problematic characters
     replacements = {
         '\u25cf': '*',  # Bullet point
@@ -21,14 +21,21 @@ def sanitize_text(text: str) -> str:
         '\u201c': '"',  # Left double quote
         '\u201d': '"',  # Right double quote
         '\u2026': '...', # Ellipsis
+        '\u00a0': ' ',  # Non-breaking space
+        '\u200b': '',   # Zero-width space
+        '\ufeff': '',   # BOM
     }
     
     for old, new in replacements.items():
         text = text.replace(old, new)
-    
-    # Remove any remaining non-ASCII characters that can't be encoded
-    text = text.encode('ascii', errors='ignore').decode('ascii')
-    
+
+    # Remove control characters but keep tabs/newlines and all Unicode scripts.
+    import unicodedata
+    text = "".join(
+        ch for ch in text
+        if (not unicodedata.category(ch).startswith("C")) or ch in "\n\r\t"
+    )
+
     return text
 
 

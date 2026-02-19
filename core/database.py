@@ -521,6 +521,22 @@ def get_agent_documents(agent_id: str) -> List[Dict]:
         db.close()
 
 
+def get_agent_document_names(agent_id: str, limit: int = 50) -> List[str]:
+    """Get recent document filenames for an agent with a bounded result set."""
+    db = SessionLocal()
+    try:
+        rows = (
+            db.query(Document.filename)
+            .filter(Document.agent_id == agent_id)
+            .order_by(Document.uploaded_at.desc())
+            .limit(limit)
+            .all()
+        )
+        return [row[0] for row in rows if row and row[0]]
+    finally:
+        db.close()
+
+
 def delete_document(document_id: int) -> bool:
     """Delete a document and update agent count"""
     db = SessionLocal()
@@ -557,10 +573,10 @@ def save_parent_chunk(content: str, source_doc_id: int = None) -> int:
         db.close()
 
 
-def batch_save_parent_chunks(chunks: list, source_doc_id: int = None) -> list:
+def batch_save_parent_chunks(chunks: list, source_doc_id: int = None) -> Dict[str, int]:
     """
     Batch save multiple parent chunks in a single transaction.
-    Returns list of (content_hash, id) tuples for mapping.
+    Returns mapping of chunk content to database row ID.
     
     Args:
         chunks: List of unique parent content strings
@@ -578,12 +594,15 @@ def batch_save_parent_chunks(chunks: list, source_doc_id: int = None) -> list:
             obj = ParentChunk(content=content, source_doc_id=source_doc_id)
             objects.append(obj)
         
-        db.bulk_save_objects(objects, return_defaults=True)
-        db.commit()
+        db.add_all(objects)
+        db.flush()
         
         # Map content to IDs
         for obj in objects:
-            content_to_id[obj.content] = obj.id
+            if obj.id is not None:
+                content_to_id[obj.content] = obj.id
+
+        db.commit()
             
         print(f"✅ Batch saved {len(objects)} parent chunks")
         return content_to_id
@@ -606,8 +625,3 @@ def get_parent_chunk(chunk_id: int) -> str:
         db.close()
 
 
-# Initialize on import
-try:
-    init_db()
-except Exception as e:
-    print(f"[WARN] Database init warning: {e}")

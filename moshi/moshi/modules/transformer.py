@@ -30,7 +30,7 @@ Optimized for inference.
 See `StreamingTransformer` for more information.
 """
 
-from contextlib import ExitStack
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass
 import typing as tp
 
@@ -190,30 +190,35 @@ def multi_linear(
             time steps provided one by one.
     """
     B, T, C = x.shape
-    ys = []
     chout, chin = weight.shape
     weight = weight.view(num_linear, -1, chin)
-    for t in range(T):
-        y = F.linear(x[:, t], weight[t + offset])
-        ys.append(y)
-    out = torch.stack(ys, 1)
-    return out
+    weight_used = weight[offset : offset + T]  # [T, out_dim, C]
+    return torch.einsum("btc,toc->bto", x, weight_used)
 
 
 def set_attention_context(model: nn.Module, context: tp.Optional[int] = None) -> None:
-    """Deactivates or changes the context span (in time steps) in a model.
+    """Deprecated helper: mutates attention context span in-place.
     Args:
         model (nn.Module): model over which to look for attentions.
-        context (int or None): new temporary context value.
-
-    ..Note:: this is not a context manager but a plain function changing the context forever.
-        Initially, it was a context manager, but that led to interesting bugs when using
-        activation checkpointing, with the context being inconsistent between the forward
-        and backward.
+        context (int or None): new context value.
     """
     for module in model.modules():
         if isinstance(module, StreamingMultiheadAttention):
             module.context = context
+
+
+@contextmanager
+def attention_context(model: nn.Module, context: tp.Optional[int] = None):
+    """Temporarily override attention context span for StreamingMultiheadAttention modules."""
+    modules = [m for m in model.modules() if isinstance(m, StreamingMultiheadAttention)]
+    old_contexts = [m.context for m in modules]
+    for module in modules:
+        module.context = context
+    try:
+        yield
+    finally:
+        for module, old_context in zip(modules, old_contexts):
+            module.context = old_context
 
 
 class KVCacheResult(tp.NamedTuple):

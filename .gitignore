@@ -43,15 +43,15 @@ storage/
 *.pem
 *.key
 secrets/
+temp_api_key.txt
 
 # Local data (never commit)
 local_pg_data/
 .pytest_cache/
+.garbage/
 
 # Only ignore logfile in root
 logfile
 # If you want to ignore log files, use:
 # *.log
-
-
 

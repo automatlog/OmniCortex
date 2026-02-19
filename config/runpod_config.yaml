@@ -35,7 +35,7 @@ vllm:
 # Voice Engine Configuration (LiquidAI)
 voice:
   enabled: true
-  model: "LiquidAI/LFM2.5-Audio-1.5B"
+  model: "nvidia/personaplex-7b-v1"  # NVIDIA Personaplex 7B (requires Hugging Face token)
   max_instances: 8
 
 # OmniCortex Application
@@ -91,9 +91,6 @@ cost:
 recommended_models:
   rtx_6000_ada_48gb:
     - "meta-llama/Meta-Llama-3.1-8B-Instruct"  # Recommended
-    - "meta-llama/Meta-Llama-3.1-70B-Instruct"  # With quantization
   
   rtx_pro_6000_96gb:
-    - "meta-llama/Meta-Llama-3.1-70B-Instruct"
-    - "meta-llama/Llama-3.3-70B-Instruct"
-    - "meta-llama/Meta-Llama-3.1-405B-Instruct"  # With quantization
+    - "meta-llama/Meta-Llama-3.1-8B-Instruct"  # Recommended

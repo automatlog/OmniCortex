@@ -41,6 +41,133 @@ class WhatsAppHandler:
                 print(f"Response: {e.response.text}")
             return {"error": str(e)}
 
+    def send_image(self, to_number: str, image_url: str, caption: str = "") -> Dict[str, Any]:
+        """
+        Send an image message using WhatsApp Graph API
+        """
+        url = f"{self.base_url}/{self.phone_id}/messages"
+        
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": to_number,
+            "type": "image",
+            "image": {
+                "link": image_url,
+                "caption": caption
+            }
+        }
+        
+        try:
+            response = requests.post(url, headers=self.headers, json=payload, timeout=10)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            print(f"❌ WhatsApp Image Send Failed: {e}")
+            if e.response:
+                print(f"Response: {e.response.text}")
+            return {"error": str(e)}
+
+    def send_video(self, to_number: str, video_url: str, caption: str = "") -> Dict[str, Any]:
+        """Send a video message"""
+        url = f"{self.base_url}/{self.phone_id}/messages"
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": to_number,
+            "type": "video",
+            "video": {"link": video_url, "caption": caption}
+        }
+        try:
+            response = requests.post(url, headers=self.headers, json=payload, timeout=20)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            print(f"❌ WhatsApp Video Send Failed: {e}")
+            return {"error": str(e)}
+
+    def send_document(self, to_number: str, document_url: str, caption: str = "", filename: str = "") -> Dict[str, Any]:
+        """Send a document message"""
+        url = f"{self.base_url}/{self.phone_id}/messages"
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": to_number,
+            "type": "document",
+            "document": {
+                "link": document_url, 
+                "caption": caption,
+                "filename": filename
+            }
+        }
+        try:
+            response = requests.post(url, headers=self.headers, json=payload, timeout=20)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            print(f"❌ WhatsApp Document Send Failed: {e}")
+            return {"error": str(e)}
+
+    def send_location(self, to_number: str, latitude: float, longitude: float, name: str, address: str) -> Dict[str, Any]:
+        """Send a location message"""
+        url = f"{self.base_url}/{self.phone_id}/messages"
+        payload = {
+            "messaging_product": "whatsapp",
+            "to": to_number,
+            "type": "location",
+            "location": {
+                "latitude": latitude,
+                "longitude": longitude,
+                "name": name,
+                "address": address
+            }
+        }
+        try:
+            response = requests.post(url, headers=self.headers, json=payload, timeout=10)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            print(f"❌ WhatsApp Location Send Failed: {e}")
+            return {"error": str(e)}
+
+    def send_interactive_buttons(self, to_number: str, body_text: str, buttons: list) -> Dict[str, Any]:
+        """
+        Send an interactive message with buttons (limit 3).
+        buttons: List of {"id": "btn_1", "title": "Option 1"}
+        """
+        url = f"{self.base_url}/{self.phone_id}/messages"
+        
+        # WhatsApp limits buttons to 3
+        safe_buttons = buttons[:3]
+        
+        button_actions = []
+        for btn in safe_buttons:
+            button_actions.append({
+                "type": "reply",
+                "reply": {
+                    "id": btn.get("id"),
+                    "title": btn.get("title")[:20] # Title limit 20 chars
+                }
+            })
+            
+        payload = {
+            "messaging_product": "whatsapp",
+            "recipient_type": "individual",
+            "to": to_number,
+            "type": "interactive",
+            "interactive": {
+                "type": "button",
+                "body": {"text": body_text},
+                "action": {"buttons": button_actions}
+            }
+        }
+        
+        try:
+            response = requests.post(url, headers=self.headers, json=payload, timeout=10)
+            response.raise_for_status()
+            return response.json()
+        except requests.exceptions.RequestException as e:
+            print(f"❌ WhatsApp Buttons Send Failed: {e}")
+            return {"error": str(e)}
+
+
     def send_interactive_message(self, to_number: str, text: str, buttons: list) -> Dict[str, Any]:
         """
         Send an interactive message with buttons

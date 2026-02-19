@@ -6,6 +6,7 @@ import { cn } from "@/lib/utils";
 import { Send, Plus, Loader2, Settings } from "lucide-react";
 import { sendMessage, sendVoice, type ApiError, type ChatMessage } from "@/lib/api";
 import { VoiceRecorder } from "./VoiceRecorder";
+import { MessageContent } from "./MessageContent";
 import {
   Dialog,
   DialogContent,
@@ -53,12 +54,13 @@ export function ChatInterface({
     scrollToBottom();
   }, [messages]);
 
-  const handleSend = async () => {
-    if (!input.trim() || isLoading) return;
+  const sendUserMessage = async (text: string) => {
+    const content = text.trim();
+    if (!content || isLoading) return;
 
     const userMessage: ChatMessage = {
       role: "user",
-      content: input.trim(),
+      content,
       timestamp: new Date().toISOString(),
     };
 
@@ -115,6 +117,15 @@ export function ChatInterface({
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleSend = async () => {
+    await sendUserMessage(input);
+  };
+
+  const handleSuggestionClick = async (suggestion: string) => {
+    if (isLoading || isProcessingVoice) return;
+    await sendUserMessage(suggestion);
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -297,7 +308,10 @@ export function ChatInterface({
                   : "bg-neutral-800 text-neutral-100"
               )}
             >
-              <p className="text-sm whitespace-pre-wrap">{message.content}</p>
+              <MessageContent
+                content={message.content}
+                onSuggestionClick={message.role === "assistant" ? handleSuggestionClick : undefined}
+              />
             </div>
             {message.role === "user" && (
               <div className="w-8 h-8 rounded-full bg-gradient-to-br from-orange-400 to-pink-500 flex items-center justify-center flex-shrink-0">

@@ -19,6 +19,7 @@ import {
   type Agent,
   type ChatMessage,
 } from "@/lib/api";
+import { MessageContent } from "@/components/MessageContent";
 
 export default function ConversationsPage() {
   const [agents, setAgents] = useState<Agent[]>([]);
@@ -226,7 +227,7 @@ export default function ConversationsPage() {
                         : "bg-neutral-800 text-neutral-200"
                     }`}
                   >
-                    <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
+                    <MessageContent content={msg.content} />
                     {msg.timestamp && (
                       <p
                         className={`text-[10px] mt-1 flex items-center gap-1 ${

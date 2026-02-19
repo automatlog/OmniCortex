@@ -2,7 +2,7 @@
 set -e
 
 echo "🚀 Starting Full Environment Setup (Dual-Env Strategy)..."
-cd /workspace/OmniCortex
+cd "$(dirname "$0")"
 
 # ==========================================
 # Detect CUDA version from container

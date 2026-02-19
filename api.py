@@ -784,6 +784,10 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
             model_selection=request.model_selection
         )
         
+        # Replace [image][filename] and other tags with actual URLs/Markdown for frontend
+        from core.response_parser import process_rich_response_for_frontend
+        answer = process_rich_response_for_frontend(answer, agent_id=request.agent_id)
+        
         response = QueryResponse(answer=answer, agent_id=request.agent_id, session_id=session_id)
         latency_ms = round((time.perf_counter() - started) * 1000, 2)
         query_logger.info(json.dumps({
@@ -1799,12 +1803,50 @@ async def whatsapp_webhook(request: Request):
         wa_history.add_message(user_phone, "user", text)
         wa_history.add_message(user_phone, "assistant", answer)
         
-        # Send Reply
-        wa_logger.info(f"OUT | {user_phone}: {answer[:100]}")
-        print(f"📤 Replying to {user_phone}: {answer[:50]}...")
-        result = handler.send_message(user_phone, answer)
+        # Smart Dispatch: parse response for image/video/doc tags
+        from core.response_parser import parse_response
+        parts = parse_response(answer, agent_id=agent_id)
         
-        return {"status": "processed", "reply_id": result.get("messages", [{}])[0].get("id")}
+        wa_logger.info(f"OUT | {user_phone}: {answer[:100]}")
+        print(f"📤 Replying to {user_phone}: {len(parts)} part(s)")
+        
+        last_result = {}
+        for part in parts:
+            if part["type"] == "text" and part.get("content"):
+                print(f"  💬 Sending text: {part['content'][:50]}...")
+                last_result = handler.send_message(user_phone, part["content"])
+            
+            elif part["type"] == "image" and part.get("url"):
+                caption = part.get("caption", "")
+                print(f"  🖼️ Sending image: {part['url'][:60]}...")
+                last_result = handler.send_image(user_phone, part["url"], caption)
+
+            elif part["type"] == "video" and part.get("url"):
+                caption = part.get("caption", "")
+                print(f"  🎥 Sending video: {part['url'][:60]}...")
+                last_result = handler.send_video(user_phone, part["url"], caption)
+
+            elif part["type"] == "document" and part.get("url"):
+                caption = part.get("caption", "")
+                filename = part.get("filename", "document.pdf")
+                print(f"  📄 Sending doc: {filename}...")
+                last_result = handler.send_document(user_phone, part["url"], caption, filename)
+
+            elif part["type"] == "location":
+                 print(f"  📍 Sending location: {part.get('name')}...")
+                 last_result = handler.send_location(
+                     user_phone, 
+                     part["latitude"], part["longitude"], 
+                     part["name"], part["address"]
+                 )
+
+            elif part["type"] == "interactive" and part.get("interaction_type") == "button":
+                 print(f"  🔘 Sending buttons: {part['body'][:20]}...")
+                 last_result = handler.send_interactive_buttons(
+                     user_phone, part["body"], part["buttons"]
+                 )
+        
+        return {"status": "processed", "reply_id": last_result.get("messages", [{}])[0].get("id") if last_result else None}
         
     except Exception as e:
         wa_logger.error(f"ERR | {user_phone}: {e}")

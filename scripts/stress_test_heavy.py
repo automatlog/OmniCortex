@@ -187,6 +187,36 @@ async def create_agents_from_docs(
     return created, failed
 
 
+async def run_single_question_safely(
+    semaphore: asyncio.Semaphore,
+    client: httpx.AsyncClient,
+    api_base: str,
+    headers: Dict[str, str],
+    agent_id: str,
+    question: str,
+    model_selection: str,
+    mock_mode: bool,
+) -> Tuple[bool, float, int]:
+    """
+    Returns (success, latency, status_code)
+    """
+    async with semaphore:
+        payload = {
+            "question": question,
+            "agent_id": agent_id,
+            "model_selection": model_selection,
+            "mock_mode": mock_mode,
+        }
+        t0 = time.perf_counter()
+        try:
+            resp = await client.post(f"{api_base}/query", headers=headers, json=payload)
+            dt = time.perf_counter() - t0
+            return resp.is_success, dt, resp.status_code
+        except Exception:
+            dt = time.perf_counter() - t0
+            return False, dt, 0
+
+
 async def run_all_questions(
     client: httpx.AsyncClient,
     api_base: str,
@@ -195,45 +225,42 @@ async def run_all_questions(
     questions: List[str],
     model_selection: str,
     mock_mode: bool,
+    concurrency: int,
 ) -> Dict[str, float]:
     total = 0
     ok = 0
     err = 0
     latencies: List[float] = []
 
-    print(f"[TEST] Running {len(questions)} questions for {len(agents)} agents")
-    for idx, agent in enumerate(agents, start=1):
-        agent_id = agent["id"]
-        agent_name = agent["name"]
-        print(f"  [AGENT {idx}/{len(agents)}] {agent_name} ({agent_id})")
+    print(f"[TEST] Running {len(questions)} questions for {len(agents)} agents with concurrency={concurrency}")
+    
+    semaphore = asyncio.Semaphore(concurrency)
+    tasks = []
 
-        for q_idx, question in enumerate(questions, start=1):
-            payload = {
-                "question": question,
-                "agent_id": agent_id,
-                "model_selection": model_selection,
-                "mock_mode": mock_mode,
-            }
-            t0 = time.perf_counter()
-            try:
-                resp = await client.post(f"{api_base}/query", headers=headers, json=payload)
-                dt = time.perf_counter() - t0
-                total += 1
-                latencies.append(dt)
-                if resp.is_success:
-                    ok += 1
-                    print(f"    [OK] Q{q_idx}/{len(questions)} ({dt:.2f}s)")
-                else:
-                    err += 1
-                    print(f"    [ERR] Q{q_idx}/{len(questions)} -> {resp.status_code} ({dt:.2f}s)")
-            except Exception as e:
-                dt = time.perf_counter() - t0
-                total += 1
-                err += 1
-                latencies.append(dt)
-                print(f"    [EXC] Q{q_idx}/{len(questions)} -> {e} ({dt:.2f}s)")
+    for agent in agents:
+        agent_id = agent["id"]
+        for question in questions:
+            tasks.append(
+                run_single_question_safely(
+                    semaphore, client, api_base, headers, agent_id, question, model_selection, mock_mode
+                )
+            )
+            
+    results = await asyncio.gather(*tasks)
+
+    for success, dt, status in results:
+        total += 1
+        latencies.append(dt)
+        if success:
+            ok += 1
+        else:
+            err += 1
 
     avg_latency = (sum(latencies) / len(latencies)) if latencies else 0.0
+    
+    # Simple progress report
+    print(f"  [DONE] Processed {total} requests. Success: {ok}, Errors: {err}, Avg Latency: {avg_latency:.2f}s")
+    
     return {
         "total": total,
         "ok": ok,
@@ -418,6 +445,7 @@ async def batch_mode(args, question_bank: List[str]):
                 questions=question_bank,
                 model_selection=args.model_selection,
                 mock_mode=args.mock_mode,
+                concurrency=args.text_workers,
             )
         finally:
             print("[STEP 3] Delete all agents")

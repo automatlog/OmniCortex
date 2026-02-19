@@ -4,6 +4,7 @@ Chat Service - Orchestrates the RAG workflow
 import os
 import time
 from typing import Dict, List, Optional
+from urllib.parse import unquote
 
 from .agent_manager import get_agent, update_agent_metadata
 from .cache import check_cache, save_to_cache
@@ -103,8 +104,50 @@ def process_question(
             agent = get_agent(agent_id)
             if agent:
                 agent_name = agent.get("name", "unknown")
+                
+                # Inject Available Media
+                media_sections = []
+                
+                # 1. Images
+                image_urls = agent.get("image_urls") or []
+                if image_urls:
+                    image_lines = []
+                    for u in image_urls:
+                        fname = unquote(str(u).rstrip("/").rsplit("/", 1)[-1].split("?", 1)[0]).strip()
+                        image_lines.append(f"- {fname} => {u}")
+                    media_sections.append(
+                        "Available Images (use exact filename in [image][...]):\n" + "\n".join(image_lines)
+                    )
+                
+                # 2. Videos
+                video_urls = agent.get("video_urls") or []
+                if video_urls:
+                    video_lines = []
+                    for u in video_urls:
+                        fname = unquote(str(u).rstrip("/").rsplit("/", 1)[-1].split("?", 1)[0]).strip()
+                        video_lines.append(f"- {fname} => {u}")
+                    media_sections.append(
+                        "Available Videos (use exact filename in [video][...]):\n" + "\n".join(video_lines)
+                    )
+                
+                # 3. Documents (Filenames)
+                try:
+                    from .database import get_agent_documents
+                    # Simple fetch, optimize if too many docs
+                    # We might need to cache this or limit it
+                    agent_docs = get_agent_documents(agent_id)
+                    if agent_docs:
+                        doc_names = [d['filename'] for d in agent_docs]
+                        media_sections.append("Available Documents:\n" + "\n".join(doc_names))
+                except Exception as e:
+                    print(f"⚠️ Failed to inject docs into context: {e}")
+
+                if media_sections:
+                    context += "\n\n" + "\n\n".join(media_sections)
+
         except Exception:
             pass
+
 
     answer = invoke_chain(
         question,

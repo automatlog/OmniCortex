@@ -8,7 +8,7 @@ import json
 import hmac
 import asyncio
 import datetime
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any, Union
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, BackgroundTasks, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -214,36 +214,58 @@ class AgentDocumentText(BaseModel):
     filename: str
     text: str
 
-
 class ScrapedContent(BaseModel):
     url: Optional[str] = None
     text: str
 
+class ConversationStarterItem(BaseModel):
+    icon: Optional[str] = None
+    label: Optional[str] = None
+    prompt: Optional[str] = None
+
+class LegacyDocumentRef(BaseModel):
+    url: str
+    type: Optional[str] = None
+
+class LegacyDocumentData(BaseModel):
+    image_urls: Optional[List[str]] = None
+    video_urls: Optional[List[str]] = None
+    documents_text: Optional[List[LegacyDocumentRef]] = None
 
 class AgentCreate(BaseModel):
-    name: str
+    # Current schema
+    name: Optional[str] = None
     description: Optional[str] = ""
     system_prompt: Optional[str] = None
     role_type: Optional[str] = None
     industry: Optional[str] = None
     urls: Optional[List[str]] = None
-    conversation_starters: Optional[List[str]] = None
+    conversation_starters: Optional[List[Union[str, ConversationStarterItem]]] = None
     image_urls: Optional[List[str]] = None
     video_urls: Optional[List[str]] = None
     documents_text: Optional[List[AgentDocumentText]] = None
     scraped_data: Optional[List[ScrapedContent]] = None
     file_paths: Optional[List[str]] = None  # Backward-compatible local files path list
 
+    # Legacy/postman compatibility schema
+    id: Optional[Union[int, str]] = None
+    agentname: Optional[str] = None
+    agent_type: Optional[str] = None
+    subagent_type: Optional[str] = None
+    model_selection: Optional[str] = None
+    website_data: Optional[List[str]] = None
+    document_data: Optional[LegacyDocumentData] = None
+    logic: Optional[str] = None
+    instruction: Optional[str] = None
+    conversation_end: Optional[List[ConversationStarterItem]] = None
 
 class CreateKeyRequest(BaseModel):
     owner: str
-
 
 class StatusResponse(BaseModel):
     status: str
     agent_id: Optional[str] = None
     document_id: Optional[int] = None
-
 
 class AgentResponse(BaseModel):
     id: str
@@ -263,6 +285,10 @@ class AgentResponse(BaseModel):
     message_count: int
     webhook_url: Optional[str] = None
 
+class AgentCreateResponse(AgentResponse):
+    status: str
+    agent_id: str
+    agent_name: str
 
 class AgentUpdate(BaseModel):
     name: Optional[str] = None
@@ -275,7 +301,6 @@ class AgentUpdate(BaseModel):
     image_urls: Optional[List[str]] = None
     video_urls: Optional[List[str]] = None
     scraped_data: Optional[List[ScrapedContent]] = None
-
 
 # ============== MESSAGING MODELS (PHASE 2) ==============
 class ChannelCreate(BaseModel):
@@ -870,6 +895,93 @@ def _model_to_dict(item):
     return item.dict()
 
 
+def _merge_unique_str_lists(*values: Optional[List[str]]) -> Optional[List[str]]:
+    merged: List[str] = []
+    seen = set()
+    for bucket in values:
+        if not bucket:
+            continue
+        for value in bucket:
+            text = str(value).strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            merged.append(text)
+    return merged or None
+
+
+def _extract_prompt_text(items: Optional[List[Union[str, ConversationStarterItem]]]) -> Optional[List[str]]:
+    if not items:
+        return None
+    prompts: List[str] = []
+    for item in items:
+        if isinstance(item, str):
+            text = item.strip()
+            if text:
+                prompts.append(text)
+            continue
+        row = _model_to_dict(item) or {}
+        prompt = (row.get("prompt") or "").strip()
+        if prompt:
+            prompts.append(prompt)
+    return prompts or None
+
+
+def _resolve_system_prompt(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return value
+    candidate = Path(value)
+    if not candidate.is_file():
+        return value
+    try:
+        content = candidate.read_text(encoding="utf-8").strip()
+        return content or value
+    except Exception as e:
+        logging.warning(f"Failed reading system_prompt file '{value}': {e}")
+        return value
+
+
+def _normalize_agent_create_payload(agent_request: AgentCreate) -> Dict[str, Any]:
+    name = ((agent_request.name or agent_request.agentname) or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name (or agentname) is required")
+
+    document_data = agent_request.document_data
+    legacy_doc_urls = []
+    if document_data and document_data.documents_text:
+        legacy_doc_urls = [doc.url for doc in document_data.documents_text if doc.url]
+
+    urls = _merge_unique_str_lists(agent_request.urls, agent_request.website_data, legacy_doc_urls)
+    image_urls = _merge_unique_str_lists(
+        agent_request.image_urls,
+        document_data.image_urls if document_data else None,
+    )
+    video_urls = _merge_unique_str_lists(
+        agent_request.video_urls,
+        document_data.video_urls if document_data else None,
+    )
+
+    conversation_starters = _extract_prompt_text(agent_request.conversation_starters)
+    system_prompt = _resolve_system_prompt(agent_request.system_prompt)
+    description = (
+        (agent_request.description or "").strip()
+        or (agent_request.instruction or "").strip()
+    )
+
+    scraped_data = [_model_to_dict(row) for row in agent_request.scraped_data] if agent_request.scraped_data else None
+
+    return {
+        "name": name,
+        "description": description,
+        "system_prompt": system_prompt,
+        "urls": urls,
+        "image_urls": image_urls,
+        "video_urls": video_urls,
+        "conversation_starters": conversation_starters,
+        "scraped_data": scraped_data,
+    }
+
+
 def _normalize_role_and_industry(role_type: Optional[str], industry: Optional[str]) -> tuple:
     if role_type is None:
         return None, industry
@@ -887,10 +999,9 @@ def _normalize_role_and_industry(role_type: Optional[str], industry: Optional[st
         return "business", industry or role_raw
 
     if role_lower not in ROLE_TYPES:
-        raise HTTPException(
-            status_code=400,
-            detail=f"role_type must be one of {sorted(ROLE_TYPES)}",
-        )
+        # Accept custom/free-form role_type values from external integrations.
+        # Example: "specialist", "advisor", etc.
+        return role_raw, industry
 
     if role_lower == "business":
         if not industry or not industry.strip():
@@ -912,17 +1023,36 @@ def _normalize_role_and_industry(role_type: Optional[str], industry: Optional[st
     return role_lower, industry
 
 
-def _validate_list_limits(agent_payload):
-    if agent_payload.urls and len(agent_payload.urls) > MAX_URLS:
+def _validate_list_limits(agent_payload=None, *, urls=None, conversation_starters=None, image_urls=None, video_urls=None):
+    resolved_urls = urls
+    resolved_conversation = conversation_starters
+    resolved_images = image_urls
+    resolved_videos = video_urls
+
+    if agent_payload is not None:
+        resolved_urls = resolved_urls if resolved_urls is not None else (
+            getattr(agent_payload, "urls", None) or getattr(agent_payload, "website_data", None)
+        )
+        resolved_conversation = resolved_conversation if resolved_conversation is not None else getattr(agent_payload, "conversation_starters", None)
+        resolved_images = resolved_images if resolved_images is not None else getattr(agent_payload, "image_urls", None)
+        resolved_videos = resolved_videos if resolved_videos is not None else getattr(agent_payload, "video_urls", None)
+        document_data = getattr(agent_payload, "document_data", None)
+        if document_data:
+            if resolved_images is None:
+                resolved_images = getattr(document_data, "image_urls", None)
+            if resolved_videos is None:
+                resolved_videos = getattr(document_data, "video_urls", None)
+
+    if resolved_urls and len(resolved_urls) > MAX_URLS:
         raise HTTPException(status_code=400, detail=f"urls limit exceeded ({MAX_URLS})")
-    if agent_payload.conversation_starters and len(agent_payload.conversation_starters) > MAX_CONVERSATION_STARTERS:
+    if resolved_conversation and len(resolved_conversation) > MAX_CONVERSATION_STARTERS:
         raise HTTPException(
             status_code=400,
             detail=f"conversation_starters limit exceeded ({MAX_CONVERSATION_STARTERS})",
         )
-    if agent_payload.image_urls and len(agent_payload.image_urls) > MAX_MEDIA_URLS:
+    if resolved_images and len(resolved_images) > MAX_MEDIA_URLS:
         raise HTTPException(status_code=400, detail=f"image_urls limit exceeded ({MAX_MEDIA_URLS})")
-    if agent_payload.video_urls and len(agent_payload.video_urls) > MAX_MEDIA_URLS:
+    if resolved_videos and len(resolved_videos) > MAX_MEDIA_URLS:
         raise HTTPException(status_code=400, detail=f"video_urls limit exceeded ({MAX_MEDIA_URLS})")
 
 
@@ -1008,11 +1138,17 @@ async def get_agent_detail(agent_id: str, request: Request):
     return agent_to_response(agent, base_url)
 
 
-@app.post("/agents", response_model=AgentResponse)
+@app.post("/agents", response_model=AgentCreateResponse)
 async def create_new_agent(agent_request: AgentCreate, request: Request, background_tasks: BackgroundTasks, api_key: ApiKey = Depends(get_api_key)):
     """Create a new agent (optionally from local files)"""
     try:
-        _validate_list_limits(agent_request)
+        normalized = _normalize_agent_create_payload(agent_request)
+        _validate_list_limits(
+            urls=normalized["urls"],
+            conversation_starters=normalized["conversation_starters"],
+            image_urls=normalized["image_urls"],
+            video_urls=normalized["video_urls"],
+        )
         role_type, industry = _normalize_role_and_industry(
             agent_request.role_type, agent_request.industry
         )
@@ -1021,19 +1157,18 @@ async def create_new_agent(agent_request: AgentCreate, request: Request, backgro
                 status_code=400,
                 detail="industry is only valid when role_type is 'business'",
             )
-        scraped_data = [_model_to_dict(row) for row in agent_request.scraped_data] if agent_request.scraped_data else None
 
         agent_id = create_agent(
-            name=agent_request.name, 
-            description=agent_request.description,
-            system_prompt=agent_request.system_prompt,
+            name=normalized["name"],
+            description=normalized["description"],
+            system_prompt=normalized["system_prompt"],
             role_type=role_type,
             industry=industry,
-            urls=agent_request.urls,
-            conversation_starters=agent_request.conversation_starters,
-            image_urls=agent_request.image_urls,
-            video_urls=agent_request.video_urls,
-            scraped_data=scraped_data,
+            urls=normalized["urls"],
+            conversation_starters=normalized["conversation_starters"],
+            image_urls=normalized["image_urls"],
+            video_urls=normalized["video_urls"],
+            scraped_data=normalized["scraped_data"],
         )
         
         # Handle Local File Paths (for bulk creation/scripting)
@@ -1074,12 +1209,19 @@ async def create_new_agent(agent_request: AgentCreate, request: Request, backgro
             _ingest_scraped_data(agent_request.scraped_data, agent_id)
         
         # Trigger URL Scraping in Background
-        if agent_request.urls:
-            background_tasks.add_task(process_urls, agent_request.urls, agent_id)
+        if normalized["urls"]:
+            background_tasks.add_task(process_urls, normalized["urls"], agent_id)
 
         agent = get_agent(agent_id)
         base_url = str(request.base_url).rstrip("/")
-        return agent_to_response(agent, base_url)
+        base_response = agent_to_response(agent, base_url)
+        base_dict = base_response.model_dump() if hasattr(base_response, "model_dump") else base_response.dict()
+        return AgentCreateResponse(
+            **base_dict,
+            status="created",
+            agent_id=base_dict["id"],
+            agent_name=base_dict["name"],
+        )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 

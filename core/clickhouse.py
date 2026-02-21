@@ -10,8 +10,17 @@ import uuid
 # Global client cache
 _CLIENT = None
 
+
+def _clickhouse_enabled() -> bool:
+    """Enable ClickHouse only when explicitly turned on."""
+    return os.getenv("CLICKHOUSE_ENABLED", "false").lower() == "true"
+
+
 def get_clickhouse_client():
     """Get or create ClickHouse client"""
+    if not _clickhouse_enabled():
+        return None
+
     global _CLIENT
     if _CLIENT:
         return _CLIENT
@@ -44,6 +53,9 @@ def log_chat_to_clickhouse(agent_id: str, role: str, content: str, session_id: s
     """
     Log chat message to ClickHouse
     """
+    if not _clickhouse_enabled():
+        return
+
     def _log():
         try:
             # Create a new client for this thread to avoid concurrent query issues
@@ -100,6 +112,9 @@ def log_usage_to_clickhouse(agent_id: str, model: str, prompt_tokens: int, compl
     """
     Log usage stats to ClickHouse
     """
+    if not _clickhouse_enabled():
+        return
+
     def _log():
         try:
             # Create a new client for this thread to avoid concurrent query issues

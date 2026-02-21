@@ -17,10 +17,19 @@ export default function Dashboard() {
       try {
         const [agentList, health] = await Promise.all([
           getAgents().catch(() => []),
-          checkHealth(),
+          checkHealth().catch(() => null),
         ]);
         setAgents(agentList);
-        setIsHealthy(health.status === "healthy");
+        setIsHealthy(health?.status === "healthy");
+      } catch (error) {
+        const message =
+          error instanceof Error
+            ? error.message
+            : typeof error === "object" && error && "message" in error
+              ? String((error as { message?: unknown }).message)
+              : "Unknown error";
+        console.warn(`Failed to load dashboard data: ${message}`);
+        setIsHealthy(false);
       } finally {
         setLoading(false);
       }

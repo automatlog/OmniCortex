@@ -5,9 +5,9 @@ Supported tags:
 - [image][filename.ext]
 - [video][filename.ext]
 - [document][filename.ext]
-- [location][lat,long][name][address]
-- [buttons][Title][Option1|Option2]
 - [link][url][text]
+- [location][lat,long][name][address]
+- [buttons][Title][Option1|Option2|Option3]
 """
 
 from __future__ import annotations
@@ -18,12 +18,12 @@ from urllib.parse import unquote
 
 from .agent_manager import get_agent
 
-IMAGE_RE = re.compile(r"\[image\]\[(.*?)\]", re.IGNORECASE)
-VIDEO_RE = re.compile(r"\[video\]\[(.*?)\]", re.IGNORECASE)
-DOC_RE = re.compile(r"\[document\]\[(.*?)\]", re.IGNORECASE)
-LINK_RE = re.compile(r"\[link\]\[(.*?)\]\[(.*?)\]", re.IGNORECASE)
-LOC_RE = re.compile(r"\[location\]\[(.*?)\]\[(.*?)\]\[(.*?)\]", re.IGNORECASE)
-BTN_RE = re.compile(r"\[buttons\]\[(.*?)\]\[(.*?)\]", re.IGNORECASE)
+IMAGE_RE = re.compile(r"\[image\]\[([^\]]+)\]", re.IGNORECASE)
+VIDEO_RE = re.compile(r"\[video\]\[([^\]]+)\]", re.IGNORECASE)
+DOC_RE = re.compile(r"\[document\]\[([^\]]+)\]", re.IGNORECASE)
+LINK_RE = re.compile(r"\[link\]\[([^\]]+)\]\[([^\]]+)\]", re.IGNORECASE)
+LOC_RE = re.compile(r"\[location\]\[([^\]]+)\]\[([^\]]+)\]\[([^\]]+)\]", re.IGNORECASE)
+BTN_RE = re.compile(r"\[buttons\]\[([^\]]+)\]\[([^\]]+)\]", re.IGNORECASE)
 
 
 def parse_response(answer: str, agent_id: str = None) -> List[Dict[str, Any]]:
@@ -99,7 +99,14 @@ def parse_response(answer: str, agent_id: str = None) -> List[Dict[str, Any]]:
         elif tag_type == "link":
             url = match.group(1).strip()
             text = match.group(2).strip()
-            parts.append({"type": "text", "content": f"{text}: {url}", "preview_url": url})
+            parts.append(
+                {
+                    "type": "text",
+                    "content": f"{text}: {url}",
+                    "url": url,
+                    "preview_url": True,
+                }
+            )
 
         elif tag_type == "location":
             latlong = match.group(1).strip()
@@ -179,7 +186,12 @@ def process_rich_response_for_frontend(answer: str, agent_id: str = None) -> str
     processed = IMAGE_RE.sub(image_sub, processed)
     processed = VIDEO_RE.sub(video_sub, processed)
     processed = DOC_RE.sub(document_sub, processed)
-    processed = LINK_RE.sub(r"[\2](\1)", processed)
+    def link_sub(match: re.Match[str]) -> str:
+        url = match.group(1).strip()
+        text = match.group(2).strip()
+        return f"[{text}]({url})"
+
+    processed = LINK_RE.sub(link_sub, processed)
     processed = LOC_RE.sub(location_sub, processed)
     processed = BTN_RE.sub(buttons_sub, processed)
 

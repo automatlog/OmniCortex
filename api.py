@@ -255,9 +255,9 @@ class AgentCreate(BaseModel):
     model_selection: Optional[str] = None
     website_data: Optional[List[str]] = None
     document_data: Optional[LegacyDocumentData] = None
-    logic: Optional[str] = None
+    logic: Optional[Union[str, Dict[str, Any]]] = None
     instruction: Optional[str] = None
-    conversation_end: Optional[List[ConversationStarterItem]] = None
+    conversation_end: Optional[List[Union[str, ConversationStarterItem]]] = None
 
 class CreateKeyRequest(BaseModel):
     owner: str
@@ -280,18 +280,26 @@ class AgentResponse(BaseModel):
     image_urls: Optional[List[str]]
     video_urls: Optional[List[str]]
     scraped_data: Optional[List[Dict[str, str]]]
+    logic: Optional[Union[str, Dict[str, Any]]] = None
+    conversation_end: Optional[List[Dict[str, str]]] = None
+    agent_type: Optional[str] = None
+    subagent_type: Optional[str] = None
+    model_selection: Optional[str] = None
     
     document_count: int
     message_count: int
     webhook_url: Optional[str] = None
 
+class AgentListItem(BaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+
 class AgentCreateResponse(BaseModel):
     status: str
     agent_id: str
     agent_name: str
-    description: Optional[str] = None
     system_prompt: Optional[str] = None
-    document_count: int = 0
 
 class AgentUpdate(BaseModel):
     name: Optional[str] = None
@@ -304,6 +312,11 @@ class AgentUpdate(BaseModel):
     image_urls: Optional[List[str]] = None
     video_urls: Optional[List[str]] = None
     scraped_data: Optional[List[ScrapedContent]] = None
+    logic: Optional[Union[str, Dict[str, Any]]] = None
+    conversation_end: Optional[List[Union[str, ConversationStarterItem]]] = None
+    agent_type: Optional[str] = None
+    subagent_type: Optional[str] = None
+    model_selection: Optional[str] = None
 
 # ============== MESSAGING MODELS (PHASE 2) ==============
 class ChannelCreate(BaseModel):
@@ -930,6 +943,32 @@ def _extract_prompt_text(items: Optional[List[Union[str, ConversationStarterItem
     return prompts or None
 
 
+def _extract_conversation_items(items: Optional[List[Union[str, ConversationStarterItem]]]) -> Optional[List[Dict[str, str]]]:
+    if not items:
+        return None
+
+    cleaned_items: List[Dict[str, str]] = []
+    for item in items:
+        if isinstance(item, str):
+            text = item.strip()
+            if text:
+                cleaned_items.append({"prompt": text})
+            continue
+        row = _model_to_dict(item) or {}
+        cleaned: Dict[str, str] = {}
+        for key in ("icon", "label", "prompt"):
+            value = row.get(key)
+            if value is None:
+                continue
+            text = str(value).strip()
+            if text:
+                cleaned[key] = text
+        if cleaned:
+            cleaned_items.append(cleaned)
+
+    return cleaned_items or None
+
+
 def _resolve_system_prompt(value: Optional[str]) -> Optional[str]:
     if not value:
         return value
@@ -944,6 +983,33 @@ def _resolve_system_prompt(value: Optional[str]) -> Optional[str]:
         return value
 
 
+def _looks_like_prompt_path(value: Optional[str]) -> bool:
+    if value is None:
+        return False
+    text = str(value).strip()
+    if not text or "\n" in text or "\r" in text:
+        return False
+    suffix = Path(text).suffix.lower()
+    if suffix not in {".json", ".txt", ".md", ".yaml", ".yml", ".prompt"}:
+        return False
+    return ("/" in text) or ("\\" in text) or len(text) <= 120
+
+
+def _extract_system_prompt_source(value: Optional[str]) -> Optional[str]:
+    if not _looks_like_prompt_path(value):
+        return None
+    return str(value).strip()
+
+
+def _system_prompt_filename(value: Optional[str]) -> Optional[str]:
+    if not value:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return Path(text).name
+
+
 def _compact_text(value: Optional[str], max_chars: int = 220) -> Optional[str]:
     if value is None:
         return None
@@ -951,6 +1017,16 @@ def _compact_text(value: Optional[str], max_chars: int = 220) -> Optional[str]:
     if len(text) <= max_chars:
         return text
     return text[:max_chars].rstrip() + "..."
+
+
+def _system_prompt_for_response(agent: Dict[str, Any]) -> Optional[str]:
+    source = agent.get("system_prompt_source")
+    if source:
+        return _system_prompt_filename(source)
+    raw = agent.get("system_prompt")
+    if _looks_like_prompt_path(raw):
+        return _system_prompt_filename(raw)
+    return _compact_text(raw)
 
 
 def _normalize_agent_create_payload(agent_request: AgentCreate) -> Dict[str, Any]:
@@ -974,6 +1050,8 @@ def _normalize_agent_create_payload(agent_request: AgentCreate) -> Dict[str, Any
     )
 
     conversation_starters = _extract_prompt_text(agent_request.conversation_starters)
+    conversation_end = _extract_conversation_items(agent_request.conversation_end)
+    system_prompt_source = _extract_system_prompt_source(agent_request.system_prompt)
     system_prompt = _resolve_system_prompt(agent_request.system_prompt)
     description = (
         (agent_request.description or "").strip()
@@ -986,11 +1064,17 @@ def _normalize_agent_create_payload(agent_request: AgentCreate) -> Dict[str, Any
         "name": name,
         "description": description,
         "system_prompt": system_prompt,
+        "system_prompt_source": system_prompt_source,
         "urls": urls,
         "image_urls": image_urls,
         "video_urls": video_urls,
         "conversation_starters": conversation_starters,
         "scraped_data": scraped_data,
+        "logic": agent_request.logic,
+        "conversation_end": conversation_end,
+        "agent_type": agent_request.agent_type,
+        "subagent_type": agent_request.subagent_type,
+        "model_selection": agent_request.model_selection,
     }
 
 
@@ -1118,7 +1202,7 @@ def agent_to_response(agent: dict, base_url: str = None) -> AgentResponse:
         id=agent['id'],
         name=agent['name'],
         description=agent.get('description'),
-        system_prompt=agent.get('system_prompt'),
+        system_prompt=_system_prompt_for_response(agent),
         role_type=agent.get('role_type'),
         industry=agent.get('industry'),
         urls=agent.get('urls'),
@@ -1126,18 +1210,29 @@ def agent_to_response(agent: dict, base_url: str = None) -> AgentResponse:
         image_urls=agent.get('image_urls'),
         video_urls=agent.get('video_urls'),
         scraped_data=agent.get('scraped_data'),
+        logic=agent.get('logic'),
+        conversation_end=agent.get('conversation_end'),
+        agent_type=agent.get('agent_type'),
+        subagent_type=agent.get('subagent_type'),
+        model_selection=agent.get('model_selection'),
         document_count=agent.get('document_count', 0),
         message_count=agent.get('message_count', 0),
         webhook_url=full_url
     )
 
 
-@app.get("/agents", response_model=List[AgentResponse])
-async def list_agents(request: Request):
-    """List all agents with their webhook URLs"""
+@app.get("/agents", response_model=List[AgentListItem])
+async def list_agents():
+    """List all agents (minimal fields)."""
     agents = get_all_agents()
-    base_url = str(request.base_url).rstrip("/")
-    return [agent_to_response(a, base_url) for a in agents]
+    return [
+        AgentListItem(
+            id=a["id"],
+            name=a["name"],
+            description=a.get("description"),
+        )
+        for a in agents
+    ]
 
 
 @app.get("/agents/{agent_id}", response_model=AgentResponse)
@@ -1174,6 +1269,7 @@ async def create_new_agent(agent_request: AgentCreate, request: Request, backgro
             name=normalized["name"],
             description=normalized["description"],
             system_prompt=normalized["system_prompt"],
+            system_prompt_source=normalized["system_prompt_source"],
             role_type=role_type,
             industry=industry,
             urls=normalized["urls"],
@@ -1181,6 +1277,11 @@ async def create_new_agent(agent_request: AgentCreate, request: Request, backgro
             image_urls=normalized["image_urls"],
             video_urls=normalized["video_urls"],
             scraped_data=normalized["scraped_data"],
+            logic=normalized["logic"],
+            conversation_end=normalized["conversation_end"],
+            agent_type=normalized["agent_type"],
+            subagent_type=normalized["subagent_type"],
+            model_selection=normalized["model_selection"],
         )
         
         # Handle Local File Paths (for bulk creation/scripting)
@@ -1227,13 +1328,14 @@ async def create_new_agent(agent_request: AgentCreate, request: Request, backgro
         agent = get_agent(agent_id)
         if not agent:
             raise HTTPException(status_code=500, detail="Failed to load created agent")
+        system_prompt_name = _system_prompt_filename(normalized.get("system_prompt_source"))
+        if not system_prompt_name:
+            system_prompt_name = _system_prompt_filename(normalized.get("system_prompt"))
         return AgentCreateResponse(
             status="created",
             agent_id=agent["id"],
             agent_name=agent["name"],
-            description=agent.get("description"),
-            system_prompt=_compact_text(agent.get("system_prompt")),
-            document_count=agent.get("document_count", 0),
+            system_prompt=system_prompt_name,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1248,6 +1350,8 @@ async def update_agent_endpoint(agent_id: str, agent_request: AgentUpdate, reque
     _validate_list_limits(agent_request)
     role_type, industry = _normalize_role_and_industry(agent_request.role_type, agent_request.industry)
     scraped_data = [_model_to_dict(row) for row in agent_request.scraped_data] if agent_request.scraped_data else None
+    conversation_end = _extract_conversation_items(agent_request.conversation_end) if agent_request.conversation_end is not None else None
+    system_prompt_source = _extract_system_prompt_source(agent_request.system_prompt) if agent_request.system_prompt is not None else None
 
     current_role, _ = _normalize_role_and_industry(current.get("role_type"), current.get("industry"))
     target_role = role_type if agent_request.role_type is not None else current_role
@@ -1277,6 +1381,7 @@ async def update_agent_endpoint(agent_id: str, agent_request: AgentUpdate, reque
         name=agent_request.name,
         description=agent_request.description,
         system_prompt=agent_request.system_prompt,
+        system_prompt_source=system_prompt_source,
         role_type=role_type if agent_request.role_type is not None else None,
         industry=target_industry if (agent_request.industry is not None or agent_request.role_type is not None) else None,
         urls=agent_request.urls,
@@ -1284,6 +1389,11 @@ async def update_agent_endpoint(agent_id: str, agent_request: AgentUpdate, reque
         image_urls=agent_request.image_urls,
         video_urls=agent_request.video_urls,
         scraped_data=scraped_data,
+        logic=agent_request.logic,
+        conversation_end=conversation_end,
+        agent_type=agent_request.agent_type,
+        subagent_type=agent_request.subagent_type,
+        model_selection=agent_request.model_selection,
     )
     if not success:
         raise HTTPException(status_code=404, detail="Agent not found")
@@ -1941,7 +2051,11 @@ async def whatsapp_webhook(request: Request):
         for part in parts:
             if part["type"] == "text" and part.get("content"):
                 print(f"  💬 Sending text: {part['content'][:50]}...")
-                last_result = handler.send_message(user_phone, part["content"])
+                last_result = handler.send_message(
+                    user_phone,
+                    part["content"],
+                    preview_url=bool(part.get("preview_url")),
+                )
             
             elif part["type"] == "image" and part.get("url"):
                 caption = part.get("caption", "")

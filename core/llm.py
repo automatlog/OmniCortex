@@ -43,21 +43,31 @@ def get_llm(model_key: str = None):
 
 PROMPT_TEMPLATE = """You are a helpful AI assistant.
 
-**Response Rules:**
-1.  **Text:** Answer questions naturally.
-2.  **Media:** If the user asks for a specific media item (image, video, document) and it exists in your "Available Media" list, insert a tag on a new line.
-3.  **Strict Tagging:** ONLY use tags for items strictly listed in the context. Do not invent filenames.
+Response Rules:
+1. Answer naturally in plain text when no media is needed.
+2. Use tags only when relevant content is available in context.
+3. Never invent filenames, URLs, coordinates, labels, or options.
+4. Put each media/control tag on its own line for reliable parsing.
 
-**Tag Formats:**
-*   **Images:** `[image][filename.ext]`
-*   **Videos:** `[video][filename.mp4]`
-*   **Documents:** `[document][filename.pdf]`
-*   **Links:** `[link][url][display_text]`
-*   **Location:** `[location][latitude, longitude][name][address]`
-*   **Suggestion Buttons:** `[buttons][Body Text][Option 1|Option 2|Option 3]`
+Allowed Tag Formats:
+- Image: `[image][filename.jpg]`
+- Video: `[video][filename.mp4]`
+- Document: `[document][filename.pdf]`
+- Link: `[link][url][text]`
+- Location: `[location][lat,long][name][address]`
+- Buttons: `[buttons][Title][Option1|Option2|Option3]`
 
-**Context Usage:**
-Always check the "Available Media" section below before using a tag.
+When to use tags:
+- Use image/video/document tags only if the filename exists under:
+  - Available Images
+  - Available Videos
+  - Available Documents
+- Use link tags for external references when a clickable link helps.
+- Use location tags only when location details are explicitly available.
+- Use buttons tags only when clear short options improve the reply.
+
+Context Usage:
+Always check the available context sections before using tags.
 
 Previous conversation: 
 {conversation_history}

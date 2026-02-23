@@ -36,6 +36,7 @@ class Agent(Base):
     name = Column(String, unique=True, nullable=False)
     description = Column(Text)
     system_prompt = Column(Text)  # Custom instructions
+    system_prompt_source = Column(String, nullable=True)  # Original prompt path/name for display
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
     document_count = Column(Integer, default=0)
@@ -50,6 +51,11 @@ class Agent(Base):
     image_urls = Column(JSON, nullable=True) # Optional image URLs
     video_urls = Column(JSON, nullable=True) # Optional video URLs
     scraped_data = Column(JSON, nullable=True) # Optional raw scraped content payload
+    logic = Column(JSON, nullable=True) # Optional execution logic/config
+    conversation_end = Column(JSON, nullable=True) # Optional end-of-conversation prompts/actions
+    agent_type = Column(String, nullable=True) # Legacy/postman compatibility
+    subagent_type = Column(String, nullable=True) # Legacy/postman compatibility
+    model_selection = Column(String, nullable=True) # Requested model profile
     
     # Relationships
     messages = relationship("Message", back_populates="agent", cascade="all, delete-orphan")
@@ -98,6 +104,12 @@ def ensure_schema_updates(engine):
                 conn.execute(text("ALTER TABLE omni_agents ADD COLUMN IF NOT EXISTS role_type VARCHAR"))
             except Exception as e:
                 print(f"Schema update (role_type) skipped/failed: {e}")
+
+            # system_prompt_source
+            try:
+                conn.execute(text("ALTER TABLE omni_agents ADD COLUMN IF NOT EXISTS system_prompt_source VARCHAR"))
+            except Exception as e:
+                print(f"Schema update (system_prompt_source) skipped/failed: {e}")
                 
             # urls
             try:
@@ -134,6 +146,71 @@ def ensure_schema_updates(engine):
                 conn.execute(text("ALTER TABLE omni_agents ADD COLUMN IF NOT EXISTS scraped_data JSON"))
             except Exception as e:
                 print(f"Schema update (scraped_data) skipped/failed: {e}")
+
+            # logic
+            try:
+                conn.execute(text("ALTER TABLE omni_agents ADD COLUMN IF NOT EXISTS logic JSON"))
+            except Exception as e:
+                print(f"Schema update (logic) skipped/failed: {e}")
+
+            # conversation_end
+            try:
+                conn.execute(text("ALTER TABLE omni_agents ADD COLUMN IF NOT EXISTS conversation_end JSON"))
+            except Exception as e:
+                print(f"Schema update (conversation_end) skipped/failed: {e}")
+
+            # agent_type
+            try:
+                conn.execute(text("ALTER TABLE omni_agents ADD COLUMN IF NOT EXISTS agent_type VARCHAR"))
+            except Exception as e:
+                print(f"Schema update (agent_type) skipped/failed: {e}")
+
+            # subagent_type
+            try:
+                conn.execute(text("ALTER TABLE omni_agents ADD COLUMN IF NOT EXISTS subagent_type VARCHAR"))
+            except Exception as e:
+                print(f"Schema update (subagent_type) skipped/failed: {e}")
+
+            # model_selection
+            try:
+                conn.execute(text("ALTER TABLE omni_agents ADD COLUMN IF NOT EXISTS model_selection VARCHAR"))
+            except Exception as e:
+                print(f"Schema update (model_selection) skipped/failed: {e}")
+
+            # Backfill dedicated columns from legacy extra_data payload (one-time compatibility migration).
+            try:
+                conn.execute(
+                    text(
+                        """
+                        UPDATE omni_agents
+                        SET
+                            system_prompt_source = COALESCE(system_prompt_source, extra_data::jsonb ->> 'system_prompt_source'),
+                            logic = COALESCE(logic, (extra_data::jsonb -> 'logic')::json),
+                            conversation_end = COALESCE(conversation_end, (extra_data::jsonb -> 'conversation_end')::json),
+                            agent_type = COALESCE(agent_type, extra_data::jsonb ->> 'agent_type'),
+                            subagent_type = COALESCE(subagent_type, extra_data::jsonb ->> 'subagent_type'),
+                            model_selection = COALESCE(model_selection, extra_data::jsonb ->> 'model_selection')
+                        WHERE extra_data IS NOT NULL
+                        """
+                    )
+                )
+                conn.execute(
+                    text(
+                        """
+                        UPDATE omni_agents
+                        SET extra_data = (extra_data::jsonb
+                            - 'system_prompt_source'
+                            - 'logic'
+                            - 'conversation_end'
+                            - 'agent_type'
+                            - 'subagent_type'
+                            - 'model_selection')::json
+                        WHERE extra_data IS NOT NULL
+                        """
+                    )
+                )
+            except Exception as e:
+                print(f"Schema update (backfill dedicated agent columns) skipped/failed: {e}")
 
             # Phase 3: Document Status
             try:

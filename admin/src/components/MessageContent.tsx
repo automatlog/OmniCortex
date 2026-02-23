@@ -288,8 +288,10 @@ export function MessageContent({ content, className = "", onSuggestionClick }: M
               <button
                 key={opt}
                 type="button"
-                onClick={() => onSuggestionClick?.(opt)}
-                className="px-3 py-1.5 rounded-full border border-neutral-600 text-xs text-neutral-200 hover:bg-neutral-800 transition-colors"
+                disabled
+                aria-label={`Suggestion option: ${opt}`}
+                title={onSuggestionClick ? "Buttons are preview-only in admin chat" : "Buttons are preview-only"}
+                className="px-3 py-1.5 rounded-full border border-neutral-700 text-xs text-neutral-400 bg-neutral-900/60 cursor-not-allowed opacity-80"
               >
                 {opt}
               </button>

@@ -2,6 +2,7 @@
 Chat Service - Orchestrates the RAG workflow
 """
 import os
+import json
 import time
 from typing import Dict, List, Optional
 from urllib.parse import unquote
@@ -105,30 +106,38 @@ def process_question(
             if agent:
                 agent_name = agent.get("name", "unknown")
                 
-                # Inject Available Media
+                # Inject available media inventories for tag-aware responses.
                 media_sections = []
                 
                 # 1. Images
                 image_urls = agent.get("image_urls") or []
                 if image_urls:
-                    image_lines = []
+                    image_names = []
                     for u in image_urls:
-                        fname = unquote(str(u).rstrip("/").rsplit("/", 1)[-1].split("?", 1)[0]).strip()
-                        image_lines.append(f"- {fname} => {u}")
-                    media_sections.append(
-                        "Available Images (use exact filename in [image][...]):\n" + "\n".join(image_lines)
-                    )
+                        if isinstance(u, dict):
+                            raw_url = u.get("url") or u.get("link") or u.get("src") or ""
+                        else:
+                            raw_url = str(u)
+                        fname = unquote(raw_url.rstrip("/").rsplit("/", 1)[-1].split("?", 1)[0]).strip()
+                        if fname:
+                            image_names.append(fname)
+                    if image_names:
+                        media_sections.append("Available Images: " + json.dumps(image_names, ensure_ascii=False))
                 
                 # 2. Videos
                 video_urls = agent.get("video_urls") or []
                 if video_urls:
-                    video_lines = []
+                    video_names = []
                     for u in video_urls:
-                        fname = unquote(str(u).rstrip("/").rsplit("/", 1)[-1].split("?", 1)[0]).strip()
-                        video_lines.append(f"- {fname} => {u}")
-                    media_sections.append(
-                        "Available Videos (use exact filename in [video][...]):\n" + "\n".join(video_lines)
-                    )
+                        if isinstance(u, dict):
+                            raw_url = u.get("url") or u.get("link") or u.get("src") or ""
+                        else:
+                            raw_url = str(u)
+                        fname = unquote(raw_url.rstrip("/").rsplit("/", 1)[-1].split("?", 1)[0]).strip()
+                        if fname:
+                            video_names.append(fname)
+                    if video_names:
+                        media_sections.append("Available Videos: " + json.dumps(video_names, ensure_ascii=False))
                 
                 # 3. Documents (Filenames)
                 try:
@@ -137,7 +146,7 @@ def process_question(
                     # We might need to cache this or limit it
                     doc_names = get_agent_document_names(agent_id, limit=50)
                     if doc_names:
-                        media_sections.append("Available Documents:\n" + "\n".join(doc_names))
+                        media_sections.append("Available Documents: " + json.dumps(doc_names, ensure_ascii=False))
                 except Exception as e:
                     print(f"⚠️ Failed to inject docs into context: {e}")
 

@@ -2,7 +2,7 @@
 Agent Management - CRUD operations for agents
 """
 import uuid
-from typing import List, Dict, Optional
+from typing import List, Dict, Optional, Any
 
 from .database import SessionLocal, Agent
 from .rag.vector_store import delete_vector_store
@@ -12,6 +12,7 @@ def create_agent(
     name: str,
     description: str = "",
     system_prompt: str = None,
+    system_prompt_source: str = None,
     role_type: str = None,
     industry: str = None,
     urls: List[str] = None,
@@ -19,6 +20,11 @@ def create_agent(
     image_urls: List[str] = None,
     video_urls: List[str] = None,
     scraped_data: List[Dict] = None,
+    logic: Any = None,
+    conversation_end: List[Dict] = None,
+    agent_type: str = None,
+    subagent_type: str = None,
+    model_selection: str = None,
 ) -> str:
     """Create a new agent"""
     db = SessionLocal()
@@ -33,6 +39,7 @@ def create_agent(
             name=name,
             description=description,
             system_prompt=system_prompt,
+            system_prompt_source=system_prompt_source,
             role_type=role_type,
             industry=industry,
             urls=urls,
@@ -40,6 +47,11 @@ def create_agent(
             image_urls=image_urls,
             video_urls=video_urls,
             scraped_data=scraped_data,
+            logic=logic,
+            conversation_end=conversation_end,
+            agent_type=agent_type,
+            subagent_type=subagent_type,
+            model_selection=model_selection,
         )
         db.add(agent)
         db.commit()
@@ -56,12 +68,14 @@ def get_agent(agent_id: str) -> Optional[Dict]:
         agent = db.query(Agent).filter(Agent.id == agent_id).first()
         if not agent:
             return None
+        metadata = agent.extra_data or {}
 
         return {
             "id": agent.id,
             "name": agent.name,
             "description": agent.description,
             "system_prompt": agent.system_prompt,
+            "system_prompt_source": agent.system_prompt_source or metadata.get("system_prompt_source"),
             "role_type": agent.role_type,
             "industry": agent.industry,
             "urls": agent.urls,
@@ -69,10 +83,15 @@ def get_agent(agent_id: str) -> Optional[Dict]:
             "image_urls": agent.image_urls,
             "video_urls": agent.video_urls,
             "scraped_data": agent.scraped_data,
+            "logic": agent.logic if agent.logic is not None else metadata.get("logic"),
+            "conversation_end": agent.conversation_end if agent.conversation_end is not None else metadata.get("conversation_end"),
+            "agent_type": agent.agent_type if agent.agent_type is not None else metadata.get("agent_type"),
+            "subagent_type": agent.subagent_type if agent.subagent_type is not None else metadata.get("subagent_type"),
+            "model_selection": agent.model_selection if agent.model_selection is not None else metadata.get("model_selection"),
             "document_count": agent.document_count or 0,
             "message_count": agent.message_count or 0,
             "created_at": agent.created_at.isoformat() if agent.created_at else None,
-            "metadata": agent.extra_data or {},
+            "metadata": metadata,
         }
     finally:
         db.close()
@@ -89,6 +108,7 @@ def get_all_agents() -> List[Dict]:
                 "name": a.name,
                 "description": a.description,
                 "system_prompt": a.system_prompt,
+                "system_prompt_source": a.system_prompt_source or ((a.extra_data or {}).get("system_prompt_source")),
                 "role_type": a.role_type,
                 "industry": a.industry,
                 "urls": a.urls,
@@ -96,6 +116,11 @@ def get_all_agents() -> List[Dict]:
                 "image_urls": a.image_urls,
                 "video_urls": a.video_urls,
                 "scraped_data": a.scraped_data,
+                "logic": a.logic if a.logic is not None else ((a.extra_data or {}).get("logic")),
+                "conversation_end": a.conversation_end if a.conversation_end is not None else ((a.extra_data or {}).get("conversation_end")),
+                "agent_type": a.agent_type if a.agent_type is not None else ((a.extra_data or {}).get("agent_type")),
+                "subagent_type": a.subagent_type if a.subagent_type is not None else ((a.extra_data or {}).get("subagent_type")),
+                "model_selection": a.model_selection if a.model_selection is not None else ((a.extra_data or {}).get("model_selection")),
                 "document_count": a.document_count or 0,
                 "message_count": a.message_count or 0,
                 "created_at": a.created_at.isoformat() if a.created_at else None,
@@ -111,6 +136,7 @@ def update_agent(
     name: str = None,
     description: str = None,
     system_prompt: str = None,
+    system_prompt_source: str = None,
     role_type: str = None,
     industry: str = None,
     urls: List[str] = None,
@@ -118,6 +144,11 @@ def update_agent(
     image_urls: List[str] = None,
     video_urls: List[str] = None,
     scraped_data: List[Dict] = None,
+    logic: Any = None,
+    conversation_end: List[Dict] = None,
+    agent_type: str = None,
+    subagent_type: str = None,
+    model_selection: str = None,
 ) -> bool:
     """Update agent details"""
     db = SessionLocal()
@@ -132,6 +163,8 @@ def update_agent(
             agent.description = description
         if system_prompt is not None:
             agent.system_prompt = system_prompt
+        if system_prompt_source is not None:
+            agent.system_prompt_source = system_prompt_source
         if role_type is not None:
             agent.role_type = role_type
         if industry is not None:
@@ -146,6 +179,16 @@ def update_agent(
             agent.video_urls = video_urls
         if scraped_data is not None:
             agent.scraped_data = scraped_data
+        if logic is not None:
+            agent.logic = logic
+        if conversation_end is not None:
+            agent.conversation_end = conversation_end
+        if agent_type is not None:
+            agent.agent_type = agent_type
+        if subagent_type is not None:
+            agent.subagent_type = subagent_type
+        if model_selection is not None:
+            agent.model_selection = model_selection
 
         db.commit()
         return True

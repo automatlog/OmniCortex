@@ -39,7 +39,7 @@ export function ChatInterface({
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const models = ["Meta Llama 3.1", "Nemotron"];
+  const models = ["Meta Llama 3.1", "Llama 4 Maverick"];
   const verbosityOptions = [
     { value: "short", label: "⚡ Short (5s)", desc: "Quick responses" },
     { value: "medium", label: "⚖️ Balanced", desc: "Standard detail" },

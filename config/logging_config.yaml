@@ -22,6 +22,14 @@ handlers:
     backupCount: 5
     level: INFO
 
+  api_file_handler:
+    class: logging.handlers.RotatingFileHandler
+    formatter: json
+    filename: "storage/logs/api.log"
+    maxBytes: 10485760  # 10MB
+    backupCount: 5
+    level: INFO
+
   error_file_handler:
     class: logging.handlers.RotatingFileHandler
     formatter: standard
@@ -32,7 +40,7 @@ handlers:
 
 root:
   level: INFO
-  handlers: [console, file_handler, error_file_handler]
+  handlers: [console, file_handler, api_file_handler, error_file_handler]
 
 loggers:
   uvicorn:

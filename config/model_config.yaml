@@ -10,7 +10,8 @@ vllm:
   api_key: "not-needed"
 
 rag:
-  embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+  embedding_model: "BAAI/bge-large-en-v1.5"
+  reranker_model: "BAAI/bge-reranker-large"
   chunk_size: 700
   chunk_overlap: 120
   top_k: 4

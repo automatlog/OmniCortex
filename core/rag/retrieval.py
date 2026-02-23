@@ -16,7 +16,7 @@ _RERANKER_MODEL = None
 def get_reranker():
     global _RERANKER_MODEL
     if _RERANKER_MODEL is None:
-        model_name = os.getenv("RERANKER_MODEL_NAME", "cross-encoder/ms-marco-MiniLM-L-6-v2")
+        model_name = os.getenv("RERANKER_MODEL_NAME", "BAAI/bge-reranker-large")
         print(f"🔹 Loading Reranker: {model_name}...")
         # Lazy import prevents import-time dependency crashes when reranker is disabled.
         from sentence_transformers import CrossEncoder

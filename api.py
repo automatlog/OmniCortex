@@ -285,10 +285,13 @@ class AgentResponse(BaseModel):
     message_count: int
     webhook_url: Optional[str] = None
 
-class AgentCreateResponse(AgentResponse):
+class AgentCreateResponse(BaseModel):
     status: str
     agent_id: str
     agent_name: str
+    description: Optional[str] = None
+    system_prompt: Optional[str] = None
+    document_count: int = 0
 
 class AgentUpdate(BaseModel):
     name: Optional[str] = None
@@ -941,6 +944,15 @@ def _resolve_system_prompt(value: Optional[str]) -> Optional[str]:
         return value
 
 
+def _compact_text(value: Optional[str], max_chars: int = 220) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if len(text) <= max_chars:
+        return text
+    return text[:max_chars].rstrip() + "..."
+
+
 def _normalize_agent_create_payload(agent_request: AgentCreate) -> Dict[str, Any]:
     name = ((agent_request.name or agent_request.agentname) or "").strip()
     if not name:
@@ -1213,14 +1225,15 @@ async def create_new_agent(agent_request: AgentCreate, request: Request, backgro
             background_tasks.add_task(process_urls, normalized["urls"], agent_id)
 
         agent = get_agent(agent_id)
-        base_url = str(request.base_url).rstrip("/")
-        base_response = agent_to_response(agent, base_url)
-        base_dict = base_response.model_dump() if hasattr(base_response, "model_dump") else base_response.dict()
+        if not agent:
+            raise HTTPException(status_code=500, detail="Failed to load created agent")
         return AgentCreateResponse(
-            **base_dict,
             status="created",
-            agent_id=base_dict["id"],
-            agent_name=base_dict["name"],
+            agent_id=agent["id"],
+            agent_name=agent["name"],
+            description=agent.get("description"),
+            system_prompt=_compact_text(agent.get("system_prompt")),
+            document_count=agent.get("document_count", 0),
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

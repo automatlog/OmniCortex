@@ -29,10 +29,11 @@ MODEL_BACKENDS = {
         "base_url": os.getenv("VLLM_BASE_URL", "http://localhost:8080/v1"),
         "model": os.getenv("VLLM_MODEL", "meta-llama/Llama-3.1-8B-Instruct"),
     },
-    "Nemotron": {
-        "base_url": os.getenv("NEMOTRON_BASE_URL", "http://localhost:8081/v1"),
-        "model": os.getenv("NEMOTRON_MODEL", "nvidia/NVIDIA-Nemotron-3-Nano-30B-A3B-NVFP4"),
-    }
+    "Llama 4 Maverick": {
+        "base_url": os.getenv("LLAMA_BASE_URL", "http://localhost:8080/v1"),
+        "model": os.getenv("LLAMA_MODEL", "meta-llama/Llama-4-Maverick-17B-128E-Instruct"),
+        "api_key": os.getenv("LLAMA_API_KEY", os.getenv("VLLM_API_KEY", "")),
+    },
 }
 
 # Voice Model (Moshi/PersonaPlex — runs locally)
@@ -49,7 +50,19 @@ LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.6"))
 # RAG SETTINGS
 # =============================================================================
 # Embeddings
-EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "sentence-transformers/all-MiniLM-L6-v2")
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "BAAI/bge-large-en-v1.5")
+
+def _infer_embedding_dim(model_name: str) -> int:
+    name = (model_name or "").lower()
+    if "bge-large-en-v1.5" in name:
+        return 1024
+    if "bge-base" in name:
+        return 768
+    if "bge-small" in name or "all-minilm-l6-v2" in name:
+        return 384
+    return 1024
+
+EMBEDDING_DIM = int(os.getenv("EMBEDDING_DIM", str(_infer_embedding_dim(EMBEDDING_MODEL))))
 
 # Chunking
 CHUNK_SIZE = int(os.getenv("CHUNK_SIZE", "700"))

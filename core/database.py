@@ -7,7 +7,7 @@ from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from sqlalchemy.sql import func
 from pgvector.sqlalchemy import Vector
-from .config import DATABASE_URL
+from .config import DATABASE_URL, EMBEDDING_DIM
 
 # Database setup with connection pooling
 engine = create_engine(
@@ -141,6 +141,33 @@ def ensure_schema_updates(engine):
             except Exception as e:
                 print(f"Schema update (document.status) skipped/failed: {e}")
 
+            # Semantic cache embedding dimension alignment for upgraded embedding models.
+            try:
+                conn.execute(text("DROP INDEX IF EXISTS idx_cache_embedding_hnsw"))
+            except Exception as e:
+                print(f"Schema update (drop idx_cache_embedding_hnsw) skipped/failed: {e}")
+
+            try:
+                conn.execute(
+                    text(
+                        f"ALTER TABLE omni_semantic_cache "
+                        f"ALTER COLUMN embedding TYPE vector({EMBEDDING_DIM})"
+                    )
+                )
+            except Exception as e:
+                # Cache is disposable; clear stale rows and retry when dimensions changed.
+                print(f"Schema update (semantic cache vector dim) retrying after truncate: {e}")
+                try:
+                    conn.execute(text("TRUNCATE TABLE omni_semantic_cache"))
+                    conn.execute(
+                        text(
+                            f"ALTER TABLE omni_semantic_cache "
+                            f"ALTER COLUMN embedding TYPE vector({EMBEDDING_DIM})"
+                        )
+                    )
+                except Exception as e2:
+                    print(f"Schema update (semantic cache vector dim) skipped/failed: {e2}")
+
 
 
 
@@ -261,7 +288,7 @@ class SemanticCache(Base):
     
     id = Column(Integer, primary_key=True, autoincrement=True)
     question = Column(Text, nullable=False)
-    embedding = Column(Vector(384))  # Assuming 384 dim (all-MiniLM), adjust if different
+    embedding = Column(Vector(EMBEDDING_DIM))
     answer = Column(Text, nullable=False)
     agent_id = Column(String, nullable=True)  # Optional: Cache per agent
     hit_count = Column(Integer, default=1)

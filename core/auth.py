@@ -1,44 +1,66 @@
-from fastapi import Security, HTTPException, Depends
-from fastapi.security.api_key import APIKeyHeader
-from starlette.status import HTTP_403_FORBIDDEN
-from sqlalchemy.orm import Session
-from core.database import SessionLocal, ApiKey
-import secrets
+import logging
+import os
+from typing import Any, Dict
 
-API_KEY_NAME = "X-API-Key"
-api_key_header = APIKeyHeader(name=API_KEY_NAME, auto_error=False)
+import requests
+from fastapi import Security, HTTPException
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from starlette.status import HTTP_403_FORBIDDEN, HTTP_503_SERVICE_UNAVAILABLE
 
-def get_db():
-    db = SessionLocal()
+
+bearer_scheme = HTTPBearer(auto_error=False)
+
+
+def _auth_verify_url() -> str:
+    return os.getenv("AUTH_VERIFY_URL", "https://gsauth.com/api/v1/omnicortex/me").strip()
+
+
+def _auth_verify_timeout() -> float:
+    raw = os.getenv("AUTH_VERIFY_TIMEOUT", "8").strip()
     try:
-        yield db
-    finally:
-        db.close()
+        return max(1.0, float(raw))
+    except ValueError:
+        return 8.0
+
 
 async def get_api_key(
-    api_key_header: str = Security(api_key_header),
-    db: Session = Depends(get_db)
-):
+    credentials: HTTPAuthorizationCredentials = Security(bearer_scheme),
+) -> Dict[str, Any]:
     """
-    Validates API Key from header parameter 'X-API-Key'.
+    Validates Authorization: Bearer <token> by calling external auth callback.
     """
-    if not api_key_header:
+    if not credentials or str(credentials.scheme).lower() != "bearer" or not credentials.credentials:
         raise HTTPException(
-            status_code=HTTP_403_FORBIDDEN, detail="API Key missing"
+            status_code=HTTP_403_FORBIDDEN, detail="Authorization Bearer token missing"
         )
-    
-    key_record = db.query(ApiKey).filter(ApiKey.key == api_key_header, ApiKey.is_active == True).first()
-    if key_record:
-        return key_record
-        
-    raise HTTPException(
-        status_code=HTTP_403_FORBIDDEN, detail="Invalid API Key"
-    )
 
-def create_new_api_key(owner: str, db: Session) -> str:
-    """Generate and save a new API key"""
-    new_key = secrets.token_urlsafe(32)
-    api_key = ApiKey(key=new_key, owner=owner)
-    db.add(api_key)
-    db.commit()
-    return new_key
+    token = str(credentials.credentials).strip()
+    verify_url = _auth_verify_url()
+    if not verify_url:
+        raise HTTPException(
+            status_code=HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AUTH_VERIFY_URL not configured",
+        )
+
+    try:
+        response = requests.get(
+            verify_url,
+            headers={"Authorization": f"Bearer {token}"},
+            timeout=_auth_verify_timeout(),
+        )
+    except requests.RequestException as exc:
+        logging.error(f"Auth verification request failed: {exc}")
+        raise HTTPException(
+            status_code=HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Auth verification unavailable",
+        )
+
+    if response.status_code != 200:
+        raise HTTPException(status_code=HTTP_403_FORBIDDEN, detail="Invalid bearer token")
+
+    try:
+        profile = response.json()
+    except ValueError:
+        profile = {"raw": response.text[:1000]}
+
+    return {"token": token, "profile": profile}

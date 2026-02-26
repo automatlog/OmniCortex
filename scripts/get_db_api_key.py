@@ -5,31 +5,14 @@ import os
 # Add project root to path
 sys.path.append(os.getcwd())
 
-from core.database import SessionLocal, ApiKey, init_db
-from core.auth import create_new_api_key
-
-def get_or_create_key():
-    db = SessionLocal()
-    try:
-        # Try to find existing active key
-        key = db.query(ApiKey).filter(ApiKey.is_active == True).first()
-        final_key = ""
-        if key:
-            final_key = key.key
-            print(f"FOUND_KEY: {final_key}")
-        else:
-            print("No keys found. Creating new...")
-            final_key = create_new_api_key("stress_test_user", db)
-            print(f"CREATED_KEY: {final_key}")
-        
-        with open("temp_api_key.txt", "w") as f:
-            f.write(final_key)
-            
-    except Exception as e:
-        print(f"Error: {e}")
-    finally:
-        db.close()
+def write_bearer_token():
+    token = (os.getenv("BEARER_TOKEN") or os.getenv("AUTH_BEARER_TOKEN") or "").strip()
+    if not token:
+        print("Error: BEARER_TOKEN (or AUTH_BEARER_TOKEN) is required")
+        sys.exit(1)
+    with open("temp_api_key.txt", "w", encoding="utf-8") as f:
+        f.write(token)
+    print("TOKEN_WRITTEN: temp_api_key.txt")
 
 if __name__ == "__main__":
-    init_db()
-    get_or_create_key()
+    write_bearer_token()

@@ -1,7 +1,6 @@
 """
 Agent Management - CRUD operations for agents
 """
-import uuid
 from typing import List, Dict, Optional, Any
 
 from .database import SessionLocal, Agent
@@ -10,6 +9,7 @@ from .rag.vector_store import delete_vector_store
 
 def create_agent(
     name: str,
+    id: str,
     description: str = "",
     system_prompt: str = None,
     system_prompt_source: str = None,
@@ -33,7 +33,13 @@ def create_agent(
         if existing:
             raise ValueError(f"Agent '{name}' already exists")
 
-        agent_id = str(uuid.uuid4())
+        agent_id = str(id).strip() if id is not None else ""
+        if not agent_id:
+            raise ValueError("id is required")
+        id_exists = db.query(Agent).filter(Agent.id == agent_id).first()
+        if id_exists:
+            raise ValueError(f"Agent id '{agent_id}' already exists")
+
         agent = Agent(
             id=agent_id,
             name=name,

@@ -74,6 +74,13 @@ def format_context(docs) -> str:
     return "\n\n".join(context_parts)
 
 
+def estimate_tokens(text: str) -> int:
+    """Lightweight token estimate (approx. 1 token ~= 4 chars)."""
+    if not text:
+        return 0
+    return max(1, (len(text) + 3) // 4)
+
+
 def process_question(
     question: str,
     agent_id: str = None,
@@ -82,17 +89,54 @@ def process_question(
     verbosity: str = "medium",
     model_selection: str = None,
     rerank: Optional[bool] = None,
+    request_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    channel_name: str = "web",
+    channel_type: str = "UTILITY",
 ) -> str:
     """Process user question with RAG and guardrails."""
     is_valid, reason = validate_input(question)
     if not is_valid:
-        return f"Request Blocked: {reason}"
+        blocked_answer = f"Request Blocked: {reason}"
+        try:
+            from .clickhouse import log_chat_to_clickhouse
+
+            log_chat_to_clickhouse(
+                agent_id=agent_id,
+                user_message=question,
+                assistant_message=blocked_answer,
+                request_id=request_id,
+                session_id=session_id,
+                user_id=user_id,
+                status="blocked",
+                error=reason,
+            )
+        except Exception:
+            pass
+        return blocked_answer
 
     safe_question = mask_pii(question)
+    question_tokens = estimate_tokens(question)
+    rag_query_tokens = estimate_tokens(safe_question)
     cached = check_cache(safe_question, agent_id)
     if cached:
         save_message("user", safe_question, agent_id=agent_id)
         save_message("assistant", cached, agent_id=agent_id)
+        try:
+            from .clickhouse import log_chat_to_clickhouse
+
+            log_chat_to_clickhouse(
+                agent_id=agent_id,
+                user_message=question,
+                assistant_message=cached,
+                request_id=request_id,
+                session_id=session_id,
+                user_id=user_id,
+                status="cached",
+            )
+        except Exception:
+            pass
         return cached
 
     docs = hybrid_search(safe_question, agent_id=agent_id, top_k=2, rerank=rerank)
@@ -165,10 +209,19 @@ def process_question(
         agent_name=agent_name,
         verbosity=verbosity,
         model_key=model_selection,
+        request_id=request_id,
+        session_id=session_id,
+        user_id=user_id,
+        channel_name=channel_name,
+        channel_type=channel_type,
+        question_tokens=question_tokens,
+        rag_query_tokens=rag_query_tokens,
     )
 
+    response_status = "success"
     is_valid_out, out_reason = validate_output(answer)
     if not is_valid_out:
+        response_status = "blocked"
         answer = f"Response Blocked: {out_reason}"
     else:
         save_to_cache(safe_question, answer, agent_id)
@@ -179,8 +232,16 @@ def process_question(
     try:
         from .clickhouse import log_chat_to_clickhouse
 
-        log_chat_to_clickhouse(agent_id, "user", question)
-        log_chat_to_clickhouse(agent_id, "assistant", answer)
+        log_chat_to_clickhouse(
+            agent_id=agent_id,
+            user_message=question,
+            assistant_message=answer,
+            request_id=request_id,
+            session_id=session_id,
+            user_id=user_id,
+            status=response_status,
+            error=out_reason if response_status == "blocked" else None,
+        )
     except Exception:
         pass
 

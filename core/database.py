@@ -177,6 +177,18 @@ def ensure_schema_updates(engine):
             except Exception as e:
                 print(f"Schema update (model_selection) skipped/failed: {e}")
 
+            # usage.question_tokens
+            try:
+                conn.execute(text("ALTER TABLE omni_usage ADD COLUMN IF NOT EXISTS question_tokens INTEGER DEFAULT 0"))
+            except Exception as e:
+                print(f"Schema update (usage.question_tokens) skipped/failed: {e}")
+
+            # usage.rag_query_tokens
+            try:
+                conn.execute(text("ALTER TABLE omni_usage ADD COLUMN IF NOT EXISTS rag_query_tokens INTEGER DEFAULT 0"))
+            except Exception as e:
+                print(f"Schema update (usage.rag_query_tokens) skipped/failed: {e}")
+
             # Backfill dedicated columns from legacy extra_data payload (one-time compatibility migration).
             try:
                 conn.execute(
@@ -310,6 +322,8 @@ class UsageLog(Base):
     id = Column(Integer, primary_key=True, autoincrement=True)
     agent_id = Column(String, ForeignKey("omni_agents.id", ondelete="SET NULL"))
     timestamp = Column(DateTime(timezone=True), server_default=func.now())
+    question_tokens = Column(Integer, default=0)
+    rag_query_tokens = Column(Integer, default=0)
     prompt_tokens = Column(Integer, default=0)
     completion_tokens = Column(Integer, default=0)
     total_tokens = Column(Integer, default=0)
@@ -416,8 +430,15 @@ def get_session():
     return SessionLocal()
 
 # Usage Operations
-def log_usage(agent_id: str, prompt_tokens: int, completion_tokens: int, 
-              model_name: str, latency: float = 0.0):
+def log_usage(
+    agent_id: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    model_name: str,
+    latency: float = 0.0,
+    question_tokens: int = 0,
+    rag_query_tokens: int = 0,
+):
     """Log token usage and latency"""
     db = SessionLocal()
     try:
@@ -434,6 +455,8 @@ def log_usage(agent_id: str, prompt_tokens: int, completion_tokens: int,
         
         log = UsageLog(
             agent_id=agent_id,
+            question_tokens=question_tokens or 0,
+            rag_query_tokens=rag_query_tokens or 0,
             prompt_tokens=prompt_tokens,
             completion_tokens=completion_tokens,
             total_tokens=total_tokens,
@@ -457,6 +480,8 @@ def get_usage_stats(limit: int = 100):
                 "timestamp": l.timestamp,
                 "agent_id": l.agent_id,
                 "model": l.model_name,
+                "question_tokens": getattr(l, "question_tokens", 0),
+                "rag_query_tokens": getattr(l, "rag_query_tokens", 0),
                 "total_tokens": l.total_tokens,
                 "prompt_tokens": l.prompt_tokens,
                 "completion_tokens": l.completion_tokens,

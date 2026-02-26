@@ -41,17 +41,20 @@ from core import (
     get_agent,
     create_agent,
     update_agent,
+    update_agent_metadata,
     delete_agent,
     get_agent_documents,
     delete_document,
     get_conversation_history,
+    clear_history,
     process_question,
     process_documents,
+    reset_chain,
 )
 from core.database import Channel, Tool, Session as DBSession, SessionLocal, ApiKey # Phase 2 & 3 & 4 support
-from sqlalchemy.orm import Session as SQLASession
 from core.graph import create_rag_agent
 from core.processing.scraper import process_urls
+from core.config import MODEL_BACKENDS
 
 # Import metrics from core.monitoring
 from core.monitoring import (
@@ -61,7 +64,7 @@ from core.monitoring import (
     PrometheusMiddleware
 )
 from core.manager.connection_manager import ConnectionManager
-from core.auth import get_api_key, create_new_api_key, get_db
+from core.auth import get_api_key
 from fastapi import Depends
 
 # Initialize Connection Manager
@@ -195,19 +198,22 @@ _health_cache = {"result": None, "timestamp": 0}
 
 # ============== MODELS ==============
 class QueryRequest(BaseModel):
-    question: str
-    agent_id: Optional[str] = None
+    question: Optional[str] = None
+    query: Optional[str] = None
+    id: Optional[str] = None
     user_id: Optional[str] = "anonymous" # For session tracking
     session_id: Optional[str] = None # Resume existing session
     max_history: int = 5
-    model_selection: Optional[str] = None
+    channel_name: Optional[str] = "TEXT"  # TEXT | VOICE
+    channel_type: Optional[str] = "UTILITY"  # UTILITY | MARKETING | AUTHENTICATION
     mock_mode: bool = False  # True = bypass LLM for load testing
 
 
 class QueryResponse(BaseModel):
     answer: str
-    agent_id: Optional[str] = None
+    id: Optional[str] = None
     session_id: Optional[str] = None
+    request_id: Optional[str] = None
 
 
 class AgentDocumentText(BaseModel):
@@ -234,6 +240,7 @@ class LegacyDocumentData(BaseModel):
 
 class AgentCreate(BaseModel):
     # Current schema
+    agent_name: Optional[str] = None
     name: Optional[str] = None
     description: Optional[str] = ""
     system_prompt: Optional[str] = None
@@ -248,7 +255,7 @@ class AgentCreate(BaseModel):
     file_paths: Optional[List[str]] = None  # Backward-compatible local files path list
 
     # Legacy/postman compatibility schema
-    id: Optional[Union[int, str]] = None
+    id: Union[int, str]
     agentname: Optional[str] = None
     agent_type: Optional[str] = None
     subagent_type: Optional[str] = None
@@ -259,12 +266,9 @@ class AgentCreate(BaseModel):
     instruction: Optional[str] = None
     conversation_end: Optional[List[Union[str, ConversationStarterItem]]] = None
 
-class CreateKeyRequest(BaseModel):
-    owner: str
-
 class StatusResponse(BaseModel):
     status: str
-    agent_id: Optional[str] = None
+    id: Optional[str] = None
     document_id: Optional[int] = None
 
 class AgentResponse(BaseModel):
@@ -292,31 +296,41 @@ class AgentResponse(BaseModel):
 
 class AgentListItem(BaseModel):
     id: str
-    name: str
+    agent_type: Optional[str] = None
+    agent_name: str
     description: Optional[str] = None
 
 class AgentCreateResponse(BaseModel):
     status: str
-    agent_id: str
+    id: str
     agent_name: str
     system_prompt: Optional[str] = None
 
 class AgentUpdate(BaseModel):
     name: Optional[str] = None
+    agent_name: Optional[str] = None
+    agentname: Optional[str] = None
+    id: Optional[Union[int, str]] = None
     description: Optional[str] = None
     system_prompt: Optional[str] = None
     role_type: Optional[str] = None
     industry: Optional[str] = None
     urls: Optional[List[str]] = None
-    conversation_starters: Optional[List[str]] = None
+    website_data: Optional[List[str]] = None
+    document_data: Optional[LegacyDocumentData] = None
+    conversation_starters: Optional[List[Union[str, ConversationStarterItem]]] = None
     image_urls: Optional[List[str]] = None
     video_urls: Optional[List[str]] = None
+    documents_text: Optional[List[AgentDocumentText]] = None
+    file_paths: Optional[List[str]] = None
     scraped_data: Optional[List[ScrapedContent]] = None
     logic: Optional[Union[str, Dict[str, Any]]] = None
+    instruction: Optional[str] = None
     conversation_end: Optional[List[Union[str, ConversationStarterItem]]] = None
     agent_type: Optional[str] = None
     subagent_type: Optional[str] = None
     model_selection: Optional[str] = None
+    restart_after_update: bool = False
 
 # ============== MESSAGING MODELS (PHASE 2) ==============
 class ChannelCreate(BaseModel):
@@ -516,44 +530,13 @@ async def options_handler(full_path: str):
 
 
 @app.get("/metrics")
-async def metrics():
+async def metrics(api_key: ApiKey = Depends(get_api_key)):
     """Expose Prometheus metrics"""
     return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
 
-@app.post("/auth/keys")
-async def create_api_key_endpoint(body: CreateKeyRequest, request: Request, db: SQLASession = Depends(get_db)):
-    """Generate a new API key. Requires X-Master-Key header."""
-    master_key = os.getenv("MASTER_API_KEY")
-    if not master_key:
-        raise HTTPException(status_code=503, detail="MASTER_API_KEY not configured on server")
-    provided = request.headers.get("X-Master-Key")
-    if not hmac.compare_digest(str(provided or ""), str(master_key or "")):
-        raise HTTPException(status_code=403, detail="Invalid master key")
-    new_key = create_new_api_key(body.owner, db)
-    return {"key": new_key, "owner": body.owner}
-
-
-@app.post("/auth/keys/{key}/revoke")
-async def revoke_api_key_endpoint(key: str, request: Request, db: SQLASession = Depends(get_db)):
-    """Revoke an API key. Requires X-Master-Key header."""
-    master_key = os.getenv("MASTER_API_KEY")
-    if not master_key:
-        raise HTTPException(status_code=503, detail="MASTER_API_KEY not configured on server")
-    provided = request.headers.get("X-Master-Key")
-    if not hmac.compare_digest(str(provided or ""), str(master_key or "")):
-        raise HTTPException(status_code=403, detail="Invalid master key")
-
-    rec = db.query(ApiKey).filter(ApiKey.key == key).first()
-    if not rec:
-        raise HTTPException(status_code=404, detail="API key not found")
-    rec.is_active = False
-    db.commit()
-    return {"status": "revoked", "key": key}
-
-
 @app.get("/stats/dashboard")
-async def dashboard_stats():
+async def dashboard_stats(api_key: ApiKey = Depends(get_api_key)):
     """Get aggregated metrics for dashboard graphs"""
     from core.database import SessionLocal, Agent, Document, Session, UsageLog
     from sqlalchemy import func, desc
@@ -610,7 +593,7 @@ async def dashboard_stats():
         db.close()
 
 @app.get("/documents/{document_id}/chunks")
-async def get_document_chunks_api(document_id: int):
+async def get_document_chunks_api(document_id: int, api_key: ApiKey = Depends(get_api_key)):
     """Get chunks for a specific document (Parent Chunks)"""
     # Note: We currently store parent chunks in 'omni_parent_chunks' linked by source_doc_id
     from core.database import ParentChunk, SessionLocal
@@ -626,7 +609,7 @@ async def get_document_chunks_api(document_id: int):
 
 
 @app.get("/stats/agents")
-async def agent_stats():
+async def agent_stats(api_key: ApiKey = Depends(get_api_key)):
     """Get comprehensive stats for all agents including tokens and latency"""
     from core.database import get_usage_stats, SessionLocal
     from core.database import Agent, UsageLog
@@ -643,6 +626,8 @@ async def agent_stats():
             
             # Get usage stats for this agent
             usage = db.query(
+                func.sum(UsageLog.question_tokens).label('total_question'),
+                func.sum(UsageLog.rag_query_tokens).label('total_rag_query'),
                 func.sum(UsageLog.prompt_tokens).label('total_prompt'),
                 func.sum(UsageLog.completion_tokens).label('total_completion'),
                 func.sum(UsageLog.total_tokens).label('total_tokens'),
@@ -657,6 +642,8 @@ async def agent_stats():
                 "agent_name": agent['name'],
                 "document_count": agent.get('document_count', 0),
                 "message_count": agent.get('message_count', 0),
+                "total_question_tokens": usage.total_question or 0,
+                "total_rag_query_tokens": usage.total_rag_query or 0,
                 "total_prompt_tokens": usage.total_prompt or 0,
                 "total_completion_tokens": usage.total_completion or 0,
                 "total_tokens": usage.total_tokens or 0,
@@ -677,10 +664,17 @@ async def agent_stats():
 # --- Chat ---
 @app.post("/query", response_model=QueryResponse)
 async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
-    """Chat with an agent using RAG"""
+    """Chat with an agent using RAG."""
     request_id = str(uuid.uuid4())
     started = time.perf_counter()
-    question_preview = (request.question or "")[:500].replace("\n", " ").strip()
+    resolved_question = _resolve_query_text(request)
+    if not resolved_question:
+        raise HTTPException(status_code=400, detail="question (or query) is required")
+
+    resolved_model_selection = _resolve_model_selection_for_agent(request.id)
+    normalized_channel_name = _normalize_channel_name(request.channel_name)
+    normalized_channel_type = _normalize_channel_type(request.channel_type)
+    question_preview = resolved_question[:500].replace("\n", " ").strip()
 
     # Privacy/Logging config
     PRIVACY_PSEUDONYMIZE = os.getenv("LOG_PSEUDONYMIZE", "true").lower() == "true"
@@ -711,40 +705,68 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
     query_logger.info(json.dumps({
         "event": "query_in",
         "request_id": request_id,
-        "agent_id": request.agent_id,
+        "id": request.id,
         "session_id": request.session_id,
         "user_id": pseudonymize_user_id(request.user_id),
-        "model_selection": request.model_selection,
+        "model_selection": resolved_model_selection,
+        "model_selection_source": "agent_config" if resolved_model_selection else "default_backend",
+        "channel_name": normalized_channel_name,
+        "channel_type": normalized_channel_type,
         "mock_mode": request.mock_mode,
         "question_preview": redact_question_preview(question_preview),
     }, ensure_ascii=False))
 
     try:
         # Track metrics
-        CHAT_REQUESTS.labels(agent_id=request.agent_id or "default").inc()
+        CHAT_REQUESTS.labels(agent_id=request.id or "default").inc()
         
         # Session Tracking
         session_id = request.session_id
         db = None
         try:
             if not session_id:
-                # Create new session
-                session_id = str(uuid.uuid4())
-                if request.agent_id:
+                # Auto-session policy: one generated session per agent+user+channel per day.
+                if request.id:
+                    from sqlalchemy import func as sa_func
+
                     db = SessionLocal()
-                    new_sess = DBSession(
-                        id=session_id,
-                        agent_id=request.agent_id,
-                        user_id=request.user_id or "anonymous",
-                        status="active",
-                        channel_type="web"
+                    user_key = request.user_id or "anonymous"
+                    channel_key = (normalized_channel_name or "TEXT").lower()
+                    today = datetime.datetime.now().date()
+
+                    existing_session = (
+                        db.query(DBSession)
+                        .filter(
+                            DBSession.agent_id == request.id,
+                            DBSession.user_id == user_key,
+                            DBSession.channel_type == channel_key,
+                            sa_func.date(DBSession.start_time) == today,
+                        )
+                        .order_by(DBSession.start_time.desc())
+                        .first()
                     )
-                    db.add(new_sess)
-                    db.commit()
+
+                    if existing_session:
+                        session_id = existing_session.id
+                    else:
+                        session_id = str(uuid.uuid4())
+                        new_sess = DBSession(
+                            id=session_id,
+                            agent_id=request.id,
+                            user_id=user_key,
+                            status="active",
+                            channel_type=channel_key,
+                        )
+                        db.add(new_sess)
+                        db.commit()
+                else:
+                    # No agent id to anchor persistence, return ephemeral generated session id.
+                    session_id = str(uuid.uuid4())
             
             # Update existing session duration/end_time is usually done on completion or heartbeat
             # For now, we just ensure it exists
         except Exception as e:
+            logging.warning(f"Session tracking error: {e}")
             print(f"⚠️ Session tracking error: {e}")
         finally:
             if db is not None:
@@ -757,8 +779,9 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
             time.sleep(0.1)  # Simulate network latency
             response = QueryResponse(
                 answer="[MOCK] Load test response - LLM bypassed",
-                agent_id=request.agent_id,
-                session_id=session_id
+                id=request.id,
+                session_id=session_id,
+                request_id=request_id,
             )
             latency_ms = round((time.perf_counter() - started) * 1000, 2)
             query_logger.info(json.dumps({
@@ -773,26 +796,36 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
         
         # Get conversation history
         history = []
-        if request.agent_id:
+        if request.id:
             history = get_conversation_history(
-                agent_id=request.agent_id,
+                agent_id=request.id,
                 limit=request.max_history * 2
             )
         
         # Process question
         answer = process_question(
-            question=request.question,
-            agent_id=request.agent_id,
+            question=resolved_question,
+            agent_id=request.id,
             conversation_history=history,
             max_history=request.max_history,
-            model_selection=request.model_selection
+            model_selection=resolved_model_selection,
+            request_id=request_id,
+            session_id=session_id,
+            user_id=request.user_id,
+            channel_name=normalized_channel_name,
+            channel_type=normalized_channel_type,
         )
         
         # Replace [image][filename] and other tags with actual URLs/Markdown for frontend
         from core.response_parser import process_rich_response_for_frontend
-        answer = process_rich_response_for_frontend(answer, agent_id=request.agent_id)
+        answer = process_rich_response_for_frontend(answer, agent_id=request.id)
         
-        response = QueryResponse(answer=answer, agent_id=request.agent_id, session_id=session_id)
+        response = QueryResponse(
+            answer=answer,
+            id=request.id,
+            session_id=session_id,
+            request_id=request_id,
+        )
         latency_ms = round((time.perf_counter() - started) * 1000, 2)
         query_logger.info(json.dumps({
             "event": "query_out",
@@ -806,6 +839,26 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
     
     except FileNotFoundError:
         latency_ms = round((time.perf_counter() - started) * 1000, 2)
+        try:
+            from core.clickhouse import log_usage_to_clickhouse
+
+            log_usage_to_clickhouse(
+                agent_id=request.id,
+                model=resolved_model_selection or os.getenv("VLLM_MODEL", "unknown"),
+                prompt_tokens=0,
+                completion_tokens=0,
+                latency_ms=latency_ms,
+                cost=0.0,
+                request_id=request_id,
+                session_id=locals().get("session_id"),
+                user_id=request.user_id,
+                channel_name=normalized_channel_name,
+                channel_type=normalized_channel_type,
+                status="error",
+                error="Upload documents first",
+            )
+        except Exception:
+            pass
         query_logger.error(json.dumps({
             "event": "query_error",
             "request_id": request_id,
@@ -816,6 +869,26 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
         raise HTTPException(status_code=400, detail="Upload documents first")
     except Exception as e:
         latency_ms = round((time.perf_counter() - started) * 1000, 2)
+        try:
+            from core.clickhouse import log_usage_to_clickhouse
+
+            log_usage_to_clickhouse(
+                agent_id=request.id,
+                model=resolved_model_selection or os.getenv("VLLM_MODEL", "unknown"),
+                prompt_tokens=0,
+                completion_tokens=0,
+                latency_ms=latency_ms,
+                cost=0.0,
+                request_id=request_id,
+                session_id=locals().get("session_id"),
+                user_id=request.user_id,
+                channel_name=normalized_channel_name,
+                channel_type=normalized_channel_type,
+                status="error",
+                error=str(e),
+            )
+        except Exception:
+            pass
         query_logger.error(json.dumps({
             "event": "query_error",
             "request_id": request_id,
@@ -857,6 +930,9 @@ async def websocket_endpoint(websocket: WebSocket, agent_id: str):
                             question=question,
                             agent_id=agent_id,
                             conversation_history=history,
+                            request_id=str(uuid.uuid4()),
+                            user_id="websocket",
+                            channel_name="websocket",
                         )
                     )
                 except Exception as e:
@@ -901,6 +977,16 @@ BUSINESS_INDUSTRIES = {
 MAX_URLS = 25
 MAX_CONVERSATION_STARTERS = 25
 MAX_MEDIA_URLS = 25
+CHANNEL_NAMES = {"TEXT", "VOICE"}
+CHANNEL_TYPES = {"UTILITY", "MARKETING", "AUTHENTICATION"}
+MODEL_SELECTION_ALIASES = {
+    "Meta Llama-3.1-8B-Instruct": "Meta Llama 3.1",
+    "Meta-Llama-3.1-8B-Instruct": "Meta Llama 3.1",
+    "meta-llama/Meta-Llama-3.1-8B-Instruct": "Meta Llama 3.1",
+    "Meta Llama-4-Maverick-17B-128E-Instruct": "Llama 4 Maverick",
+    "Llama-4-Maverick-17B-128E-Instruct": "Llama 4 Maverick",
+    "meta-llama/Llama-4-Maverick-17B-128E-Instruct": "Llama 4 Maverick",
+}
 
 
 def _model_to_dict(item):
@@ -909,6 +995,58 @@ def _model_to_dict(item):
     if hasattr(item, "model_dump"):
         return item.model_dump()
     return item.dict()
+
+
+def _normalize_channel_name(value: Optional[str]) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "TEXT"
+    upper = text.upper()
+    if upper in CHANNEL_NAMES:
+        return upper
+    return "VOICE" if text.lower() == "voice" else "TEXT"
+
+
+def _normalize_channel_type(value: Optional[str]) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "UTILITY"
+    upper = text.upper()
+    if upper in CHANNEL_TYPES:
+        return upper
+    return "UTILITY"
+
+
+def _normalize_model_selection(value: Optional[str]) -> Optional[str]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+    if text in MODEL_BACKENDS:
+        return text
+    if text in MODEL_SELECTION_ALIASES:
+        return MODEL_SELECTION_ALIASES[text]
+
+    lowered = text.lower()
+    for key in MODEL_BACKENDS.keys():
+        if lowered == str(key).lower():
+            return key
+    for alias, canonical in MODEL_SELECTION_ALIASES.items():
+        if lowered == alias.lower():
+            return canonical
+    return text
+
+
+def _resolve_query_text(request_payload: QueryRequest) -> str:
+    return str((request_payload.question or request_payload.query or "")).strip()
+
+
+def _resolve_model_selection_for_agent(id: Optional[str]) -> Optional[str]:
+    if not id:
+        return None
+    agent = get_agent(id)
+    if not agent:
+        return None
+    return _normalize_model_selection(agent.get("model_selection"))
 
 
 def _merge_unique_str_lists(*values: Optional[List[str]]) -> Optional[List[str]]:
@@ -1030,9 +1168,16 @@ def _system_prompt_for_response(agent: Dict[str, Any]) -> Optional[str]:
 
 
 def _normalize_agent_create_payload(agent_request: AgentCreate) -> Dict[str, Any]:
-    name = ((agent_request.name or agent_request.agentname) or "").strip()
+    name = ((agent_request.name or agent_request.agent_name or agent_request.agentname) or "").strip()
     if not name:
-        raise HTTPException(status_code=400, detail="name (or agentname) is required")
+        raise HTTPException(status_code=400, detail="name (or agent_name/agentname) is required")
+
+    incoming_id = agent_request.id
+    if incoming_id is None:
+        raise HTTPException(status_code=400, detail="id is required")
+    incoming_id = str(incoming_id).strip()
+    if not incoming_id:
+        raise HTTPException(status_code=400, detail="id is required")
 
     document_data = agent_request.document_data
     legacy_doc_urls = []
@@ -1061,6 +1206,7 @@ def _normalize_agent_create_payload(agent_request: AgentCreate) -> Dict[str, Any
     scraped_data = [_model_to_dict(row) for row in agent_request.scraped_data] if agent_request.scraped_data else None
 
     return {
+        "id": incoming_id,
         "name": name,
         "description": description,
         "system_prompt": system_prompt,
@@ -1074,7 +1220,107 @@ def _normalize_agent_create_payload(agent_request: AgentCreate) -> Dict[str, Any
         "conversation_end": conversation_end,
         "agent_type": agent_request.agent_type,
         "subagent_type": agent_request.subagent_type,
-        "model_selection": agent_request.model_selection,
+        "model_selection": _normalize_model_selection(agent_request.model_selection),
+    }
+
+
+def _normalize_agent_update_payload(agent_request: AgentUpdate) -> Dict[str, Any]:
+    document_data = agent_request.document_data
+    legacy_doc_urls = []
+    if document_data and document_data.documents_text:
+        legacy_doc_urls = [doc.url for doc in document_data.documents_text if doc.url]
+
+    urls_provided = any([
+        agent_request.urls is not None,
+        agent_request.website_data is not None,
+        bool(legacy_doc_urls),
+    ])
+    image_urls_provided = any([
+        agent_request.image_urls is not None,
+        bool(document_data and document_data.image_urls is not None),
+    ])
+    video_urls_provided = any([
+        agent_request.video_urls is not None,
+        bool(document_data and document_data.video_urls is not None),
+    ])
+
+    urls_merged = _merge_unique_str_lists(
+        agent_request.urls,
+        agent_request.website_data,
+        legacy_doc_urls,
+    ) if urls_provided else None
+    urls = urls_merged if urls_merged is not None else ([] if urls_provided else None)
+
+    image_urls_merged = _merge_unique_str_lists(
+        agent_request.image_urls,
+        document_data.image_urls if document_data else None,
+    ) if image_urls_provided else None
+    image_urls = image_urls_merged if image_urls_merged is not None else ([] if image_urls_provided else None)
+
+    video_urls_merged = _merge_unique_str_lists(
+        agent_request.video_urls,
+        document_data.video_urls if document_data else None,
+    ) if video_urls_provided else None
+    video_urls = video_urls_merged if video_urls_merged is not None else ([] if video_urls_provided else None)
+
+    conversation_starters_merged = (
+        _extract_prompt_text(agent_request.conversation_starters)
+        if agent_request.conversation_starters is not None else None
+    )
+    conversation_starters = (
+        conversation_starters_merged
+        if conversation_starters_merged is not None
+        else ([] if agent_request.conversation_starters is not None else None)
+    )
+
+    conversation_end_merged = (
+        _extract_conversation_items(agent_request.conversation_end)
+        if agent_request.conversation_end is not None else None
+    )
+    conversation_end = (
+        conversation_end_merged
+        if conversation_end_merged is not None
+        else ([] if agent_request.conversation_end is not None else None)
+    )
+
+    name = None
+    if agent_request.name is not None or agent_request.agent_name is not None or agent_request.agentname is not None:
+        name = str((agent_request.name or agent_request.agent_name or agent_request.agentname or "")).strip() or None
+
+    description = None
+    if agent_request.description is not None:
+        description = agent_request.description
+    elif agent_request.instruction is not None:
+        description = agent_request.instruction
+
+    system_prompt = (
+        _resolve_system_prompt(agent_request.system_prompt)
+        if agent_request.system_prompt is not None else None
+    )
+    system_prompt_source = (
+        _extract_system_prompt_source(agent_request.system_prompt)
+        if agent_request.system_prompt is not None else None
+    )
+    scraped_data = (
+        [_model_to_dict(row) for row in agent_request.scraped_data]
+        if agent_request.scraped_data is not None else None
+    )
+
+    return {
+        "name": name,
+        "description": description,
+        "system_prompt": system_prompt,
+        "system_prompt_source": system_prompt_source,
+        "urls": urls,
+        "image_urls": image_urls,
+        "video_urls": video_urls,
+        "conversation_starters": conversation_starters,
+        "scraped_data": scraped_data,
+        "logic": agent_request.logic,
+        "conversation_end": conversation_end,
+        "agent_type": agent_request.agent_type,
+        "subagent_type": agent_request.subagent_type,
+        "model_selection": _normalize_model_selection(agent_request.model_selection),
     }
 
 
@@ -1222,13 +1468,14 @@ def agent_to_response(agent: dict, base_url: str = None) -> AgentResponse:
 
 
 @app.get("/agents", response_model=List[AgentListItem])
-async def list_agents():
+async def list_agents(api_key: ApiKey = Depends(get_api_key)):
     """List all agents (minimal fields)."""
     agents = get_all_agents()
     return [
         AgentListItem(
             id=a["id"],
-            name=a["name"],
+            agent_type=(a.get("agent_type") or a.get("role_type")),
+            agent_name=a["name"],
             description=a.get("description"),
         )
         for a in agents
@@ -1236,7 +1483,7 @@ async def list_agents():
 
 
 @app.get("/agents/{agent_id}", response_model=AgentResponse)
-async def get_agent_detail(agent_id: str, request: Request):
+async def get_agent_detail(agent_id: str, request: Request, api_key: ApiKey = Depends(get_api_key)):
     """Get agent details with webhook URL"""
     agent = get_agent(agent_id)
     if not agent:
@@ -1265,7 +1512,8 @@ async def create_new_agent(agent_request: AgentCreate, request: Request, backgro
                 detail="industry is only valid when role_type is 'business'",
             )
 
-        agent_id = create_agent(
+        created_id = create_agent(
+            id=normalized["id"],
             name=normalized["name"],
             description=normalized["description"],
             system_prompt=normalized["system_prompt"],
@@ -1301,7 +1549,7 @@ async def create_new_agent(agent_request: AgentCreate, request: Request, backgro
                         print(f"⚠️ Warning: File not found {path}")
                 
                 if file_objs:
-                    process_documents(files=file_objs, agent_id=agent_id)
+                    process_documents(files=file_objs, agent_id=created_id)
             except Exception as doc_err:
                 print(f"❌ Failed to process initial documents: {doc_err}")
                 # Don't fail the request, just log it? Or maybe fail? 
@@ -1315,17 +1563,17 @@ async def create_new_agent(agent_request: AgentCreate, request: Request, backgro
 
         # Handle direct extracted text payloads (document words/text)
         if agent_request.documents_text:
-            _ingest_documents_text(agent_request.documents_text, agent_id)
+            _ingest_documents_text(agent_request.documents_text, created_id)
 
         # Handle pre-scraped web content payload
         if agent_request.scraped_data:
-            _ingest_scraped_data(agent_request.scraped_data, agent_id)
+            _ingest_scraped_data(agent_request.scraped_data, created_id)
         
         # Trigger URL Scraping in Background
         if normalized["urls"]:
-            background_tasks.add_task(process_urls, normalized["urls"], agent_id)
+            background_tasks.add_task(process_urls, normalized["urls"], created_id)
 
-        agent = get_agent(agent_id)
+        agent = get_agent(created_id)
         if not agent:
             raise HTTPException(status_code=500, detail="Failed to load created agent")
         system_prompt_name = _system_prompt_filename(normalized.get("system_prompt_source"))
@@ -1333,7 +1581,7 @@ async def create_new_agent(agent_request: AgentCreate, request: Request, backgro
             system_prompt_name = _system_prompt_filename(normalized.get("system_prompt"))
         return AgentCreateResponse(
             status="created",
-            agent_id=agent["id"],
+            id=agent["id"],
             agent_name=agent["name"],
             system_prompt=system_prompt_name,
         )
@@ -1341,17 +1589,27 @@ async def create_new_agent(agent_request: AgentCreate, request: Request, backgro
         raise HTTPException(status_code=400, detail=str(e))
 
 @app.put("/agents/{agent_id}", response_model=AgentResponse)
-async def update_agent_endpoint(agent_id: str, agent_request: AgentUpdate, request: Request, api_key: ApiKey = Depends(get_api_key)):
-    """Update an existing agent"""
+async def update_agent_endpoint(
+    agent_id: str,
+    agent_request: AgentUpdate,
+    request: Request,
+    background_tasks: BackgroundTasks,
+    api_key: ApiKey = Depends(get_api_key),
+):
+    """Update an existing agent, including config and optional data ingestion."""
     current = get_agent(agent_id)
     if not current:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    _validate_list_limits(agent_request)
+    normalized = _normalize_agent_update_payload(agent_request)
+    _validate_list_limits(
+        urls=normalized["urls"],
+        conversation_starters=normalized["conversation_starters"],
+        image_urls=normalized["image_urls"],
+        video_urls=normalized["video_urls"],
+    )
+
     role_type, industry = _normalize_role_and_industry(agent_request.role_type, agent_request.industry)
-    scraped_data = [_model_to_dict(row) for row in agent_request.scraped_data] if agent_request.scraped_data else None
-    conversation_end = _extract_conversation_items(agent_request.conversation_end) if agent_request.conversation_end is not None else None
-    system_prompt_source = _extract_system_prompt_source(agent_request.system_prompt) if agent_request.system_prompt is not None else None
 
     current_role, _ = _normalize_role_and_industry(current.get("role_type"), current.get("industry"))
     target_role = role_type if agent_request.role_type is not None else current_role
@@ -1378,25 +1636,61 @@ async def update_agent_endpoint(agent_id: str, agent_request: AgentUpdate, reque
 
     success = update_agent(
         agent_id=agent_id,
-        name=agent_request.name,
-        description=agent_request.description,
-        system_prompt=agent_request.system_prompt,
-        system_prompt_source=system_prompt_source,
+        name=normalized["name"],
+        description=normalized["description"],
+        system_prompt=normalized["system_prompt"],
+        system_prompt_source=normalized["system_prompt_source"],
         role_type=role_type if agent_request.role_type is not None else None,
         industry=target_industry if (agent_request.industry is not None or agent_request.role_type is not None) else None,
-        urls=agent_request.urls,
-        conversation_starters=agent_request.conversation_starters,
-        image_urls=agent_request.image_urls,
-        video_urls=agent_request.video_urls,
-        scraped_data=scraped_data,
-        logic=agent_request.logic,
-        conversation_end=conversation_end,
-        agent_type=agent_request.agent_type,
-        subagent_type=agent_request.subagent_type,
-        model_selection=agent_request.model_selection,
+        urls=normalized["urls"],
+        conversation_starters=normalized["conversation_starters"],
+        image_urls=normalized["image_urls"],
+        video_urls=normalized["video_urls"],
+        scraped_data=normalized["scraped_data"],
+        logic=normalized["logic"],
+        conversation_end=normalized["conversation_end"],
+        agent_type=normalized["agent_type"],
+        subagent_type=normalized["subagent_type"],
+        model_selection=normalized["model_selection"],
     )
     if not success:
         raise HTTPException(status_code=404, detail="Agent not found")
+
+    # Optional local-file ingestion (legacy compatibility)
+    if agent_request.file_paths:
+        file_objs = []
+        try:
+            for path in agent_request.file_paths:
+                if os.path.exists(path):
+                    file_objs.append(open(path, "rb"))
+                else:
+                    logging.warning(f"File path not found during agent update: {path}")
+            if file_objs:
+                process_documents(files=file_objs, agent_id=agent_id)
+        finally:
+            for f in file_objs:
+                try:
+                    f.close()
+                except Exception:
+                    pass
+
+    # Optional direct text ingestion payload
+    if agent_request.documents_text:
+        _ingest_documents_text(agent_request.documents_text, agent_id)
+
+    # Optional pre-scraped text ingestion
+    if agent_request.scraped_data:
+        _ingest_scraped_data(agent_request.scraped_data, agent_id)
+
+    # Optional URL scrape refresh
+    if normalized["urls"]:
+        background_tasks.add_task(process_urls, normalized["urls"], agent_id)
+
+    # Optional runtime restart behavior: clear agent chat history and reset LLM chain cache.
+    if agent_request.restart_after_update:
+        clear_history(agent_id=agent_id)
+        update_agent_metadata(agent_id, message_count=0)
+        reset_chain()
 
     agent = get_agent(agent_id)
     base_url = str(request.base_url).rstrip("/")
@@ -1409,12 +1703,12 @@ async def delete_agent_endpoint(agent_id: str, api_key: ApiKey = Depends(get_api
     success = delete_agent(agent_id)
     if not success:
         raise HTTPException(status_code=404, detail="Agent not found")
-    return {"status": "deleted", "agent_id": agent_id}
+    return {"status": "deleted", "id": agent_id}
 
 
 # --- Documents ---
 @app.get("/agents/{agent_id}/documents")
-async def list_documents(agent_id: str):
+async def list_documents(agent_id: str, api_key: ApiKey = Depends(get_api_key)):
     """List documents for an agent"""
     agent = get_agent(agent_id)
     if not agent:
@@ -1461,7 +1755,7 @@ async def delete_document_endpoint(document_id: int, api_key: ApiKey = Depends(g
 
 # --- History ---
 @app.get("/agents/{agent_id}/history")
-async def get_history(agent_id: str, limit: int = 20):
+async def get_history(agent_id: str, limit: int = 20, api_key: ApiKey = Depends(get_api_key)):
     """Get conversation history for an agent"""
     agent = get_agent(agent_id)
     if not agent:
@@ -1581,7 +1875,7 @@ async def voice_ws_proxy(websocket: WebSocket):
 
 # --- Voice ---
 @app.post("/voice/transcribe")
-async def transcribe_voice(audio: UploadFile = File(...)):
+async def transcribe_voice(audio: UploadFile = File(...), api_key: ApiKey = Depends(get_api_key)):
     """
     Transcribe audio to text using Moshi/PersonaPlex
     Accepts: wav, mp3, m4a, webm
@@ -1617,7 +1911,8 @@ async def transcribe_voice(audio: UploadFile = File(...)):
 async def speak_text(
     text: str = Form(...),
     voice: str = Form(None),
-    allow_fallback: bool = Form(False)
+    allow_fallback: bool = Form(False),
+    api_key: ApiKey = Depends(get_api_key),
 ):
     """
     Convert text to speech using Moshi/PersonaPlex.
@@ -1664,7 +1959,8 @@ async def speak_text(
 async def voice_chat(
     audio: UploadFile = File(...),
     agent_id: str = Form(None),
-    allow_fallback: bool = Form(False)
+    allow_fallback: bool = Form(False),
+    api_key: ApiKey = Depends(get_api_key),
 ):
     """
     Voice-to-voice chat: Transcribe audio → RAG → TTS response.
@@ -1673,6 +1969,31 @@ async def voice_chat(
     """
     question = None
     answer = None
+    request_id = str(uuid.uuid4())
+    session_id = request_id
+    voice_user_id = "voice_user"
+
+    def _log_voice_usage(model_name: str, latency_ms: float, status: str = "success", error: str = ""):
+        try:
+            from core.clickhouse import log_usage_to_clickhouse
+
+            log_usage_to_clickhouse(
+                agent_id=agent_id,
+                model=model_name,
+                prompt_tokens=0,
+                completion_tokens=0,
+                latency_ms=latency_ms,
+                cost=0.0,
+                request_id=request_id,
+                session_id=session_id,
+                user_id=voice_user_id,
+                channel_name="voice",
+                status=status,
+                error=error,
+            )
+        except Exception:
+            pass
+
     try:
         from core.voice import transcribe_audio, speak
         from core.voice.voice_engine import MoshiEmptyResponseError
@@ -1686,13 +2007,17 @@ async def voice_chat(
             f.write(content)
             temp_path = f.name
         
+        stt_started = time.perf_counter()
         try:
             question = transcribe_audio(temp_path)
         finally:
             os.unlink(temp_path)
+            stt_latency_ms = round((time.perf_counter() - stt_started) * 1000, 2)
 
         if not question:
+            _log_voice_usage("moshi-stt", stt_latency_ms, status="error", error="empty_transcription")
             raise HTTPException(status_code=400, detail="Could not transcribe audio")
+        _log_voice_usage("moshi-stt", stt_latency_ms, status="success")
         
         # 2. Get RAG response
         history = []
@@ -1702,11 +2027,18 @@ async def voice_chat(
         answer = process_question(
             question=question,
             agent_id=agent_id,
-            conversation_history=history
+            conversation_history=history,
+            request_id=request_id,
+            session_id=session_id,
+            user_id=voice_user_id,
+            channel_name="voice",
         )
         
         # 3. Convert to speech (may raise MoshiEmptyResponseError)
+        tts_started = time.perf_counter()
         audio_bytes = speak(answer, allow_fallback=allow_fallback)
+        tts_latency_ms = round((time.perf_counter() - tts_started) * 1000, 2)
+        _log_voice_usage("moshi-tts", tts_latency_ms, status="success")
         
         # Return both text and audio
         import base64
@@ -1718,6 +2050,7 @@ async def voice_chat(
         }
     
     except MoshiEmptyResponseError:
+        _log_voice_usage("moshi-tts", 0.0, status="error", error="empty_tts_response")
         # Moshi TTS failed — return the text answer + ask client to decide on TTS
         return JSONResponse(
             status_code=202,
@@ -1735,8 +2068,10 @@ async def voice_chat(
             }
         )
     except ImportError as e:
+        _log_voice_usage("moshi-voice", 0.0, status="error", error=str(e))
         raise HTTPException(status_code=501, detail=str(e))
     except Exception as e:
+        _log_voice_usage("moshi-voice", 0.0, status="error", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -2021,7 +2356,7 @@ async def whatsapp_webhook(request: Request):
         wa_history = get_whatsapp_history()
         
         # Get or create session
-        wa_history.get_or_create_session(user_phone, agent_id)
+        wa_session_id = str(wa_history.get_or_create_session(user_phone, agent_id))
         
         # Get conversation history
         conversation_history = wa_history.get_history_for_llm(user_phone, limit=5)
@@ -2032,7 +2367,11 @@ async def whatsapp_webhook(request: Request):
                 question=text,
                 agent_id=agent_id,
                 conversation_history=conversation_history,
-                max_history=5
+                max_history=5,
+                request_id=str(uuid.uuid4()),
+                session_id=wa_session_id,
+                user_id=user_phone,
+                channel_name="whatsapp",
             )
         )
         
@@ -2198,7 +2537,10 @@ async def agent_reply_webhook(request: Request, path: str = None):
             question=text,
             agent_id=target_agent_id,
             conversation_history=[], # Stateless for now
-            max_history=5
+            max_history=5,
+            request_id=str(uuid.uuid4()),
+            user_id=user_id,
+            channel_name="webhook",
         )
         
         print(f"📤 Agent Answer: {answer[:100]}...")
@@ -2217,14 +2559,14 @@ async def agent_reply_webhook(request: Request, path: str = None):
 
 
 @app.get("/webhooks/logs")
-async def get_webhooks(limit: int = 50, offset: int = 0):
+async def get_webhooks(limit: int = 50, offset: int = 0, api_key: ApiKey = Depends(get_api_key)):
     """Get captured webhook logs"""
     return get_webhook_logs(limit=limit, offset=offset)
 
 
 
 @app.delete("/webhooks/logs")
-async def clear_webhooks():
+async def clear_webhooks(api_key: ApiKey = Depends(get_api_key)):
     """Clear all webhook logs"""
     clear_webhook_logs()
     return {"status": "cleared"}
@@ -2235,7 +2577,8 @@ async def clear_webhooks():
 async def voice_chat_liquid(
     audio: UploadFile = File(...),
     agent_id: str = Form(None),
-    system_prompt: str = Form("You are a helpful assistant. Respond with interleaved text and audio.")
+    system_prompt: str = Form("You are a helpful assistant. Respond with interleaved text and audio."),
+    api_key: ApiKey = Depends(get_api_key),
 ):
     """
     End-to-end voice chat using LiquidAI LFM2.5-Audio.

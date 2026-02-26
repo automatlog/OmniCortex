@@ -121,18 +121,18 @@ const fetchWithTimeout = async (url: string, options: RequestInit = {}, timeout 
 };
 
 /**
- * Adds API key header to requests.
- * Uses NEXT_PUBLIC_API_KEY so it works on both client and server side.
+ * Adds Authorization bearer header to requests.
+ * Uses NEXT_PUBLIC_AUTH_TOKEN (fallback NEXT_PUBLIC_API_KEY).
  */
-function withApiKey(options: RequestInit = {}): RequestInit {
-  const apiKey = process.env.NEXT_PUBLIC_API_KEY;
-  if (!apiKey) {
-    console.warn("[API] No NEXT_PUBLIC_API_KEY set — requests will be unauthenticated");
+function withAuth(options: RequestInit = {}): RequestInit {
+  const token = process.env.NEXT_PUBLIC_AUTH_TOKEN || process.env.NEXT_PUBLIC_API_KEY;
+  if (!token) {
+    console.warn("[API] No NEXT_PUBLIC_AUTH_TOKEN set - requests will be unauthenticated");
     return options;
   }
 
   const headers = new Headers(options.headers || {});
-  headers.set("X-API-Key", apiKey);
+  headers.set("Authorization", `Bearer ${token}`);
   return { ...options, headers };
 }
 
@@ -367,7 +367,7 @@ async function fetchWithHealthCheck(
 
 export async function getAgents(): Promise<Agent[]> {
   try {
-    const res = await fetchWithHealthCheck(`${API_BASE}/agents`, {}, TIMEOUTS.AGENT_OPERATIONS, "getAgents");
+    const res = await fetchWithHealthCheck(`${API_BASE}/agents`, withAuth(), TIMEOUTS.AGENT_OPERATIONS, "getAgents");
     if (!res.ok) {
       const error = await res.json().catch(() => ({ detail: "Failed to fetch agents" }));
       throw classifyError(new Error(error.detail || "Failed to fetch agents"), res, "getAgents");
@@ -380,7 +380,7 @@ export async function getAgents(): Promise<Agent[]> {
 
 export async function getAgent(id: string): Promise<Agent> {
   try {
-    const res = await fetchWithHealthCheck(`${API_BASE}/agents/${id}`, {}, TIMEOUTS.AGENT_OPERATIONS, "getAgent");
+    const res = await fetchWithHealthCheck(`${API_BASE}/agents/${id}`, withAuth(), TIMEOUTS.AGENT_OPERATIONS, "getAgent");
     if (!res.ok) {
       const error = await res.json().catch(() => ({ detail: "Failed to fetch agent" }));
       throw classifyError(new Error(error.detail || "Failed to fetch agent"), res, "getAgent");
@@ -407,7 +407,7 @@ export async function createAgent(data: {
   try {
     const res = await fetchWithHealthCheck(
       `${API_BASE}/agents`,
-      withApiKey({
+      withAuth({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(data),
@@ -430,7 +430,7 @@ export async function deleteAgent(id: string): Promise<void> {
   try {
     const res = await fetchWithHealthCheck(
       `${API_BASE}/agents/${id}`,
-      withApiKey({ method: "DELETE" }),
+      withAuth({ method: "DELETE" }),
       TIMEOUTS.AGENT_OPERATIONS,
       "deleteAgent"
     );
@@ -453,7 +453,7 @@ export async function sendMessage(
   try {
     const res = await fetchWithHealthCheck(
       `${API_BASE}/query`,
-      withApiKey({
+      withAuth({
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -481,7 +481,7 @@ export async function sendMessage(
 // Document Management
 export async function getAgentDocuments(agentId: string): Promise<Document[]> {
   try {
-    const res = await fetchWithHealthCheck(`${API_BASE}/agents/${agentId}/documents`, {}, TIMEOUTS.AGENT_OPERATIONS, "getAgentDocuments");
+    const res = await fetchWithHealthCheck(`${API_BASE}/agents/${agentId}/documents`, withAuth(), TIMEOUTS.AGENT_OPERATIONS, "getAgentDocuments");
     if (!res.ok) {
       const error = await res.json().catch(() => ({ detail: "Failed to fetch documents" }));
       throw classifyError(new Error(error.detail || "Failed to fetch documents"), res, "getAgentDocuments");
@@ -504,7 +504,7 @@ export async function uploadDocuments(
 
     const res = await fetchWithHealthCheck(
       `${API_BASE}/agents/${agentId}/documents`,
-      withApiKey({
+      withAuth({
         method: "POST",
         body: formData,
       }),
@@ -533,7 +533,7 @@ export async function uploadDocumentsAsText(
       
       const res = await fetchWithHealthCheck(
         `${API_BASE}/agents/${agentId}/documents`,
-        withApiKey({
+        withAuth({
           method: "POST",
           body: formData,
         }),
@@ -555,7 +555,7 @@ export async function deleteDocument(docId: number): Promise<void> {
   try {
     const res = await fetchWithHealthCheck(
       `${API_BASE}/documents/${docId}`,
-      withApiKey({
+      withAuth({
         method: "DELETE",
       }),
       TIMEOUTS.AGENT_OPERATIONS,
@@ -579,10 +579,15 @@ export async function sendVoice(
     formData.append("audio", audioBlob, "recording.wav");
     formData.append("agent_id", agentId);
 
-    const res = await fetchWithHealthCheck(`${API_BASE}/voice/chat`, {
-      method: "POST",
-      body: formData,
-    }, TIMEOUTS.CHAT_QUERY, "sendVoice"); // Use chat timeout for voice processing
+    const res = await fetchWithHealthCheck(
+      `${API_BASE}/voice/chat`,
+      withAuth({
+        method: "POST",
+        body: formData,
+      }),
+      TIMEOUTS.CHAT_QUERY,
+      "sendVoice"
+    ); // Use chat timeout for voice processing
     
     if (!res.ok) {
       const error = await res.json().catch(() => ({ detail: "Failed to process voice" }));
@@ -597,7 +602,7 @@ export async function sendVoice(
 // Usage Stats
 export async function getUsageStats(limit: number = 100) {
   try {
-    const res = await fetchWithHealthCheck(`${API_BASE}/stats/agents?limit=${limit}`, {}, TIMEOUTS.AGENT_OPERATIONS, "getUsageStats");
+    const res = await fetchWithHealthCheck(`${API_BASE}/stats/agents?limit=${limit}`, withAuth(), TIMEOUTS.AGENT_OPERATIONS, "getUsageStats");
     if (!res.ok) {
       const error = await res.json().catch(() => ({ detail: "Failed to fetch stats" }));
       throw classifyError(new Error(error.detail || "Failed to fetch stats"), res, "getUsageStats");
@@ -613,7 +618,7 @@ export async function getConversationHistory(agentId: string, limit: number = 50
   try {
     const res = await fetchWithHealthCheck(
       `${API_BASE}/agents/${agentId}/history?limit=${limit}`,
-      {},
+      withAuth(),
       TIMEOUTS.AGENT_OPERATIONS,
       "getConversationHistory"
     );

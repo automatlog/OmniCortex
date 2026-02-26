@@ -89,15 +89,15 @@ def load_questions_from_file(path: str) -> List[str]:
     return questions
 
 
-def build_headers(api_key: str) -> Dict[str, str]:
+def build_headers(token: str) -> Dict[str, str]:
     headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["X-API-Key"] = api_key
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
     return headers
 
 
-async def list_agents(client: httpx.AsyncClient, api_base: str) -> List[Dict]:
-    resp = await client.get(f"{api_base}/agents")
+async def list_agents(client: httpx.AsyncClient, api_base: str, headers: Dict[str, str]) -> List[Dict]:
+    resp = await client.get(f"{api_base}/agents", headers=headers)
     if resp.status_code != 200:
         logger.error("Failed to list agents: %s %s", resp.status_code, _preview(resp.text, 300))
         return []
@@ -109,7 +109,7 @@ async def list_agents(client: httpx.AsyncClient, api_base: str) -> List[Dict]:
 
 
 async def delete_all_agents(client: httpx.AsyncClient, api_base: str, headers: Dict[str, str]) -> Tuple[int, int]:
-    agents = await list_agents(client, api_base)
+    agents = await list_agents(client, api_base, headers)
     ok = 0
     err = 0
 
@@ -277,8 +277,12 @@ async def run_all_questions(
     }
 
 
-async def _resolve_agent_id(client: httpx.AsyncClient, api_base: str) -> Optional[str]:
-    agents = await list_agents(client, api_base)
+async def _resolve_agent_id(
+    client: httpx.AsyncClient,
+    api_base: str,
+    headers: Dict[str, str],
+) -> Optional[str]:
+    agents = await list_agents(client, api_base, headers)
     if not agents:
         return None
     return agents[0].get("id")
@@ -288,7 +292,7 @@ async def text_worker(
     worker_id: int,
     client: httpx.AsyncClient,
     api_base: str,
-    api_key: str,
+    token: str,
     agent_id: str,
     model_selection: str,
     mock_mode: bool,
@@ -296,7 +300,7 @@ async def text_worker(
     stop_event: asyncio.Event,
     stats: Dict,
 ):
-    headers = {"X-API-Key": api_key, "Content-Type": "application/json"}
+    headers = build_headers(token)
     if not question_bank:
         question_bank = DEFAULT_QUERIES
 
@@ -359,7 +363,10 @@ async def continuous_mode(args, question_bank: List[str]):
         pass
 
     async with httpx.AsyncClient(timeout=timeout, limits=limits) as client:
-        agent_id = args.agent_id or await _resolve_agent_id(client, args.api_base)
+        headers = build_headers(args.token)
+        if "Authorization" not in headers:
+            raise SystemExit("Missing bearer token. Set --token or STRESS_BEARER_TOKEN/AUTH_BEARER_TOKEN.")
+        agent_id = args.agent_id or await _resolve_agent_id(client, args.api_base, headers)
         if not agent_id:
             raise SystemExit("No agent found for continuous mode. Use --agent-id or create one.")
 
@@ -369,7 +376,7 @@ async def continuous_mode(args, question_bank: List[str]):
                     worker_id=i + 1,
                     client=client,
                     api_base=args.api_base,
-                    api_key=args.api_key,
+                    token=args.token,
                     agent_id=agent_id,
                     model_selection=args.model_selection,
                     mock_mode=args.mock_mode,
@@ -411,12 +418,12 @@ async def batch_mode(args, question_bank: List[str]):
       2) Test all questions on all agents
       3) Delete all agents
     """
-    headers = build_headers(args.api_key)
+    headers = build_headers(args.token)
     timeout = httpx.Timeout(connect=10.0, read=180.0, write=120.0, pool=240.0)
     limits = httpx.Limits(max_connections=300, max_keepalive_connections=120)
 
-    if "X-API-Key" not in headers:
-        raise SystemExit("Missing API key. Set --api-key or STRESS_API_KEY/TEST_API_KEY.")
+    if "Authorization" not in headers:
+        raise SystemExit("Missing bearer token. Set --token or STRESS_BEARER_TOKEN/AUTH_BEARER_TOKEN.")
 
     started = time.time()
     created_agents: List[Dict] = []
@@ -496,7 +503,11 @@ async def batch_mode(args, question_bank: List[str]):
 async def main():
     parser = argparse.ArgumentParser(description="OmniCortex stress tool (batch by default).")
     parser.add_argument("--api-base", default=os.getenv("STRESS_API_BASE", "http://localhost:8000"))
-    parser.add_argument("--api-key", default=os.getenv("STRESS_API_KEY", os.getenv("TEST_API_KEY", "")))
+    parser.add_argument(
+        "--token",
+        default=os.getenv("STRESS_BEARER_TOKEN", os.getenv("AUTH_BEARER_TOKEN", "")),
+        help="Authorization bearer token",
+    )
     parser.add_argument("--docs-dir", default=os.getenv("BULK_DOCS_DIR", str(Path("tests") / "test_docs")))
     parser.add_argument("--agent-id", default=os.getenv("STRESS_AGENT_ID", ""))
     parser.add_argument("--text-workers", type=int, default=int(os.getenv("STRESS_TEXT_WORKERS", "20")))

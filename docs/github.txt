@@ -1,0 +1,109 @@
+====================================
+            GITHUB NOTES
+====================================
+
+1. WHAT IS GITHUB?
+------------------
+GitHub is a cloud-based platform used for version control
+and collaboration using Git.
+
+It allows:
+- Code storage
+- Version tracking
+- Team collaboration
+- Issue tracking
+- CI/CD integration
+
+------------------------------------
+
+2. GIT VS GITHUB
+-----------------
+Git:
+- Version control system
+- Works locally
+- Tracks changes in files
+
+GitHub:
+- Cloud platform for Git repositories
+- Enables sharing and collaboration
+
+------------------------------------
+
+3. BASIC GIT COMMANDS
+----------------------
+
+Initialize Repository:
+git init
+
+Clone Repository:
+git clone <repo_url>
+
+Check Status:
+git status
+
+Add Files:
+git add filename
+git add .
+
+Commit Changes:
+git commit -m "commit message"
+
+Push to GitHub:
+git push origin main
+
+Pull Latest Changes:
+git pull origin main
+
+------------------------------------
+
+4. BRANCHING
+------------
+
+Create New Branch:
+git branch branch_name
+
+Switch Branch:
+git checkout branch_name
+
+Create + Switch:
+git checkout -b branch_name
+
+Merge Branch:
+git merge branch_name
+
+------------------------------------
+
+5. GITHUB WORKFLOW
+------------------
+
+1. Create Repository
+2. Clone Repository
+3. Create Branch
+4. Make Changes
+5. Commit Changes
+6. Push Branch
+7. Create Pull Request
+8. Merge PR
+
+------------------------------------
+
+6. IMPORTANT FILES
+------------------
+
+README.md  -> Project description
+.gitignore -> Ignore unwanted files
+LICENSE    -> Project license
+package.json -> Project dependencies (Node.js)
+
+------------------------------------
+
+7. COMMON ERRORS
+-----------------
+
+Authentication Failed:
+- Check GitHub token
+- Use Personal Access Token instead of password
+
+Merge Conflict:
+- Edit conflicting file
+- Add and commit again

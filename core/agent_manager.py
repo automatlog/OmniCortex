@@ -25,6 +25,7 @@ def create_agent(
     agent_type: str = None,
     subagent_type: str = None,
     model_selection: str = None,
+    user_id: str = None,
 ) -> str:
     """Create a new agent"""
     db = SessionLocal()
@@ -58,6 +59,7 @@ def create_agent(
             agent_type=agent_type,
             subagent_type=subagent_type,
             model_selection=model_selection,
+            user_id=user_id,
         )
         db.add(agent)
         db.commit()
@@ -94,6 +96,7 @@ def get_agent(agent_id: str) -> Optional[Dict]:
             "agent_type": agent.agent_type if agent.agent_type is not None else metadata.get("agent_type"),
             "subagent_type": agent.subagent_type if agent.subagent_type is not None else metadata.get("subagent_type"),
             "model_selection": agent.model_selection if agent.model_selection is not None else metadata.get("model_selection"),
+            "user_id": agent.user_id,
             "document_count": agent.document_count or 0,
             "message_count": agent.message_count or 0,
             "created_at": agent.created_at.isoformat() if agent.created_at else None,
@@ -127,6 +130,7 @@ def get_all_agents() -> List[Dict]:
                 "agent_type": a.agent_type if a.agent_type is not None else ((a.extra_data or {}).get("agent_type")),
                 "subagent_type": a.subagent_type if a.subagent_type is not None else ((a.extra_data or {}).get("subagent_type")),
                 "model_selection": a.model_selection if a.model_selection is not None else ((a.extra_data or {}).get("model_selection")),
+                "user_id": a.user_id,
                 "document_count": a.document_count or 0,
                 "message_count": a.message_count or 0,
                 "created_at": a.created_at.isoformat() if a.created_at else None,
@@ -155,6 +159,7 @@ def update_agent(
     agent_type: str = None,
     subagent_type: str = None,
     model_selection: str = None,
+    user_id: str = None,
 ) -> bool:
     """Update agent details"""
     db = SessionLocal()
@@ -195,6 +200,8 @@ def update_agent(
             agent.subagent_type = subagent_type
         if model_selection is not None:
             agent.model_selection = model_selection
+        if user_id is not None:
+            agent.user_id = user_id
 
         db.commit()
         return True

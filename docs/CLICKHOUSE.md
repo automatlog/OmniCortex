@@ -49,7 +49,7 @@ CREATE TABLE usage_logs (
     channel_name String,         -- TEXT | VOICE
     channel_type String,         -- UTILITY | MARKETING | AUTHENTICATION
     model String,
-    question_tokens UInt32 DEFAULT 0,      -- original user question
+    query_tokens UInt32 DEFAULT 0,      -- original user question
     rag_query_tokens UInt32 DEFAULT 0,     -- masked/normalized query sent to retrieval
     prompt_tokens UInt32 DEFAULT 0,        -- prompt tokens sent to LLM
     completion_tokens UInt32 DEFAULT 0,    -- generated tokens from LLM
@@ -82,7 +82,7 @@ ORDER BY (id, timestamp);
 USE omnicortex;
 
 ALTER TABLE usage_logs
-    ADD COLUMN IF NOT EXISTS question_tokens UInt32 DEFAULT 0;
+    ADD COLUMN IF NOT EXISTS query_tokens UInt32 DEFAULT 0;
 
 ALTER TABLE usage_logs
     ADD COLUMN IF NOT EXISTS rag_query_tokens UInt32 DEFAULT 0;
@@ -125,7 +125,7 @@ SELECT
   channel_name,
   channel_type,
   model,
-  question_tokens,
+  query_tokens,
   rag_query_tokens,
   prompt_tokens,
   completion_tokens,
@@ -164,7 +164,7 @@ SELECT
   u.session_id,
   u.id,
   u.model,
-  u.question_tokens,
+  u.query_tokens,
   u.rag_query_tokens,
   u.prompt_tokens,
   u.completion_tokens,
@@ -191,7 +191,7 @@ SELECT
   channel_name,
   channel_type,
   count() AS requests,
-  sum(question_tokens) AS total_question_tokens,
+  sum(query_tokens) AS total_query_tokens,
   sum(rag_query_tokens) AS total_rag_query_tokens,
   sum(prompt_tokens) AS total_prompt_tokens,
   sum(completion_tokens) AS total_completion_tokens,

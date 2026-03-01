@@ -35,9 +35,11 @@ export function AgentCard({ agent, onDelete }: AgentCardProps) {
             </div>
             <div>
               <h3 className="font-semibold text-white">{agent.name}</h3>
-              <p className="text-xs text-neutral-500">
-                Created {new Date(agent.created_at).toLocaleDateString()}
-              </p>
+              {agent.created_at && (
+                <p className="text-xs text-neutral-500">
+                  Created {new Date(agent.created_at).toLocaleDateString()}
+                </p>
+              )}
               {(agent.role_type || agent.industry) && (
                 <p className="text-xs text-blue-300 mt-1">
                   {agent.role_type ? `Role: ${agent.role_type}` : ""}

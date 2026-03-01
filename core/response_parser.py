@@ -18,16 +18,20 @@ from urllib.parse import unquote
 
 from .agent_manager import get_agent
 
-IMAGE_RE = re.compile(r"\[image\]\[([^\]]+)\]", re.IGNORECASE)
-VIDEO_RE = re.compile(r"\[video\]\[([^\]]+)\]", re.IGNORECASE)
-DOC_RE = re.compile(r"\[document\]\[([^\]]+)\]", re.IGNORECASE)
+# Accept both canonical `[tag][value]` and fallback `[tag]value` formats.
+IMAGE_RE = re.compile(r"\[image\]\s*(?:\[([^\]]+)\]|([^\s\]\r\n]+))", re.IGNORECASE)
+VIDEO_RE = re.compile(r"\[video\]\s*(?:\[([^\]]+)\]|([^\s\]\r\n]+))", re.IGNORECASE)
+DOC_RE = re.compile(r"\[document\]\s*(?:\[([^\]]+)\]|([^\s\]\r\n]+))", re.IGNORECASE)
 LINK_RE = re.compile(r"\[link\]\[([^\]]+)\]\[([^\]]+)\]", re.IGNORECASE)
 LOC_RE = re.compile(r"\[location\]\[([^\]]+)\]\[([^\]]+)\]\[([^\]]+)\]", re.IGNORECASE)
 BTN_RE = re.compile(r"\[buttons\]\[([^\]]+)\]\[([^\]]+)\]", re.IGNORECASE)
+CANONICAL_MEDIA_RE = re.compile(r"\[(image|video|document)\]\[([^\]]+)\]", re.IGNORECASE)
+FALLBACK_MEDIA_RE = re.compile(r"\[(image|video|document)\]\s*(?!\[)([^\s\]\r\n]+)", re.IGNORECASE)
 
 
 def parse_response(answer: str, agent_id: str = None) -> List[Dict[str, Any]]:
     """Parse tagged LLM output into ordered structured parts."""
+    answer = enforce_canonical_media_tags(answer)
     if not answer:
         return [{"type": "text", "content": ""}]
 
@@ -66,7 +70,7 @@ def parse_response(answer: str, agent_id: str = None) -> List[Dict[str, Any]]:
                 parts.append({"type": "text", "content": text_before})
 
         if tag_type == "image":
-            filename = match.group(1).strip()
+            filename = _extract_tag_value(match).strip()
             url = _resolve_media_url(filename, agent, "image")
             if url:
                 parts.append({"type": "image", "url": url, "caption": filename})
@@ -74,7 +78,7 @@ def parse_response(answer: str, agent_id: str = None) -> List[Dict[str, Any]]:
                 parts.append({"type": "text", "content": f"(Image not found: {filename})"})
 
         elif tag_type == "video":
-            filename = match.group(1).strip()
+            filename = _extract_tag_value(match).strip()
             url = _resolve_media_url(filename, agent, "video")
             if url:
                 parts.append({"type": "video", "url": url, "caption": filename})
@@ -82,7 +86,7 @@ def parse_response(answer: str, agent_id: str = None) -> List[Dict[str, Any]]:
                 parts.append({"type": "text", "content": f"(Video not found: {filename})"})
 
         elif tag_type == "document":
-            filename = match.group(1).strip()
+            filename = _extract_tag_value(match).strip()
             url = _resolve_document_url(filename, agent_id)
             if url:
                 parts.append(
@@ -151,6 +155,7 @@ def parse_response(answer: str, agent_id: str = None) -> List[Dict[str, Any]]:
 
 def process_rich_response_for_frontend(answer: str, agent_id: str = None) -> str:
     """Convert tags into web-friendly markdown-like output."""
+    answer = enforce_canonical_media_tags(answer)
     if not answer:
         return ""
 
@@ -158,17 +163,17 @@ def process_rich_response_for_frontend(answer: str, agent_id: str = None) -> str
     processed = answer
 
     def image_sub(match: re.Match[str]) -> str:
-        filename = match.group(1).strip()
+        filename = _extract_tag_value(match).strip()
         url = _resolve_media_url(filename, agent, "image")
         return f"![{filename}]({url})" if url else f"(Image: {filename} not found)"
 
     def video_sub(match: re.Match[str]) -> str:
-        filename = match.group(1).strip()
+        filename = _extract_tag_value(match).strip()
         url = _resolve_media_url(filename, agent, "video")
         return f"[Video: {filename}]({url})" if url else f"(Video: {filename} not found)"
 
     def document_sub(match: re.Match[str]) -> str:
-        filename = match.group(1).strip()
+        filename = _extract_tag_value(match).strip()
         url = _resolve_document_url(filename, agent_id)
         return f"[Download {filename}]({url})" if url else f"(Document: {filename} not found)"
 
@@ -200,6 +205,29 @@ def process_rich_response_for_frontend(answer: str, agent_id: str = None) -> str
 
 # Backward-compatible alias used by api.py
 replace_image_tags_with_urls = process_rich_response_for_frontend
+
+
+def enforce_canonical_media_tags(answer: str) -> str:
+    """
+    Normalize media tags to canonical forms:
+    - [image][filename.ext]
+    - [video][filename.ext]
+    - [document][filename.ext]
+    """
+    if not answer:
+        return ""
+
+    normalized = CANONICAL_MEDIA_RE.sub(lambda m: f"[{m.group(1).lower()}][{m.group(2).strip()}]", answer)
+    normalized = FALLBACK_MEDIA_RE.sub(lambda m: f"[{m.group(1).lower()}][{m.group(2).strip()}]", normalized)
+    return normalized
+
+
+def _extract_tag_value(match: re.Match[str]) -> str:
+    """Return first non-empty captured value from tolerant tag regex."""
+    for group in match.groups():
+        if group and str(group).strip():
+            return str(group)
+    return ""
 
 
 def _resolve_media_url(filename: str, agent: Optional[Dict[str, Any]], media_type: str) -> Optional[str]:

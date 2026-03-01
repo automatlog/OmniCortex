@@ -74,9 +74,9 @@ export function ChatInterface({
       const response = await sendMessage(
         userMessage.content,
         agentId,
-        selectedModel,
         5,
-        verbosity
+        "TEXT",
+        "UTILITY"
       );
 
       const assistantMessage: ChatMessage = {
@@ -146,7 +146,7 @@ export function ChatInterface({
       // Add transcription as user message
       const userMessage: ChatMessage = {
         role: "user",
-        content: response.transcription || "[Voice message]",
+        content: response.question || "[Voice message]",
         timestamp: new Date().toISOString(),
       };
       setMessages((prev) => [...prev, userMessage]);
@@ -154,7 +154,7 @@ export function ChatInterface({
       // Add response as assistant message
       const assistantMessage: ChatMessage = {
         role: "assistant",
-        content: response.response || "I received your voice message.",
+        content: response.answer || response.message || "I received your voice message.",
         timestamp: new Date().toISOString(),
       };
       setMessages((prev) => [...prev, assistantMessage]);

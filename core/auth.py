@@ -3,7 +3,7 @@ import os
 from typing import Any, Dict
 
 import requests
-from fastapi import Security, HTTPException
+from fastapi import Security, HTTPException, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.status import HTTP_403_FORBIDDEN, HTTP_503_SERVICE_UNAVAILABLE
 
@@ -24,6 +24,7 @@ def _auth_verify_timeout() -> float:
 
 
 async def get_api_key(
+    request: Request,
     credentials: HTTPAuthorizationCredentials = Security(bearer_scheme),
 ) -> Dict[str, Any]:
     """
@@ -35,6 +36,7 @@ async def get_api_key(
         )
 
     token = str(credentials.credentials).strip()
+    x_user_id = (request.headers.get("x-user-id") or "").strip()
     verify_url = _auth_verify_url()
     if not verify_url:
         raise HTTPException(
@@ -42,10 +44,15 @@ async def get_api_key(
             detail="AUTH_VERIFY_URL not configured",
         )
 
+    verify_headers = {"Authorization": f"Bearer {token}"}
+    if x_user_id:
+        # Optional pass-through to external auth provider
+        verify_headers["X-User-Id"] = x_user_id
+
     try:
         response = requests.get(
             verify_url,
-            headers={"Authorization": f"Bearer {token}"},
+            headers=verify_headers,
             timeout=_auth_verify_timeout(),
         )
     except requests.RequestException as exc:
@@ -63,4 +70,4 @@ async def get_api_key(
     except ValueError:
         profile = {"raw": response.text[:1000]}
 
-    return {"token": token, "profile": profile}
+    return {"token": token, "profile": profile, "x_user_id": x_user_id or None}

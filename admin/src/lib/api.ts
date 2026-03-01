@@ -21,10 +21,11 @@ export interface Agent {
   id: string;
   name: string;
   description: string;
-  created_at: string;
+  created_at?: string;
   system_prompt?: string;
   role_type?: string;
   industry?: string;
+  agent_type?: string;
   urls?: string[];
   conversation_starters?: string[];
   image_urls?: string[];
@@ -37,6 +38,7 @@ export interface Agent {
 export type AgentRoleType = "personal" | "business" | "knowledge";
 
 export interface AgentCreatePayload {
+  id: string;
   name: string;
   description?: string;
   system_prompt?: string;
@@ -58,7 +60,16 @@ export interface ChatMessage {
 
 export interface QueryResponse {
   answer: string;
-  agent_id: string;
+  id?: string;
+  session_id?: string;
+  request_id?: string;
+}
+
+export interface AgentCreateResponse {
+  status: string;
+  id: string;
+  agent_name: string;
+  system_prompt?: string;
 }
 
 export interface Document {
@@ -81,10 +92,10 @@ export interface HealthResponse {
       status: "up" | "down";
       latency_ms: number;
     };
-    ollama: {
+    llm: {
       status: "up" | "down";
       latency_ms: number;
-      model_loaded: boolean;
+      model?: string;
     };
   };
   uptime_seconds: number;
@@ -372,7 +383,19 @@ export async function getAgents(): Promise<Agent[]> {
       const error = await res.json().catch(() => ({ detail: "Failed to fetch agents" }));
       throw classifyError(new Error(error.detail || "Failed to fetch agents"), res, "getAgents");
     }
-    return res.json();
+    const data = await res.json();
+    if (!Array.isArray(data)) return [];
+    return data.map((item: any) => ({
+      id: String(item.id),
+      name: item.name ?? item.agent_name ?? "Unnamed Agent",
+      description: item.description ?? "",
+      created_at: item.created_at,
+      agent_type: item.agent_type,
+      role_type: item.role_type,
+      industry: item.industry,
+      document_count: item.document_count,
+      webhook_url: item.webhook_url,
+    }));
   } catch (error) {
     throw classifyError(error, undefined, "getAgents");
   }
@@ -391,19 +414,7 @@ export async function getAgent(id: string): Promise<Agent> {
   }
 }
 
-export async function createAgent(data: {
-  name: string;
-  description?: string;
-  system_prompt?: string;
-  role_type?: AgentRoleType;
-  industry?: string;
-  urls?: string[];
-  conversation_starters?: string[];
-  image_urls?: string[];
-  video_urls?: string[];
-  documents_text?: Array<{ filename: string; text: string }>;
-  scraped_data?: Array<{ url?: string; text: string }>;
-}): Promise<Agent> {
+export async function createAgent(data: AgentCreatePayload): Promise<AgentCreateResponse> {
   try {
     const res = await fetchWithHealthCheck(
       `${API_BASE}/agents`,
@@ -446,9 +457,9 @@ export async function deleteAgent(id: string): Promise<void> {
 export async function sendMessage(
   question: string,
   agentId: string,
-  modelSelection: string = "Meta Llama 3.1",
   maxHistory: number = 5,
-  verbosity: string = "medium"
+  channelName: "TEXT" | "VOICE" = "TEXT",
+  channelType: "UTILITY" | "MARKETING" | "AUTHENTICATION" = "UTILITY"
 ): Promise<QueryResponse> {
   try {
     const res = await fetchWithHealthCheck(
@@ -457,11 +468,11 @@ export async function sendMessage(
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          question,
-          agent_id: agentId,
-          model_selection: modelSelection,
+          id: agentId,
+          query: question,
           max_history: maxHistory,
-          verbosity: verbosity,
+          channel_name: channelName,
+          channel_type: channelType,
         }),
       }),
       TIMEOUTS.CHAT_QUERY,
@@ -573,7 +584,7 @@ export async function deleteDocument(docId: number): Promise<void> {
 export async function sendVoice(
   agentId: string,
   audioBlob: Blob
-): Promise<{ transcription: string; response: string }> {
+): Promise<{ question?: string; answer?: string; audio_base64?: string; backend?: string; status?: string; message?: string }> {
   try {
     const formData = new FormData();
     formData.append("audio", audioBlob, "recording.wav");
@@ -654,21 +665,17 @@ export async function isBackendHealthy(): Promise<boolean> {
 export async function checkOllamaHealth(): Promise<{ healthy: boolean; message: string }> {
   try {
     const health = await checkHealth();
-    const ollamaService = health.services.ollama;
+    const llmService = health.services.llm;
     
-    if (ollamaService.status === "up" && ollamaService.model_loaded) {
+    if (llmService.status === "up") {
       return { healthy: true, message: "All systems operational" };
     }
     
-    if (ollamaService.status === "down") {
-      return { healthy: false, message: "Ollama is not running. Start with: ollama serve" };
+    if (llmService.status === "down") {
+      return { healthy: false, message: "LLM backend is not running." };
     }
     
-    if (!ollamaService.model_loaded) {
-      return { healthy: false, message: "Model not loaded. Run: ollama pull llama3.2:3b" };
-    }
-    
-    return { healthy: false, message: "Unknown Ollama status" };
+    return { healthy: false, message: "Unknown LLM status" };
   } catch (error) {
     return { 
       healthy: false, 

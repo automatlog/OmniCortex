@@ -43,8 +43,7 @@ export default function AgentDocumentsPage() {
     try {
       const [agentData, docs] = await Promise.all([
         getAgent(agentId),
-        fetch(`${process.env.NEXT_PUBLIC_API_URL}/agents/${agentId}/documents`)
-          .then(r => r.json())
+        getAgentDocuments(agentId),
       ]);
       setAgent(agentData);
       setDocuments(docs);

@@ -4,7 +4,7 @@ import { type ThemeType } from "../../hooks/useSystemTheme";
 
 type AudioVisualizerProps = {
   analyser: AnalyserNode | null;
-  parent: RefObject<HTMLElement>;
+  parent: RefObject<HTMLElement | null>;
   theme: ThemeType;
 };
 

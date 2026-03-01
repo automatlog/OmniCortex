@@ -11,6 +11,7 @@ from .agent_manager import get_agent, update_agent_metadata
 from .cache import check_cache, save_to_cache
 from .guardrails import validate_input, validate_output
 from .llm import invoke_chain
+from .response_parser import enforce_canonical_media_tags
 from .processing.chunking import parent_child_split
 from .processing.document_loader import extract_text_from_files, get_file_info, validate_extraction
 from .processing.pii import mask_pii
@@ -96,6 +97,7 @@ def process_question(
     channel_type: str = "UTILITY",
 ) -> str:
     """Process user question with RAG and guardrails."""
+    started_at = time.perf_counter()
     is_valid, reason = validate_input(question)
     if not is_valid:
         blocked_answer = f"Request Blocked: {reason}"
@@ -117,10 +119,11 @@ def process_question(
         return blocked_answer
 
     safe_question = mask_pii(question)
-    question_tokens = estimate_tokens(question)
+    query_tokens = estimate_tokens(question)
     rag_query_tokens = estimate_tokens(safe_question)
     cached = check_cache(safe_question, agent_id)
     if cached:
+        cached = enforce_canonical_media_tags(cached)
         save_message("user", safe_question, agent_id=agent_id)
         save_message("assistant", cached, agent_id=agent_id)
         try:
@@ -133,6 +136,27 @@ def process_question(
                 request_id=request_id,
                 session_id=session_id,
                 user_id=user_id,
+                status="cached",
+            )
+        except Exception:
+            pass
+        try:
+            from .clickhouse import log_usage_to_clickhouse
+
+            log_usage_to_clickhouse(
+                agent_id=agent_id,
+                model=model_selection or "cache",
+                query_tokens=query_tokens,
+                rag_query_tokens=rag_query_tokens,
+                prompt_tokens=0,
+                completion_tokens=0,
+                latency_ms=(time.perf_counter() - started_at) * 1000.0,
+                cost=0.0,
+                request_id=request_id,
+                session_id=session_id,
+                user_id=user_id,
+                channel_name=channel_name,
+                channel_type=channel_type,
                 status="cached",
             )
         except Exception:
@@ -214,9 +238,10 @@ def process_question(
         user_id=user_id,
         channel_name=channel_name,
         channel_type=channel_type,
-        question_tokens=question_tokens,
+        query_tokens=query_tokens,
         rag_query_tokens=rag_query_tokens,
     )
+    answer = enforce_canonical_media_tags(answer)
 
     response_status = "success"
     is_valid_out, out_reason = validate_output(answer)

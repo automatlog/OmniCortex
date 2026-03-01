@@ -67,6 +67,10 @@ When to use tags:
 - Use location tags only when location details are explicitly available.
 - Use buttons tags only when clear short options improve the reply.
 
+Canonical enforcement:
+- Use only canonical tag syntax exactly as shown above.
+- Never output shorthand like `[image]file.png`, `[video]file.mp4`, or `[document]file.pdf`.
+
 Context Usage:
 Always check the available context sections before using tags.
 
@@ -115,7 +119,7 @@ def invoke_chain(
     user_id: str = None,
     channel_name: str = "web",
     channel_type: str = "UTILITY",
-    question_tokens: int = 0,
+    query_tokens: int = 0,
     rag_query_tokens: int = 0,
 ) -> str:
     """Invoke the QA chain with monitoring and analytics logging."""
@@ -145,9 +149,18 @@ def invoke_chain(
         answer = response_msg.content
 
         try:
-            usage = response_msg.response_metadata.get("token_usage", {})
-            p_tokens = usage.get("prompt_tokens", 0)
-            c_tokens = usage.get("completion_tokens", 0)
+            usage = response_msg.response_metadata.get("token_usage", {}) or {}
+            usage_meta = getattr(response_msg, "usage_metadata", {}) or {}
+            p_tokens = int(
+                usage.get("prompt_tokens")
+                or usage_meta.get("input_tokens")
+                or 0
+            )
+            c_tokens = int(
+                usage.get("completion_tokens")
+                or usage_meta.get("output_tokens")
+                or 0
+            )
 
             meta_model = response_msg.response_metadata.get("model_name", None)
             if not meta_model:
@@ -156,43 +169,44 @@ def invoke_chain(
                 else:
                     meta_model = DEFAULT_MODEL
 
-            if p_tokens or c_tokens:
-                # Postgres usage log
-                log_usage(
-                    agent_id,
-                    p_tokens,
-                    c_tokens,
-                    meta_model,
-                    latency=latency_sec,
-                    question_tokens=question_tokens,
+            # Postgres usage log (always write a row, even when token metadata is missing)
+            log_usage(
+                agent_id,
+                p_tokens,
+                c_tokens,
+                meta_model,
+                latency=latency_sec,
+                query_tokens=query_tokens,
+                rag_query_tokens=rag_query_tokens,
+            )
+
+            # ClickHouse usage log (always write a row, even when token metadata is missing)
+            try:
+                from .clickhouse import log_usage_to_clickhouse
+
+                cost_est = ((p_tokens / 1_000_000) * 0.50) + ((c_tokens / 1_000_000) * 0.70)
+                log_usage_to_clickhouse(
+                    agent_id=str(agent_id) if agent_id else None,
+                    model=meta_model,
+                    query_tokens=query_tokens,
                     rag_query_tokens=rag_query_tokens,
+                    prompt_tokens=p_tokens,
+                    completion_tokens=c_tokens,
+                    latency_ms=latency_sec * 1000.0,
+                    cost=cost_est,
+                    request_id=request_id,
+                    session_id=session_id,
+                    user_id=user_id,
+                    channel_name=channel_name,
+                    channel_type=channel_type,
+                    status="success",
                 )
+            except Exception as ch_exc:
+                print(f"ClickHouse usage logging failed: {ch_exc}")
 
-                # ClickHouse usage log
-                try:
-                    from .clickhouse import log_usage_to_clickhouse
-
-                    cost_est = ((p_tokens / 1_000_000) * 0.50) + ((c_tokens / 1_000_000) * 0.70)
-                    log_usage_to_clickhouse(
-                        agent_id=str(agent_id) if agent_id else None,
-                        model=meta_model,
-                        question_tokens=question_tokens,
-                        rag_query_tokens=rag_query_tokens,
-                        prompt_tokens=p_tokens,
-                        completion_tokens=c_tokens,
-                        latency_ms=latency_sec * 1000.0,
-                        cost=cost_est,
-                        request_id=request_id,
-                        session_id=session_id,
-                        user_id=user_id,
-                        channel_name=channel_name,
-                        channel_type=channel_type,
-                        status="success",
-                    )
-                except Exception:
-                    pass
-
+            if p_tokens:
                 TOKEN_USAGE.labels(agent_id=str(agent_id), agent_name=agent_name, token_type="prompt").inc(p_tokens)
+            if c_tokens:
                 TOKEN_USAGE.labels(agent_id=str(agent_id), agent_name=agent_name, token_type="completion").inc(c_tokens)
         except Exception as exc:
             print(f"Metrics logging failed: {exc}")
@@ -212,7 +226,7 @@ def invoke_chain(
             log_usage_to_clickhouse(
                 agent_id=str(agent_id) if agent_id else None,
                 model=model_name,
-                question_tokens=question_tokens,
+                query_tokens=query_tokens,
                 rag_query_tokens=rag_query_tokens,
                 prompt_tokens=0,
                 completion_tokens=0,

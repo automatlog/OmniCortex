@@ -8,6 +8,7 @@ import json
 import hmac
 import asyncio
 import datetime
+import re
 from typing import Optional, List, Dict, Any, Union
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, BackgroundTasks, WebSocket, WebSocketDisconnect
@@ -87,6 +88,8 @@ async def validate_dependencies():
     import sys
     import requests
 
+    strict_startup = os.getenv("STRICT_STARTUP_VALIDATION", "false").lower() == "true"
+
     print("\n" + "=" * 60)
     print("  OmniCortex Backend - Startup Validation")
     print("=" * 60)
@@ -155,9 +158,11 @@ async def validate_dependencies():
         print("  API docs: http://localhost:8000/docs")
     else:
         print("  Dependency validation failed")
-        print("  Backend will exit")
-        print("=" * 60 + "\n")
-        sys.exit(1)
+        if strict_startup:
+            print("  STRICT_STARTUP_VALIDATION=true, backend will exit")
+            print("=" * 60 + "\n")
+            raise RuntimeError("Dependency validation failed")
+        print("  Continuing startup in non-strict mode")
 
     print("=" * 60 + "\n")
 
@@ -304,7 +309,6 @@ class AgentCreateResponse(BaseModel):
     status: str
     id: str
     agent_name: str
-    system_prompt: Optional[str] = None
 
 class AgentUpdate(BaseModel):
     name: Optional[str] = None
@@ -626,7 +630,7 @@ async def agent_stats(api_key: ApiKey = Depends(get_api_key)):
             
             # Get usage stats for this agent
             usage = db.query(
-                func.sum(UsageLog.question_tokens).label('total_question'),
+                func.sum(UsageLog.query_tokens).label('total_query'),
                 func.sum(UsageLog.rag_query_tokens).label('total_rag_query'),
                 func.sum(UsageLog.prompt_tokens).label('total_prompt'),
                 func.sum(UsageLog.completion_tokens).label('total_completion'),
@@ -642,7 +646,7 @@ async def agent_stats(api_key: ApiKey = Depends(get_api_key)):
                 "agent_name": agent['name'],
                 "document_count": agent.get('document_count', 0),
                 "message_count": agent.get('message_count', 0),
-                "total_question_tokens": usage.total_question or 0,
+                "total_query_tokens": usage.total_query or 0,
                 "total_rag_query_tokens": usage.total_rag_query or 0,
                 "total_prompt_tokens": usage.total_prompt or 0,
                 "total_completion_tokens": usage.total_completion or 0,
@@ -675,6 +679,11 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
     normalized_channel_name = _normalize_channel_name(request.channel_name)
     normalized_channel_type = _normalize_channel_type(request.channel_type)
     question_preview = resolved_question[:500].replace("\n", " ").strip()
+    auth_user_id = str((api_key or {}).get("x_user_id") or "").strip()
+    request_user_id = str(request.user_id or "").strip()
+    effective_user_id = request_user_id
+    if not effective_user_id or effective_user_id.lower() == "anonymous":
+        effective_user_id = auth_user_id or "anonymous"
 
     # Privacy/Logging config
     PRIVACY_PSEUDONYMIZE = os.getenv("LOG_PSEUDONYMIZE", "true").lower() == "true"
@@ -707,7 +716,7 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
         "request_id": request_id,
         "id": request.id,
         "session_id": request.session_id,
-        "user_id": pseudonymize_user_id(request.user_id),
+        "user_id": pseudonymize_user_id(effective_user_id),
         "model_selection": resolved_model_selection,
         "model_selection_source": "agent_config" if resolved_model_selection else "default_backend",
         "channel_name": normalized_channel_name,
@@ -730,7 +739,7 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
                     from sqlalchemy import func as sa_func
 
                     db = SessionLocal()
-                    user_key = request.user_id or "anonymous"
+                    user_key = effective_user_id or "anonymous"
                     channel_key = (normalized_channel_name or "TEXT").lower()
                     today = datetime.datetime.now().date()
 
@@ -811,7 +820,7 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
             model_selection=resolved_model_selection,
             request_id=request_id,
             session_id=session_id,
-            user_id=request.user_id,
+            user_id=effective_user_id,
             channel_name=normalized_channel_name,
             channel_type=normalized_channel_type,
         )
@@ -851,7 +860,7 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
                 cost=0.0,
                 request_id=request_id,
                 session_id=locals().get("session_id"),
-                user_id=request.user_id,
+                user_id=effective_user_id,
                 channel_name=normalized_channel_name,
                 channel_type=normalized_channel_type,
                 status="error",
@@ -881,7 +890,7 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
                 cost=0.0,
                 request_id=request_id,
                 session_id=locals().get("session_id"),
-                user_id=request.user_id,
+                user_id=effective_user_id,
                 channel_name=normalized_channel_name,
                 channel_type=normalized_channel_type,
                 status="error",
@@ -955,6 +964,24 @@ PERSONAL_ROLES = {
     "Learning Companion",
     "Creative Helper",
     "Health Wellness Companion",
+    "PersonalAssistant",
+    "LearningCompanion",
+    "CreativeHelper",
+    "HealthWellness",
+    "TaskManagement",
+    "ResearchAssistant",
+    "CustomerSupport",
+    "SalesOutbound",
+    "AppointmentScheduling",
+    "LeadQualification",
+    "OrderProcessing",
+    "TechnicalSupport",
+    "BillingInquiries",
+    "ProductInformation",
+    "SurveyFeedback",
+    "EmergencyResponse",
+    "ReservationBooking",
+    "ComplianceVerification",
 }
 BUSINESS_INDUSTRIES = {
     "Retail Commerce Assistant",
@@ -973,12 +1000,119 @@ BUSINESS_INDUSTRIES = {
     "Legal Services Coordinator",
     "Non-Profit Outreach Assistant",
     "Entertainment Services Assistant",
+    "RetailEcommerce",
+    "HealthcareMedical",
+    "FinanceBanking",
+    "RealEstate",
+    "EducationTraining",
+    "HospitalityTravel",
+    "Automotive",
+    "ProfessionalServices",
+    "TechnologySoftware",
+    "GovernmentPublic",
+    "FoodBeverage",
+    "Manufacturing",
+    "FitnessWellness",
+    "LegalServices",
+    "NonProfit",
+    "MediaEntertainment",
 }
 MAX_URLS = 25
 MAX_CONVERSATION_STARTERS = 25
 MAX_MEDIA_URLS = 25
 CHANNEL_NAMES = {"TEXT", "VOICE"}
 CHANNEL_TYPES = {"UTILITY", "MARKETING", "AUTHENTICATION"}
+
+AGENT_TYPE_ALIASES = {
+    "blankagent": "BlankAgent",
+    "blank": "BlankAgent",
+    "personalassistant": "PersonalAssistant",
+    "personal": "PersonalAssistant",
+    "businessagent": "BusinessAgent",
+    "business": "BusinessAgent",
+}
+
+BUSINESS_SUBAGENT_CANONICAL = {
+    "retailecommerce": "RetailEcommerce",
+    "healthcaremedical": "HealthcareMedical",
+    "financebanking": "FinanceBanking",
+    "realestate": "RealEstate",
+    "educationtraining": "EducationTraining",
+    "hospitalitytravel": "HospitalityTravel",
+    "automotive": "Automotive",
+    "professionalservices": "ProfessionalServices",
+    "technologysoftware": "TechnologySoftware",
+    "governmentpublic": "GovernmentPublic",
+    "foodbeverage": "FoodBeverage",
+    "manufacturing": "Manufacturing",
+    "fitnesswellness": "FitnessWellness",
+    "legalservices": "LegalServices",
+    "nonprofit": "NonProfit",
+    "mediaentertainment": "MediaEntertainment",
+}
+
+PERSONAL_ROLE_CANONICAL = {
+    "personalassistant": "PersonalAssistant",
+    "learningcompanion": "LearningCompanion",
+    "creativehelper": "CreativeHelper",
+    "healthwellness": "HealthWellness",
+    "taskmanagement": "TaskManagement",
+    "researchassistant": "ResearchAssistant",
+    "customersupport": "CustomerSupport",
+    "salesoutbound": "SalesOutbound",
+    "appointmentscheduling": "AppointmentScheduling",
+    "leadqualification": "LeadQualification",
+    "orderprocessing": "OrderProcessing",
+    "technicalsupport": "TechnicalSupport",
+    "billinginquiries": "BillingInquiries",
+    "productinformation": "ProductInformation",
+    "surveyfeedback": "SurveyFeedback",
+    "emergencyresponse": "EmergencyResponse",
+    "reservationbooking": "ReservationBooking",
+    "complianceverification": "ComplianceVerification",
+}
+
+BUSINESS_PROMPT_BY_SUBAGENT = {
+    "retailecommerce": "prompts/business/01-business-retail-ecommerce.json",
+    "healthcaremedical": "prompts/business/02-business-healthcare-medical.json",
+    "financebanking": "prompts/business/03-business-finance-banking.json",
+    "realestate": "prompts/business/04-business-real-estate.json",
+    "educationtraining": "prompts/business/05-business-education-training.json",
+    "hospitalitytravel": "prompts/business/06-business-hospitality-travel.json",
+    "automotive": "prompts/business/07-business-automotive.json",
+    "professionalservices": "prompts/business/08-business-professional-services.json",
+    "technologysoftware": "prompts/business/09-business-technology-software.json",
+    "governmentpublic": "prompts/business/10-business-government-public.json",
+    "foodbeverage": "prompts/business/11-business-food-beverage.json",
+    "manufacturing": "prompts/business/12-business-manufacturing.json",
+    "fitnesswellness": "prompts/business/13-business-fitness-wellness.json",
+    "legalservices": "prompts/business/14-business-legal-services.json",
+    "nonprofit": "prompts/business/15-business-non-profit.json",
+    "mediaentertainment": "prompts/business/16-business-media-entertainment.json",
+}
+
+PERSONAL_PROMPT_BY_ROLE = {
+    "personalassistant": "prompts/personal/01-personal-personal-assistant.json",
+    "learningcompanion": "prompts/personal/02-personal-learning-companion.json",
+    "creativehelper": "prompts/personal/03-personal-creative-helper.json",
+    "healthwellness": "prompts/personal/04-personal-health-wellness.json",
+    "taskmanagement": "prompts/personal/05-personal-task-management.json",
+    "researchassistant": "prompts/personal/06-personal-research-assistant.json",
+    # Current prompt library fallback mappings
+    "customersupport": "prompts/personal/05-personal-task-management.json",
+    "salesoutbound": "prompts/personal/05-personal-task-management.json",
+    "appointmentscheduling": "prompts/personal/05-personal-task-management.json",
+    "leadqualification": "prompts/personal/05-personal-task-management.json",
+    "orderprocessing": "prompts/personal/05-personal-task-management.json",
+    "technicalsupport": "prompts/personal/06-personal-research-assistant.json",
+    "billinginquiries": "prompts/personal/05-personal-task-management.json",
+    "productinformation": "prompts/personal/06-personal-research-assistant.json",
+    "surveyfeedback": "prompts/personal/05-personal-task-management.json",
+    "emergencyresponse": "prompts/personal/01-personal-personal-assistant.json",
+    "reservationbooking": "prompts/personal/05-personal-task-management.json",
+    "complianceverification": "prompts/personal/06-personal-research-assistant.json",
+}
+
 MODEL_SELECTION_ALIASES = {
     "Meta Llama-3.1-8B-Instruct": "Meta Llama 3.1",
     "Meta-Llama-3.1-8B-Instruct": "Meta Llama 3.1",
@@ -1062,6 +1196,59 @@ def _merge_unique_str_lists(*values: Optional[List[str]]) -> Optional[List[str]]
             seen.add(text)
             merged.append(text)
     return merged or None
+
+
+def _selector_key(value: Optional[str]) -> str:
+    text = str(value or "").strip().lower()
+    return re.sub(r"[^a-z0-9]+", "", text)
+
+
+def _normalize_agent_type(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return AGENT_TYPE_ALIASES.get(_selector_key(text), text)
+
+
+def _normalize_subagent_type(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text.lower() in {"null", "none"}:
+        return None
+    return BUSINESS_SUBAGENT_CANONICAL.get(_selector_key(text), text)
+
+
+def _normalize_role_type(value: Optional[str]) -> Optional[str]:
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    key = _selector_key(text)
+    if key in PERSONAL_ROLE_CANONICAL:
+        return PERSONAL_ROLE_CANONICAL[key]
+    if key in BUSINESS_SUBAGENT_CANONICAL:
+        return BUSINESS_SUBAGENT_CANONICAL[key]
+    return text
+
+
+def _auto_prompt_source(agent_type: Optional[str], subagent_type: Optional[str], role_type: Optional[str]) -> Optional[str]:
+    for candidate in (subagent_type, role_type):
+        key = _selector_key(candidate)
+        if key in BUSINESS_PROMPT_BY_SUBAGENT:
+            return BUSINESS_PROMPT_BY_SUBAGENT[key]
+        if key in PERSONAL_PROMPT_BY_ROLE:
+            return PERSONAL_PROMPT_BY_ROLE[key]
+
+    agent_key = _selector_key(agent_type)
+    if agent_key in {"personalassistant", "personal"}:
+        return PERSONAL_PROMPT_BY_ROLE["personalassistant"]
+    if agent_key in {"businessagent", "business"}:
+        return BUSINESS_PROMPT_BY_SUBAGENT["retailecommerce"]
+    return None
 
 
 def _extract_prompt_text(items: Optional[List[Union[str, ConversationStarterItem]]]) -> Optional[List[str]]:
@@ -1196,8 +1383,27 @@ def _normalize_agent_create_payload(agent_request: AgentCreate) -> Dict[str, Any
 
     conversation_starters = _extract_prompt_text(agent_request.conversation_starters)
     conversation_end = _extract_conversation_items(agent_request.conversation_end)
+    normalized_agent_type = _normalize_agent_type(agent_request.agent_type)
+    normalized_subagent_type = _normalize_subagent_type(agent_request.subagent_type)
+    normalized_role_type = _normalize_role_type(agent_request.role_type)
+    normalized_industry = None
+    if agent_request.industry is not None:
+        industry_text = str(agent_request.industry).strip()
+        normalized_industry = _normalize_subagent_type(industry_text) if industry_text else None
+    if not normalized_industry and _selector_key(normalized_agent_type) in {"businessagent", "business"}:
+        normalized_industry = normalized_subagent_type
+
     system_prompt_source = _extract_system_prompt_source(agent_request.system_prompt)
     system_prompt = _resolve_system_prompt(agent_request.system_prompt)
+    if not agent_request.system_prompt:
+        auto_source = _auto_prompt_source(
+            normalized_agent_type,
+            normalized_subagent_type,
+            normalized_role_type,
+        )
+        if auto_source:
+            system_prompt_source = auto_source
+            system_prompt = _resolve_system_prompt(auto_source)
     description = (
         (agent_request.description or "").strip()
         or (agent_request.instruction or "").strip()
@@ -1218,8 +1424,10 @@ def _normalize_agent_create_payload(agent_request: AgentCreate) -> Dict[str, Any
         "scraped_data": scraped_data,
         "logic": agent_request.logic,
         "conversation_end": conversation_end,
-        "agent_type": agent_request.agent_type,
-        "subagent_type": agent_request.subagent_type,
+        "agent_type": normalized_agent_type,
+        "subagent_type": normalized_subagent_type,
+        "role_type": normalized_role_type,
+        "industry": normalized_industry,
         "model_selection": _normalize_model_selection(agent_request.model_selection),
     }
 
@@ -1293,6 +1501,32 @@ def _normalize_agent_update_payload(agent_request: AgentUpdate) -> Dict[str, Any
     elif agent_request.instruction is not None:
         description = agent_request.instruction
 
+    normalized_agent_type = (
+        _normalize_agent_type(agent_request.agent_type)
+        if agent_request.agent_type is not None
+        else None
+    )
+    normalized_subagent_type = (
+        _normalize_subagent_type(agent_request.subagent_type)
+        if agent_request.subagent_type is not None
+        else None
+    )
+    normalized_role_type = (
+        _normalize_role_type(agent_request.role_type)
+        if agent_request.role_type is not None
+        else None
+    )
+    normalized_industry = None
+    if agent_request.industry is not None:
+        industry_text = str(agent_request.industry).strip()
+        normalized_industry = _normalize_subagent_type(industry_text) if industry_text else None
+    if (
+        normalized_industry is None
+        and normalized_subagent_type is not None
+        and _selector_key(normalized_agent_type) in {"businessagent", "business"}
+    ):
+        normalized_industry = normalized_subagent_type
+
     system_prompt = (
         _resolve_system_prompt(agent_request.system_prompt)
         if agent_request.system_prompt is not None else None
@@ -1301,6 +1535,18 @@ def _normalize_agent_update_payload(agent_request: AgentUpdate) -> Dict[str, Any
         _extract_system_prompt_source(agent_request.system_prompt)
         if agent_request.system_prompt is not None else None
     )
+    if agent_request.system_prompt is None and any(
+        value is not None
+        for value in (normalized_agent_type, normalized_subagent_type, normalized_role_type)
+    ):
+        auto_source = _auto_prompt_source(
+            normalized_agent_type,
+            normalized_subagent_type,
+            normalized_role_type,
+        )
+        if auto_source:
+            system_prompt_source = auto_source
+            system_prompt = _resolve_system_prompt(auto_source)
     scraped_data = (
         [_model_to_dict(row) for row in agent_request.scraped_data]
         if agent_request.scraped_data is not None else None
@@ -1318,51 +1564,57 @@ def _normalize_agent_update_payload(agent_request: AgentUpdate) -> Dict[str, Any
         "scraped_data": scraped_data,
         "logic": agent_request.logic,
         "conversation_end": conversation_end,
-        "agent_type": agent_request.agent_type,
-        "subagent_type": agent_request.subagent_type,
+        "agent_type": normalized_agent_type,
+        "subagent_type": normalized_subagent_type,
+        "role_type": normalized_role_type,
+        "industry": normalized_industry,
         "model_selection": _normalize_model_selection(agent_request.model_selection),
     }
 
 
-def _normalize_role_and_industry(role_type: Optional[str], industry: Optional[str]) -> tuple:
-    if role_type is None:
-        return None, industry
+def _normalize_role_and_industry(
+    role_type: Optional[str],
+    industry: Optional[str],
+    *,
+    agent_type: Optional[str] = None,
+    subagent_type: Optional[str] = None,
+) -> tuple:
+    normalized_subagent = _normalize_subagent_type(subagent_type) if subagent_type is not None else None
+    normalized_industry = None
+    if industry is not None:
+        industry_text = str(industry).strip()
+        normalized_industry = _normalize_subagent_type(industry_text) if industry_text else None
 
-    role_raw = role_type.strip()
-    if not role_raw:
-        return None, industry
+    normalized_role = _normalize_role_type(role_type) if role_type is not None else None
+    agent_key = _selector_key(agent_type)
 
-    role_lower = role_raw.lower()
+    # Backward compatibility for legacy category role_type values.
+    role_key = _selector_key(normalized_role)
+    if role_key in {"personal"}:
+        normalized_role = "PersonalAssistant"
+        role_key = _selector_key(normalized_role)
+    elif role_key in {"business"}:
+        normalized_role = normalized_subagent or normalized_industry or "BusinessAgent"
+        role_key = _selector_key(normalized_role)
+    elif role_key in {"knowledge"}:
+        normalized_role = "knowledge"
+        role_key = _selector_key(normalized_role)
 
-    # Backward compatibility: allow old role names and map them to categories.
-    if role_raw in PERSONAL_ROLES:
-        return "personal", industry or role_raw  # Preserve subtype in industry
-    if role_raw in BUSINESS_INDUSTRIES:
-        return "business", industry or role_raw
+    # If role_type is omitted, infer a sensible default from agent_type/subagent_type.
+    if normalized_role is None:
+        if agent_key in {"personalassistant", "personal"}:
+            normalized_role = "PersonalAssistant"
+        elif agent_key in {"businessagent", "business"} and normalized_subagent:
+            normalized_role = normalized_subagent
 
-    if role_lower not in ROLE_TYPES:
-        # Accept custom/free-form role_type values from external integrations.
-        # Example: "specialist", "advisor", etc.
-        return role_raw, industry
+    # For business-style requests, keep industry aligned with subagent_type.
+    if normalized_industry is None:
+        business_role = _selector_key(normalized_role) in BUSINESS_SUBAGENT_CANONICAL
+        business_agent = agent_key in {"businessagent", "business"}
+        if business_role or business_agent:
+            normalized_industry = normalized_subagent
 
-    if role_lower == "business":
-        if not industry or not industry.strip():
-            raise HTTPException(
-                status_code=400,
-                detail="industry is required when role_type is 'business'",
-            )
-        if industry not in BUSINESS_INDUSTRIES:
-            raise HTTPException(
-                status_code=400,
-                detail=f"industry must be one of {sorted(BUSINESS_INDUSTRIES)}",
-            )
-    elif industry:
-        raise HTTPException(
-            status_code=400,
-            detail="industry is only valid when role_type is 'business'",
-        )
-
-    return role_lower, industry
+    return normalized_role, normalized_industry
 
 
 def _validate_list_limits(agent_payload=None, *, urls=None, conversation_starters=None, image_urls=None, video_urls=None):
@@ -1496,6 +1748,11 @@ async def get_agent_detail(agent_id: str, request: Request, api_key: ApiKey = De
 async def create_new_agent(agent_request: AgentCreate, request: Request, background_tasks: BackgroundTasks, api_key: ApiKey = Depends(get_api_key)):
     """Create a new agent (optionally from local files)"""
     try:
+        raw_user_id = (api_key or {}).get("x_user_id")
+        effective_user_id = str(raw_user_id).strip() if raw_user_id is not None else None
+        if effective_user_id == "":
+            effective_user_id = None
+
         normalized = _normalize_agent_create_payload(agent_request)
         _validate_list_limits(
             urls=normalized["urls"],
@@ -1504,13 +1761,11 @@ async def create_new_agent(agent_request: AgentCreate, request: Request, backgro
             video_urls=normalized["video_urls"],
         )
         role_type, industry = _normalize_role_and_industry(
-            agent_request.role_type, agent_request.industry
+            normalized["role_type"],
+            normalized["industry"],
+            agent_type=normalized["agent_type"],
+            subagent_type=normalized["subagent_type"],
         )
-        if role_type is None and agent_request.industry:
-            raise HTTPException(
-                status_code=400,
-                detail="industry is only valid when role_type is 'business'",
-            )
 
         created_id = create_agent(
             id=normalized["id"],
@@ -1530,6 +1785,7 @@ async def create_new_agent(agent_request: AgentCreate, request: Request, backgro
             agent_type=normalized["agent_type"],
             subagent_type=normalized["subagent_type"],
             model_selection=normalized["model_selection"],
+            user_id=effective_user_id,
         )
         
         # Handle Local File Paths (for bulk creation/scripting)
@@ -1573,17 +1829,36 @@ async def create_new_agent(agent_request: AgentCreate, request: Request, backgro
         if normalized["urls"]:
             background_tasks.add_task(process_urls, normalized["urls"], created_id)
 
+        # Audit create action in ClickHouse with user_id from auth header.
+        try:
+            from core.clickhouse import log_usage_to_clickhouse
+
+            log_usage_to_clickhouse(
+                agent_id=created_id,
+                model="api/agents",
+                query_tokens=0,
+                rag_query_tokens=0,
+                prompt_tokens=0,
+                completion_tokens=0,
+                latency_ms=0.0,
+                cost=0.0,
+                request_id=str(uuid.uuid4()),
+                session_id="",
+                user_id=effective_user_id,
+                channel_name="TEXT",
+                channel_type="UTILITY",
+                status="agent_created",
+            )
+        except Exception:
+            pass
+
         agent = get_agent(created_id)
         if not agent:
             raise HTTPException(status_code=500, detail="Failed to load created agent")
-        system_prompt_name = _system_prompt_filename(normalized.get("system_prompt_source"))
-        if not system_prompt_name:
-            system_prompt_name = _system_prompt_filename(normalized.get("system_prompt"))
         return AgentCreateResponse(
             status="created",
             id=agent["id"],
             agent_name=agent["name"],
-            system_prompt=system_prompt_name,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -1600,6 +1875,10 @@ async def update_agent_endpoint(
     current = get_agent(agent_id)
     if not current:
         raise HTTPException(status_code=404, detail="Agent not found")
+    raw_user_id = (api_key or {}).get("x_user_id")
+    effective_user_id = str(raw_user_id).strip() if raw_user_id is not None else None
+    if effective_user_id == "":
+        effective_user_id = None
 
     normalized = _normalize_agent_update_payload(agent_request)
     _validate_list_limits(
@@ -1609,30 +1888,30 @@ async def update_agent_endpoint(
         video_urls=normalized["video_urls"],
     )
 
-    role_type, industry = _normalize_role_and_industry(agent_request.role_type, agent_request.industry)
-
-    current_role, _ = _normalize_role_and_industry(current.get("role_type"), current.get("industry"))
-    target_role = role_type if agent_request.role_type is not None else current_role
-    target_industry = industry if agent_request.industry is not None else current.get("industry")
-    if agent_request.role_type is not None and target_role != "business":
-        target_industry = None
-
-    if target_role == "business":
-        if not target_industry:
-            raise HTTPException(
-                status_code=400,
-                detail="industry is required when role_type is 'business'",
-            )
-        if target_industry not in BUSINESS_INDUSTRIES:
-            raise HTTPException(
-                status_code=400,
-                detail=f"industry must be one of {sorted(BUSINESS_INDUSTRIES)}",
-            )
-    elif target_industry and agent_request.industry is not None:
-        raise HTTPException(
-            status_code=400,
-            detail="industry is only valid when role_type is 'business'",
-        )
+    effective_agent_type = (
+        normalized["agent_type"]
+        if normalized["agent_type"] is not None
+        else current.get("agent_type")
+    )
+    effective_subagent_type = (
+        normalized["subagent_type"]
+        if normalized["subagent_type"] is not None
+        else current.get("subagent_type")
+    )
+    role_type, industry = _normalize_role_and_industry(
+        normalized["role_type"],
+        normalized["industry"],
+        agent_type=effective_agent_type,
+        subagent_type=effective_subagent_type,
+    )
+    industry_update = None
+    if normalized["industry"] is not None:
+        industry_update = industry
+    elif (
+        normalized["subagent_type"] is not None
+        and _selector_key(effective_agent_type) in {"businessagent", "business"}
+    ):
+        industry_update = industry
 
     success = update_agent(
         agent_id=agent_id,
@@ -1640,8 +1919,8 @@ async def update_agent_endpoint(
         description=normalized["description"],
         system_prompt=normalized["system_prompt"],
         system_prompt_source=normalized["system_prompt_source"],
-        role_type=role_type if agent_request.role_type is not None else None,
-        industry=target_industry if (agent_request.industry is not None or agent_request.role_type is not None) else None,
+        role_type=role_type if normalized["role_type"] is not None else None,
+        industry=industry_update,
         urls=normalized["urls"],
         conversation_starters=normalized["conversation_starters"],
         image_urls=normalized["image_urls"],
@@ -1652,6 +1931,7 @@ async def update_agent_endpoint(
         agent_type=normalized["agent_type"],
         subagent_type=normalized["subagent_type"],
         model_selection=normalized["model_selection"],
+        user_id=effective_user_id,
     )
     if not success:
         raise HTTPException(status_code=404, detail="Agent not found")
@@ -1691,6 +1971,29 @@ async def update_agent_endpoint(
         clear_history(agent_id=agent_id)
         update_agent_metadata(agent_id, message_count=0)
         reset_chain()
+
+    # Audit update action in ClickHouse with user_id from auth header.
+    try:
+        from core.clickhouse import log_usage_to_clickhouse
+
+        log_usage_to_clickhouse(
+            agent_id=agent_id,
+            model="api/agents",
+            query_tokens=0,
+            rag_query_tokens=0,
+            prompt_tokens=0,
+            completion_tokens=0,
+            latency_ms=0.0,
+            cost=0.0,
+            request_id=str(uuid.uuid4()),
+            session_id="",
+            user_id=effective_user_id,
+            channel_name="TEXT",
+            channel_type="UTILITY",
+            status="agent_updated",
+        )
+    except Exception:
+        pass
 
     agent = get_agent(agent_id)
     base_url = str(request.base_url).rstrip("/")
@@ -1877,34 +2180,13 @@ async def voice_ws_proxy(websocket: WebSocket):
 @app.post("/voice/transcribe")
 async def transcribe_voice(audio: UploadFile = File(...), api_key: ApiKey = Depends(get_api_key)):
     """
-    Transcribe audio to text using Moshi/PersonaPlex
-    Accepts: wav, mp3, m4a, webm
+    Moshi-only mode: REST transcription is not supported.
+    Use WebSocket /voice/ws for real-time voice interaction.
     """
-    try:
-        from core.voice import transcribe_audio
-        import tempfile
-        import os
-        
-        # Save uploaded file temporarily
-        suffix = os.path.splitext(audio.filename)[1] or ".wav"
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
-            content = await audio.read()
-            f.write(content)
-            temp_path = f.name
-        
-        try:
-            text = transcribe_audio(temp_path)
-            return {"text": text, "filename": audio.filename}
-        finally:
-            os.unlink(temp_path)
-    
-    except ImportError:
-        raise HTTPException(
-            status_code=501,
-            detail="Voice engine not available. Ensure Moshi/PersonaPlex is configured."
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    raise HTTPException(
+        status_code=501,
+        detail="Moshi-only mode does not support REST transcription. Use /voice/ws.",
+    )
 
 
 @app.post("/voice/speak")
@@ -1915,44 +2197,13 @@ async def speak_text(
     api_key: ApiKey = Depends(get_api_key),
 ):
     """
-    Convert text to speech using Moshi/PersonaPlex.
-    If Moshi returns empty, returns 202 asking client to retry or allow fallback.
-    Set allow_fallback=true to auto-use LiquidVoice when Moshi fails.
+    Moshi-only mode: REST TTS is not supported.
+    Use WebSocket /voice/ws for real-time voice interaction.
     """
-    try:
-        from core.voice import speak
-        from core.voice.voice_engine import MoshiEmptyResponseError
-        from starlette.responses import Response
-        
-        audio_bytes = speak(text, voice=voice, allow_fallback=allow_fallback)
-        return Response(
-            content=audio_bytes,
-            media_type="audio/wav",
-            headers={"Content-Disposition": "attachment; filename=speech.wav"}
-        )
-    
-    except MoshiEmptyResponseError:
-        return JSONResponse(
-            status_code=202,
-            content={
-                "status": "moshi_empty_response",
-                "message": "Moshi returned an empty response. You can retry or request fallback.",
-                "actions": {
-                    "retry": "POST /voice/speak with same parameters",
-                    "fallback": "POST /voice/speak with allow_fallback=true to use LiquidVoice",
-                },
-                "backend_tried": "moshi",
-            }
-        )
-    except ImportError:
-        raise HTTPException(
-            status_code=501,
-            detail="Voice engine not available. Ensure Moshi/PersonaPlex is configured."
-        )
-    except FileNotFoundError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    raise HTTPException(
+        status_code=501,
+        detail="Moshi-only mode does not support REST TTS. Use /voice/ws.",
+    )
 
 
 @app.post("/voice/chat")
@@ -1963,116 +2214,13 @@ async def voice_chat(
     api_key: ApiKey = Depends(get_api_key),
 ):
     """
-    Voice-to-voice chat: Transcribe audio → RAG → TTS response.
-    If Moshi TTS returns empty, returns 202 asking client to retry or allow fallback.
-    Set allow_fallback=true to auto-use LiquidVoice when Moshi fails.
+    Moshi-only mode: REST voice chat is not supported.
+    Use WebSocket /voice/ws for real-time voice interaction.
     """
-    question = None
-    answer = None
-    request_id = str(uuid.uuid4())
-    session_id = request_id
-    voice_user_id = "voice_user"
-
-    def _log_voice_usage(model_name: str, latency_ms: float, status: str = "success", error: str = ""):
-        try:
-            from core.clickhouse import log_usage_to_clickhouse
-
-            log_usage_to_clickhouse(
-                agent_id=agent_id,
-                model=model_name,
-                prompt_tokens=0,
-                completion_tokens=0,
-                latency_ms=latency_ms,
-                cost=0.0,
-                request_id=request_id,
-                session_id=session_id,
-                user_id=voice_user_id,
-                channel_name="voice",
-                status=status,
-                error=error,
-            )
-        except Exception:
-            pass
-
-    try:
-        from core.voice import transcribe_audio, speak
-        from core.voice.voice_engine import MoshiEmptyResponseError
-        import tempfile
-        import os
-        
-        # 1. Transcribe audio
-        suffix = os.path.splitext(audio.filename)[1] or ".wav"
-        with tempfile.NamedTemporaryFile(suffix=suffix, delete=False) as f:
-            content = await audio.read()
-            f.write(content)
-            temp_path = f.name
-        
-        stt_started = time.perf_counter()
-        try:
-            question = transcribe_audio(temp_path)
-        finally:
-            os.unlink(temp_path)
-            stt_latency_ms = round((time.perf_counter() - stt_started) * 1000, 2)
-
-        if not question:
-            _log_voice_usage("moshi-stt", stt_latency_ms, status="error", error="empty_transcription")
-            raise HTTPException(status_code=400, detail="Could not transcribe audio")
-        _log_voice_usage("moshi-stt", stt_latency_ms, status="success")
-        
-        # 2. Get RAG response
-        history = []
-        if agent_id:
-            history = get_conversation_history(agent_id=agent_id, limit=10)
-        
-        answer = process_question(
-            question=question,
-            agent_id=agent_id,
-            conversation_history=history,
-            request_id=request_id,
-            session_id=session_id,
-            user_id=voice_user_id,
-            channel_name="voice",
-        )
-        
-        # 3. Convert to speech (may raise MoshiEmptyResponseError)
-        tts_started = time.perf_counter()
-        audio_bytes = speak(answer, allow_fallback=allow_fallback)
-        tts_latency_ms = round((time.perf_counter() - tts_started) * 1000, 2)
-        _log_voice_usage("moshi-tts", tts_latency_ms, status="success")
-        
-        # Return both text and audio
-        import base64
-        return {
-            "question": question,
-            "answer": answer,
-            "audio_base64": base64.b64encode(audio_bytes).decode() if audio_bytes else None,
-            "backend": "moshi" if audio_bytes else "none",
-        }
-    
-    except MoshiEmptyResponseError:
-        _log_voice_usage("moshi-tts", 0.0, status="error", error="empty_tts_response")
-        # Moshi TTS failed — return the text answer + ask client to decide on TTS
-        return JSONResponse(
-            status_code=202,
-            content={
-                "status": "moshi_empty_response",
-                "question": question or "[transcription unavailable]",
-                "answer": answer or "[answer unavailable]",
-                "message": "RAG answered successfully but Moshi TTS returned empty. Retry or request fallback.",
-                "actions": {
-                    "retry": "POST /voice/chat with same audio",
-                    "fallback": "POST /voice/chat with allow_fallback=true",
-                    "text_only": "Use the answer field above (TTS skipped)",
-                },
-                "backend_tried": "moshi",
-            }
-        )
-    except ImportError as e:
-        _log_voice_usage("moshi-voice", 0.0, status="error", error=str(e))
-        raise HTTPException(status_code=501, detail=str(e))
-    except Exception as e:
-        _log_voice_usage("moshi-voice", 0.0, status="error", error=str(e))
-        raise HTTPException(status_code=500, detail=str(e))
+    raise HTTPException(
+        status_code=501,
+        detail="Moshi-only mode does not support REST /voice/chat. Use /voice/ws.",
+    )
 
 
 # --- Channels (Phase 2) ---
@@ -2581,44 +2729,12 @@ async def voice_chat_liquid(
     api_key: ApiKey = Depends(get_api_key),
 ):
     """
-    End-to-end voice chat using LiquidAI LFM2.5-Audio.
-    Accepts audio, returns audio + text response.
+    Disabled in Moshi-only mode.
     """
-    try:
-        from core.voice.liquid_voice import get_voice_engine
-        import base64
-        
-        # Read audio
-        audio_bytes = await audio.read()
-        
-        # Get agent system prompt if specified
-        if agent_id:
-            agent = get_agent(agent_id)
-            if agent and agent.get("system_prompt"):
-                system_prompt = agent["system_prompt"]
-        
-        # Get voice engine and process
-        engine = get_voice_engine()
-        response = engine.transcribe_and_respond(
-            audio_bytes=audio_bytes,
-            system_prompt=system_prompt,
-            max_new_tokens=512
-        )
-        
-        return {
-            "text": response.text,
-            "audio_base64": base64.b64encode(response.audio_bytes).decode() if response.audio_bytes else None,
-            "sample_rate": response.sample_rate,
-            "duration_ms": response.duration_ms
-        }
-    
-    except ImportError as e:
-        raise HTTPException(
-            status_code=501, 
-            detail=f"LiquidAI not available. Install: pip install liquid-audio. Error: {e}"
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    raise HTTPException(
+        status_code=410,
+        detail="Liquid voice endpoint disabled in Moshi-only mode. Use /voice/ws.",
+    )
 
 
 # ============== RUN ==============

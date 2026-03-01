@@ -172,12 +172,15 @@ export default function AgentsPage() {
 
     try {
       const roleType = agentType === "Business" ? "business" : agentType === "Personal" ? "personal" : "knowledge";
+      const generatedId = crypto.randomUUID();
 
       const payload: {
+        id: string;
         name: string;
         description?: string;
         system_prompt?: string;
         role_type?: "personal" | "business" | "knowledge";
+        agent_type?: string;
         industry?: string;
         urls?: string[];
         conversation_starters?: string[];
@@ -186,10 +189,12 @@ export default function AgentsPage() {
         documents_text?: Array<{ filename: string; text: string }>;
         scraped_data?: Array<{ url?: string; text: string }>;
       } = {
+        id: generatedId,
         name: name.trim(),
         description: description.trim(),
         system_prompt: systemPrompt.trim() || undefined,
         role_type: roleType,
+        agent_type: roleType,
         urls: splitList(urlsText),
         conversation_starters: splitList(conversationStartersText),
         image_urls: splitList(imageUrlsText),

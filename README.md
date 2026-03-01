@@ -65,20 +65,20 @@ uv pip install -e .
 Create `.env` in repo root (minimum):
 
 ```ini
-DATABASE_URL=postgresql://postgres:password@localhost:5432/omnicortex
-VLLM_BASE_URL=http://localhost:8080/v1
+DATABASE_URL=postgresql://<db_user>:<db_password>@<db_host>:<db_port>/<db_name>
+VLLM_BASE_URL=http://<llm_host>:<llm_port>/v1
 VLLM_MODEL=meta-llama/Llama-3.1-8B-Instruct
 
-AUTH_VERIFY_URL=https://gsauth.com/api/v1/omnicortex/me
+AUTH_VERIFY_URL=https://<auth_host>/api/v1/omnicortex/me
 AUTH_VERIFY_TIMEOUT=8
 
-CORS_ORIGINS=http://localhost:3000,http://127.0.0.1:3000
+CORS_ORIGINS=https://<admin_origin_1>,https://<admin_origin_2>
 ```
 
 Optional model aliases:
 
 ```ini
-LLAMA_BASE_URL=http://localhost:8080/v1
+LLAMA_BASE_URL=http://<llama_host>:<llama_port>/v1
 LLAMA_MODEL=meta-llama/Llama-4-Maverick-17B-128E-Instruct
 ```
 
@@ -86,7 +86,7 @@ Optional ClickHouse:
 
 ```ini
 CLICKHOUSE_ENABLED=true
-CLICKHOUSE_HOST=localhost
+CLICKHOUSE_HOST=<clickhouse_host>
 CLICKHOUSE_PORT=8123
 CLICKHOUSE_USER=default
 CLICKHOUSE_PASSWORD=
@@ -96,7 +96,7 @@ CLICKHOUSE_DB=omnicortex
 Optional voice:
 
 ```ini
-PERSONAPLEX_URL=http://localhost:8998
+PERSONAPLEX_URL=http://<moshi_host>:<moshi_port>
 MOSHI_ENABLED=true
 ```
 
@@ -190,12 +190,12 @@ Important:
 Example:
 
 ```bash
-curl -X POST "http://localhost:8000/agents" \
+curl -X POST "http://<api_host>:<api_port>/agents" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <token>" \
   -H "X-User-Id: 102" \
   -d '{
-    "id": "a990c567-f5a4-4c2b-bbb9-536d6b77f3d3",
+    "id": "<agent_id>",
     "agentname": "Personal AI BOT",
     "agent_type": "PersonalAssistant",
     "subagent_type": "NULL",
@@ -241,7 +241,7 @@ Create response:
 ```json
 {
   "status": "created",
-  "id": "a990c567-f5a4-4c2b-bbb9-536d6b77f3d3",
+  "id": "<agent_id>",
   "agent_name": "Personal AI BOT"
 }
 ```
@@ -320,12 +320,12 @@ Prompt auto-selection:
 Example:
 
 ```bash
-curl -X POST "http://localhost:8000/query" \
+curl -X POST "http://<api_host>:<api_port>/query" \
   -H "Content-Type: application/json" \
   -H "Authorization: Bearer <token>" \
   -H "X-User-Id: 102" \
   -d '{
-    "id": "a990c567-f5a4-4c2b-bbb9-536d6b77f3d3",
+    "id": "<agent_id>",
     "channel_name": "TEXT",
     "channel_type": "MARKETING",
     "query": "Send me course images"
@@ -337,9 +337,9 @@ Response:
 ```json
 {
   "answer": "...",
-  "id": "a990c567-f5a4-4c2b-bbb9-536d6b77f3d3",
-  "session_id": "c1fb9809-0fb3-488f-a03c-bd15018cf48e",
-  "request_id": "dc961167-f2ef-4fbe-925f-edf4ffe0f4af"
+  "id": "<agent_id>",
+  "session_id": "<session_id>",
+  "request_id": "<request_id>"
 }
 ```
 
@@ -439,9 +439,9 @@ Moshi-only mode is active:
 
 ```bash
 uv run python scripts/quick_stress.py \
-  --base-url http://localhost:8000 \
+  --base-url http://<api_host>:<api_port> \
   --token <bearer_token> \
-  --agent-id a990c567-f5a4-4c2b-bbb9-536d6b77f3d3 \
+  --agent-id <agent_id> \
   --questions 20 \
   --concurrency 5
 ```

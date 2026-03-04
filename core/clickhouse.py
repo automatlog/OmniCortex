@@ -25,6 +25,7 @@ _CLIENT_LOCK = threading.Lock()
 
 _USAGE_BUFFER: List[List[Any]] = []
 _CHAT_BUFFER: List[List[Any]] = []
+_AGENT_EVENT_BUFFER: List[List[Any]] = []
 _BUFFER_LOCK = threading.Lock()
 
 _FLUSHER_STARTED = False
@@ -65,6 +66,25 @@ _CHAT_COLS = [
     "ended_at",
     "session_id",
     "status",
+    "error",
+]
+
+_AGENT_EVENT_COLS = [
+    "timestamp",
+    "event_id",
+    "id",
+    "user_id",
+    "status",
+    "created_at",
+    "deleted_at",
+    "agent_name",
+    "model_selection",
+    "role_type",
+    "industry",
+    "vector_store",
+    "vector_chunks",
+    "parent_chunks",
+    "payload",
     "error",
 ]
 
@@ -175,6 +195,22 @@ def _now_utc() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _coerce_datetime(value: Optional[Any]) -> Optional[datetime]:
+    if value is None:
+        return None
+    if isinstance(value, datetime):
+        if value.tzinfo is None:
+            return value.replace(tzinfo=timezone.utc)
+        return value.astimezone(timezone.utc)
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        return datetime.fromisoformat(text.replace("Z", "+00:00")).astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
 def _start_flusher_once() -> None:
     global _FLUSHER_STARTED
     if _FLUSHER_STARTED:
@@ -257,15 +293,22 @@ def _flush_buffers() -> None:
     with _BUFFER_LOCK:
         usage_rows = list(_USAGE_BUFFER)
         chat_rows = list(_CHAT_BUFFER)
+        agent_event_rows = list(_AGENT_EVENT_BUFFER)
         _USAGE_BUFFER.clear()
         _CHAT_BUFFER.clear()
+        _AGENT_EVENT_BUFFER.clear()
 
-    if not usage_rows and not chat_rows:
+    if not usage_rows and not chat_rows and not agent_event_rows:
         return
 
     client = get_clickhouse_client()
     if client is None:
-        logger.warning("ClickHouse unavailable; dropping %s usage and %s chat rows", len(usage_rows), len(chat_rows))
+        logger.warning(
+            "ClickHouse unavailable; dropping %s usage, %s chat, %s agent_event rows",
+            len(usage_rows),
+            len(chat_rows),
+            len(agent_event_rows),
+        )
         return
 
     if usage_rows:
@@ -279,6 +322,12 @@ def _flush_buffers() -> None:
             client.insert("chat_archive", chat_rows, column_names=_CHAT_COLS)
         except Exception as exc:
             logger.warning("ClickHouse chat_archive insert failed: %s", exc)
+
+    if agent_event_rows:
+        try:
+            client.insert("agent_events", agent_event_rows, column_names=_AGENT_EVENT_COLS)
+        except Exception as exc:
+            logger.warning("ClickHouse agent_events insert failed: %s", exc)
 
 
 def log_chat_to_clickhouse(
@@ -366,3 +415,55 @@ def log_usage_to_clickhouse(
         str(error) if error else "",
     ]
     _append_row(_USAGE_BUFFER, row, "usage")
+
+
+def log_agent_event_to_clickhouse(
+    agent_id: Optional[str],
+    status: str = "Active",
+    agent_name: Optional[str] = None,
+    user_id: Optional[Any] = None,
+    created_at: Optional[Any] = None,
+    deleted_at: Optional[Any] = None,
+    model_selection: Optional[str] = None,
+    role_type: Optional[str] = None,
+    industry: Optional[str] = None,
+    vector_store: Optional[str] = None,
+    vector_chunks: int = 0,
+    parent_chunks: int = 0,
+    event_id: Optional[str] = None,
+    payload: Optional[dict] = None,
+    error: Optional[str] = None,
+) -> None:
+    """Queue one agent lifecycle event row for ClickHouse."""
+    if not _clickhouse_enabled():
+        return
+
+    payload_text = ""
+    if payload:
+        try:
+            payload_text = json.dumps(payload, ensure_ascii=False)
+        except Exception:
+            payload_text = str(payload)
+
+    created_ts = _coerce_datetime(created_at) or _now_utc()
+    deleted_ts = _coerce_datetime(deleted_at)
+
+    row = [
+        _now_utc(),
+        str(event_id or uuid.uuid4()),
+        _safe_uuid(agent_id),
+        _safe_int32(user_id),
+        str(status or ""),
+        created_ts,
+        deleted_ts,
+        str(agent_name or ""),
+        str(model_selection or ""),
+        str(role_type or ""),
+        str(industry or ""),
+        str(vector_store or ""),
+        max(0, int(vector_chunks or 0)),
+        max(0, int(parent_chunks or 0)),
+        payload_text,
+        str(error) if error else "",
+    ]
+    _append_row(_AGENT_EVENT_BUFFER, row, "agent_events")

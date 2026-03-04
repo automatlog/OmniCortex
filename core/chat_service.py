@@ -414,5 +414,9 @@ def process_documents(files=None, text_input: str = None, agent_id: str = None) 
         if status == "ready":
             update_agent_metadata(agent_id, document_count=len(doc_ids))
 
+    result["vector_store"] = f"omni_agent_{agent_id}" if agent_id else "omni_default"
+    result["vector_chunks"] = len(chunks)
+    result["parent_chunks"] = len(unique_parents)
+    result["document_rows"] = len(doc_ids)
     result["success"] = status == "ready"
     return result

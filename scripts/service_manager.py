@@ -164,8 +164,10 @@ class ServiceProcess:
             # Activate virtual environment if specified
             venv_path = self.config.get("venv")
             if venv_path:
-                venv_bin = BASE_DIR / venv_path / "bin"
-                env["PATH"] = f"{venv_bin}:{env.get('PATH', '')}"
+                venv_bin_dir = "Scripts" if os.name == "nt" else "bin"
+                path_sep = ";" if os.name == "nt" else ":"
+                venv_bin = BASE_DIR / venv_path / venv_bin_dir
+                env["PATH"] = f"{venv_bin}{path_sep}{env.get('PATH', '')}"
                 env["VIRTUAL_ENV"] = str(BASE_DIR / venv_path)
             
             # Start process

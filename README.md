@@ -109,6 +109,18 @@ uv run python api.py
 Startup validates PostgreSQL and vLLM.  
 If `STRICT_STARTUP_VALIDATION=true`, startup fails when dependencies are unavailable.
 
+Optional pretty terminal view (tagged HTTP/CORS/vector/chunk logs):
+
+```bash
+bash scripts/run_api_pretty.sh
+```
+
+You can also pass a custom run command:
+
+```bash
+bash scripts/run_api_pretty.sh uv run python api.py
+```
+
 ### 4) Run admin
 
 ```bash

@@ -2,6 +2,7 @@
 // Connects to FastAPI backend at localhost:8000
 
 const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const ADMIN_API_KEY_STORAGE = "omnicortex_api_key";
 
 // Tiered Timeout Configuration
 // Different operations have different timeout requirements based on expected duration
@@ -136,7 +137,9 @@ const fetchWithTimeout = async (url: string, options: RequestInit = {}, timeout 
  * Uses NEXT_PUBLIC_AUTH_TOKEN (fallback NEXT_PUBLIC_API_KEY).
  */
 function withAuth(options: RequestInit = {}): RequestInit {
-  const token = process.env.NEXT_PUBLIC_AUTH_TOKEN || process.env.NEXT_PUBLIC_API_KEY;
+  const storedToken =
+    typeof window !== "undefined" ? localStorage.getItem(ADMIN_API_KEY_STORAGE) : null;
+  const token = storedToken || process.env.NEXT_PUBLIC_AUTH_TOKEN || process.env.NEXT_PUBLIC_API_KEY;
   if (!token) {
     console.warn("[API] No NEXT_PUBLIC_AUTH_TOKEN set - requests will be unauthenticated");
     return options;
@@ -145,6 +148,52 @@ function withAuth(options: RequestInit = {}): RequestInit {
   const headers = new Headers(options.headers || {});
   headers.set("Authorization", `Bearer ${token}`);
   return { ...options, headers };
+}
+
+export function setRuntimeApiKey(token: string) {
+  if (typeof window === "undefined") return;
+  localStorage.setItem(ADMIN_API_KEY_STORAGE, token.trim());
+  healthCache = null;
+}
+
+export function getRuntimeApiKey(): string | null {
+  if (typeof window === "undefined") return null;
+  return localStorage.getItem(ADMIN_API_KEY_STORAGE);
+}
+
+export function clearRuntimeApiKey() {
+  if (typeof window === "undefined") return;
+  localStorage.removeItem(ADMIN_API_KEY_STORAGE);
+  healthCache = null;
+}
+
+export async function validateApiKey(token: string): Promise<{ valid: boolean; message: string }> {
+  const cleanToken = (token || "").trim();
+  if (!cleanToken) {
+    return { valid: false, message: "API key is required" };
+  }
+
+  try {
+    const res = await fetchWithTimeout(
+      `${API_BASE}/agents`,
+      {
+        headers: {
+          Authorization: `Bearer ${cleanToken}`,
+        },
+      },
+      TIMEOUTS.AGENT_OPERATIONS
+    );
+
+    if (res.ok) {
+      return { valid: true, message: "API key validated" };
+    }
+
+    const error = await res.json().catch(() => ({ detail: "Invalid API key" }));
+    return { valid: false, message: error.detail || "Invalid API key" };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Validation failed";
+    return { valid: false, message };
+  }
 }
 
 // Check health with caching

@@ -60,3 +60,7 @@ logfile
 # If you want to ignore log files, use:
 # *.log
 
+
+# Keep Next.js Logs page route tracked
+!admin/src/app/logs/
+!admin/src/app/logs/page.tsx

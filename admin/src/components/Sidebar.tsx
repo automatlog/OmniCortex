@@ -12,15 +12,19 @@ import {
   ChevronLeft,
   ChevronRight,
   Mic,
+  TerminalSquare,
+  LogOut,
 } from "lucide-react";
 import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
+import { clearRuntimeApiKey } from "@/lib/api";
 
 const navItems = [
   { name: "Dashboard", href: "/", icon: LayoutDashboard },
   { name: "Agents", href: "/agents", icon: Bot },
   { name: "Conversations", href: "/conversations", icon: MessageSquare },
   { name: "Voice AI", href: "/voice", icon: Mic },
+  { name: "Logs", href: "/logs", icon: TerminalSquare },
   { name: "Analytics", href: "/analytics", icon: BarChart3 },
   { name: "Settings", href: "/settings", icon: Settings },
 ];
@@ -28,6 +32,11 @@ const navItems = [
 export function Sidebar() {
   const pathname = usePathname();
   const [collapsed, setCollapsed] = useState(false);
+
+  function handleLogout() {
+    clearRuntimeApiKey();
+    window.location.reload();
+  }
 
   return (
     <motion.aside
@@ -67,9 +76,10 @@ export function Sidebar() {
       {/* Navigation */}
       <nav className="flex-1 px-3 py-4 space-y-1">
         {navItems.map((item) => {
-          const isActive = pathname === item.href || 
+          const isActive =
+            pathname === item.href ||
             (item.href !== "/" && pathname.startsWith(item.href));
-          
+
           return (
             <Link
               key={item.name}
@@ -123,6 +133,16 @@ export function Sidebar() {
             )}
           </AnimatePresence>
         </div>
+        <button
+          onClick={handleLogout}
+          className={cn(
+            "mt-3 w-full flex items-center gap-2 rounded-lg border border-neutral-700 px-2 py-2 text-sm text-neutral-300 hover:bg-neutral-800 hover:text-white transition-colors",
+            collapsed ? "justify-center" : "justify-start"
+          )}
+        >
+          <LogOut size={16} />
+          {!collapsed ? <span>Logout</span> : null}
+        </button>
       </div>
     </motion.aside>
   );

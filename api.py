@@ -65,7 +65,7 @@ from core.monitoring import (
     PrometheusMiddleware
 )
 from core.manager.connection_manager import ConnectionManager
-from core.auth import get_api_key
+from core.auth import get_api_key, verify_bearer_token
 from fastapi import Depends
 
 # Initialize Connection Manager
@@ -450,13 +450,20 @@ async def health_check():
             status_code=status_code
         )
     
+    from core.config import MOSHI_ENABLED, PERSONAPLEX_URL
+
     health_status = {
         "status": "healthy",
         "version": "1.0.0",
         "timestamp": datetime.datetime.now().isoformat(),
         "services": {
             "database": {"status": "down", "latency_ms": 0},
-            "llm": {"status": "down", "latency_ms": 0, "model_loaded": False}
+            "llm": {"status": "down", "latency_ms": 0, "model_loaded": False},
+            "moshi": {
+                "status": "disabled" if not MOSHI_ENABLED else "down",
+                "latency_ms": 0,
+                "url": PERSONAPLEX_URL,
+            },
         },
         "uptime_seconds": int((datetime.datetime.now() - STARTUP_TIME).total_seconds())
     }
@@ -512,6 +519,30 @@ async def health_check():
         logging.error(f"LLM health check failed: {e}")
         health_status["status"] = "unhealthy"
         health_status["services"]["llm"] = {"status": "down", "error": str(e)}
+
+    # Check Moshi voice backend (optional service in this stack)
+    if MOSHI_ENABLED:
+        try:
+            import requests
+
+            moshi_start = time.time()
+            moshi_response = requests.get(PERSONAPLEX_URL, timeout=2)
+            moshi_latency = int((time.time() - moshi_start) * 1000)
+            # Treat reachable HTTP service as "up" even for non-2xx endpoint responses.
+            moshi_status = "up" if moshi_response.status_code < 500 else "degraded"
+            health_status["services"]["moshi"] = {
+                "status": moshi_status,
+                "latency_ms": moshi_latency,
+                "url": PERSONAPLEX_URL,
+                "http_status": moshi_response.status_code,
+            }
+        except Exception as e:
+            health_status["services"]["moshi"] = {
+                "status": "down",
+                "latency_ms": 0,
+                "url": PERSONAPLEX_URL,
+                "error": str(e),
+            }
 
     # Cache result
     _health_cache["result"] = health_status
@@ -1652,7 +1683,7 @@ def _validate_list_limits(agent_payload=None, *, urls=None, conversation_starter
 
 def _ingest_documents_text(documents_text: Optional[List[AgentDocumentText]], agent_id: str):
     if not documents_text:
-        return
+        return None
 
     blocks = []
     for idx, doc in enumerate(documents_text, start=1):
@@ -1663,12 +1694,13 @@ def _ingest_documents_text(documents_text: Optional[List[AgentDocumentText]], ag
         blocks.append(f"[Document: {filename}]\n{text}")
 
     if blocks:
-        process_documents(text_input="\n\n".join(blocks), agent_id=agent_id)
+        return process_documents(text_input="\n\n".join(blocks), agent_id=agent_id)
+    return None
 
 
 def _ingest_scraped_data(scraped_data: Optional[List[ScrapedContent]], agent_id: str):
     if not scraped_data:
-        return
+        return None
 
     blocks = []
     for idx, row in enumerate(scraped_data, start=1):
@@ -1679,23 +1711,35 @@ def _ingest_scraped_data(scraped_data: Optional[List[ScrapedContent]], agent_id:
         blocks.append(f"Source URL: {source_url}\n\n{text}")
 
     if blocks:
-        process_documents(text_input="\n\n".join(blocks), agent_id=agent_id)
+        return process_documents(text_input="\n\n".join(blocks), agent_id=agent_id)
+    return None
 
 
-def generate_agent_webhook_url(agent_name: str, agent_id: str) -> str:
-    """Generate a unique webhook URL for an agent"""
-    from datetime import datetime
-    # Create a URL-safe slug: agent_name_YYYYMMDD_shortid
-    safe_name = agent_name.lower().replace(" ", "_").replace("-", "_")
-    date_str = datetime.now().strftime("%Y%m%d")
-    short_id = agent_id[:8]
-    return f"/webhooks/capture/{safe_name}_{date_str}_{short_id}"
+def generate_agent_webhook_url(agent_name: str, agent_id: str) -> Optional[str]:
+    """Return configured outbound webhook URL for agent lifecycle events."""
+    webhook_url = (os.getenv("AGENT_READY_WEBHOOK_URL") or "").strip()
+    return webhook_url or None
+
+
+def _emit_agent_ready_webhook(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Send outbound webhook for agent creation lifecycle."""
+    webhook_url = (os.getenv("AGENT_READY_WEBHOOK_URL") or "").strip()
+    if not webhook_url:
+        return {"sent": False, "reason": "AGENT_READY_WEBHOOK_URL not configured"}
+
+    try:
+        import requests
+
+        response = requests.post(webhook_url, json=payload, timeout=8)
+        return {"sent": response.status_code < 400, "status_code": response.status_code}
+    except Exception as exc:
+        return {"sent": False, "error": str(exc)}
 
 
 def agent_to_response(agent: dict, base_url: str = None) -> AgentResponse:
     """Convert agent dict to response with webhook_url"""
     webhook_path = generate_agent_webhook_url(agent['name'], agent['id'])
-    full_url = f"{base_url}{webhook_path}" if base_url else webhook_path
+    full_url = webhook_path
     return AgentResponse(
         id=agent['id'],
         name=agent['name'],
@@ -1748,6 +1792,16 @@ async def get_agent_detail(agent_id: str, request: Request, api_key: ApiKey = De
 async def create_new_agent(agent_request: AgentCreate, request: Request, background_tasks: BackgroundTasks, api_key: ApiKey = Depends(get_api_key)):
     """Create a new agent (optionally from local files)"""
     try:
+        vector_chunks_total = 0
+        parent_chunks_total = 0
+
+        def _accumulate_ingest_metrics(result: Optional[Dict[str, Any]]) -> None:
+            nonlocal vector_chunks_total, parent_chunks_total
+            if not result:
+                return
+            vector_chunks_total += int(result.get("vector_chunks") or 0)
+            parent_chunks_total += int(result.get("parent_chunks") or 0)
+
         raw_user_id = (api_key or {}).get("x_user_id")
         effective_user_id = str(raw_user_id).strip() if raw_user_id is not None else None
         if effective_user_id == "":
@@ -1805,7 +1859,9 @@ async def create_new_agent(agent_request: AgentCreate, request: Request, backgro
                         print(f"⚠️ Warning: File not found {path}")
                 
                 if file_objs:
-                    process_documents(files=file_objs, agent_id=created_id)
+                    _accumulate_ingest_metrics(
+                        process_documents(files=file_objs, agent_id=created_id)
+                    )
             except Exception as doc_err:
                 print(f"❌ Failed to process initial documents: {doc_err}")
                 # Don't fail the request, just log it? Or maybe fail? 
@@ -1819,11 +1875,11 @@ async def create_new_agent(agent_request: AgentCreate, request: Request, backgro
 
         # Handle direct extracted text payloads (document words/text)
         if agent_request.documents_text:
-            _ingest_documents_text(agent_request.documents_text, created_id)
+            _accumulate_ingest_metrics(_ingest_documents_text(agent_request.documents_text, created_id))
 
         # Handle pre-scraped web content payload
         if agent_request.scraped_data:
-            _ingest_scraped_data(agent_request.scraped_data, created_id)
+            _accumulate_ingest_metrics(_ingest_scraped_data(agent_request.scraped_data, created_id))
         
         # Trigger URL Scraping in Background
         if normalized["urls"]:
@@ -1852,6 +1908,47 @@ async def create_new_agent(agent_request: AgentCreate, request: Request, backgro
         except Exception:
             pass
 
+        # Agent lifecycle analytics row in ClickHouse.
+        try:
+            from core.clickhouse import log_agent_event_to_clickhouse
+
+            log_agent_event_to_clickhouse(
+                agent_id=created_id,
+                status="Active",
+                agent_name=normalized["name"],
+                user_id=effective_user_id,
+                created_at=datetime.datetime.utcnow(),
+                deleted_at=None,
+                model_selection=normalized["model_selection"],
+                role_type=role_type,
+                industry=industry,
+                vector_store=f"omni_agent_{created_id}",
+                vector_chunks=vector_chunks_total,
+                parent_chunks=parent_chunks_total,
+                payload={
+                    "agent_type": normalized["agent_type"],
+                    "subagent_type": normalized["subagent_type"],
+                },
+            )
+        except Exception:
+            pass
+
+        # Optional outbound lifecycle webhook for successful agent creation.
+        try:
+            webhook_payload = {
+                "event": "agent.ready",
+                "status": "Agent Ready",
+                "agent_id": created_id,
+                "agent_name": normalized["name"],
+                "vector_store": f"omni_agent_{created_id}",
+                "vector_chunks": vector_chunks_total,
+                "parent_chunks": parent_chunks_total,
+                "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            }
+            _emit_agent_ready_webhook(webhook_payload)
+        except Exception:
+            pass
+
         agent = get_agent(created_id)
         if not agent:
             raise HTTPException(status_code=500, detail="Failed to load created agent")
@@ -1875,6 +1972,16 @@ async def update_agent_endpoint(
     current = get_agent(agent_id)
     if not current:
         raise HTTPException(status_code=404, detail="Agent not found")
+    vector_chunks_total = 0
+    parent_chunks_total = 0
+
+    def _accumulate_ingest_metrics(result: Optional[Dict[str, Any]]) -> None:
+        nonlocal vector_chunks_total, parent_chunks_total
+        if not result:
+            return
+        vector_chunks_total += int(result.get("vector_chunks") or 0)
+        parent_chunks_total += int(result.get("parent_chunks") or 0)
+
     raw_user_id = (api_key or {}).get("x_user_id")
     effective_user_id = str(raw_user_id).strip() if raw_user_id is not None else None
     if effective_user_id == "":
@@ -1946,7 +2053,7 @@ async def update_agent_endpoint(
                 else:
                     logging.warning(f"File path not found during agent update: {path}")
             if file_objs:
-                process_documents(files=file_objs, agent_id=agent_id)
+                _accumulate_ingest_metrics(process_documents(files=file_objs, agent_id=agent_id))
         finally:
             for f in file_objs:
                 try:
@@ -1956,11 +2063,11 @@ async def update_agent_endpoint(
 
     # Optional direct text ingestion payload
     if agent_request.documents_text:
-        _ingest_documents_text(agent_request.documents_text, agent_id)
+        _accumulate_ingest_metrics(_ingest_documents_text(agent_request.documents_text, agent_id))
 
     # Optional pre-scraped text ingestion
     if agent_request.scraped_data:
-        _ingest_scraped_data(agent_request.scraped_data, agent_id)
+        _accumulate_ingest_metrics(_ingest_scraped_data(agent_request.scraped_data, agent_id))
 
     # Optional URL scrape refresh
     if normalized["urls"]:
@@ -1995,6 +2102,32 @@ async def update_agent_endpoint(
     except Exception:
         pass
 
+    # Agent lifecycle analytics row in ClickHouse.
+    try:
+        from core.clickhouse import log_agent_event_to_clickhouse
+
+        log_agent_event_to_clickhouse(
+            agent_id=agent_id,
+            status="Updated",
+            agent_name=(normalized["name"] or current.get("name")),
+            user_id=effective_user_id,
+            created_at=current.get("created_at"),
+            deleted_at=None,
+            model_selection=(normalized["model_selection"] or current.get("model_selection")),
+            role_type=(role_type if normalized["role_type"] is not None else current.get("role_type")),
+            industry=(industry_update if industry_update is not None else current.get("industry")),
+            vector_store=f"omni_agent_{agent_id}",
+            vector_chunks=vector_chunks_total,
+            parent_chunks=parent_chunks_total,
+            payload={
+                "restart_after_update": bool(agent_request.restart_after_update),
+                "agent_type": (normalized["agent_type"] or current.get("agent_type")),
+                "subagent_type": (normalized["subagent_type"] or current.get("subagent_type")),
+            },
+        )
+    except Exception:
+        pass
+
     agent = get_agent(agent_id)
     base_url = str(request.base_url).rstrip("/")
     return agent_to_response(agent, base_url)
@@ -2003,9 +2136,38 @@ async def update_agent_endpoint(
 @app.delete("/agents/{agent_id}", response_model=StatusResponse)
 async def delete_agent_endpoint(agent_id: str, api_key: ApiKey = Depends(get_api_key)):
     """Delete an agent"""
+    existing_agent = get_agent(agent_id)
+    raw_user_id = (api_key or {}).get("x_user_id")
+    effective_user_id = str(raw_user_id).strip() if raw_user_id is not None else None
+    if effective_user_id == "":
+        effective_user_id = None
+
     success = delete_agent(agent_id)
     if not success:
         raise HTTPException(status_code=404, detail="Agent not found")
+
+    # Agent lifecycle analytics row in ClickHouse for delete operation.
+    try:
+        from core.clickhouse import log_agent_event_to_clickhouse
+
+        log_agent_event_to_clickhouse(
+            agent_id=agent_id,
+            status="Deleted",
+            agent_name=(existing_agent or {}).get("name"),
+            user_id=effective_user_id,
+            created_at=(existing_agent or {}).get("created_at"),
+            deleted_at=datetime.datetime.utcnow(),
+            model_selection=(existing_agent or {}).get("model_selection"),
+            role_type=(existing_agent or {}).get("role_type"),
+            industry=(existing_agent or {}).get("industry"),
+            vector_store=f"omni_agent_{agent_id}",
+            vector_chunks=0,
+            parent_chunks=0,
+            payload={"agent_deleted": True},
+        )
+    except Exception:
+        pass
+
     return {"status": "deleted", "id": agent_id}
 
 
@@ -2068,6 +2230,28 @@ async def get_history(agent_id: str, limit: int = 20, api_key: ApiKey = Depends(
 
 
 # --- Voice WebSocket Proxy (Moshi) ---
+async def _authenticate_voice_websocket(websocket: WebSocket) -> Optional[str]:
+    """
+    Validate bearer token for WebSocket handshake.
+    Returns None when authorized, otherwise an error string.
+    """
+    auth_header = (websocket.headers.get("authorization") or "").strip()
+    if not auth_header.lower().startswith("bearer "):
+        return "Authorization Bearer token missing"
+
+    token = auth_header.split(" ", 1)[1].strip()
+    x_user_id = (websocket.headers.get("x-user-id") or "").strip()
+    try:
+        await asyncio.to_thread(verify_bearer_token, token, x_user_id or None)
+        return None
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, str) else "Unauthorized"
+        return detail
+    except Exception as exc:
+        logging.error(f"Voice WS auth verification failed: {exc}")
+        return "Auth verification unavailable"
+
+
 @app.websocket("/voice/ws")
 async def voice_ws_proxy(websocket: WebSocket):
     """
@@ -2082,6 +2266,11 @@ async def voice_ws_proxy(websocket: WebSocket):
     """
     import aiohttp
     from core.config import PERSONAPLEX_URL
+
+    auth_error = await _authenticate_voice_websocket(websocket)
+    if auth_error:
+        await websocket.close(code=1008, reason=auth_error)
+        return
 
     await websocket.accept()
 
@@ -2117,11 +2306,16 @@ async def voice_ws_proxy(websocket: WebSocket):
         moshi_ws_base = moshi_base
 
     from urllib.parse import urlencode
-    query_params = urlencode({
+    moshi_api_token = (os.getenv("MOSHI_API_TOKEN") or "").strip()
+    upstream_query: Dict[str, str] = {
         "text_prompt": text_prompt,
         "voice_prompt": voice_prompt,
         "seed": seed,
-    })
+    }
+    if moshi_api_token:
+        upstream_query["token"] = moshi_api_token
+
+    query_params = urlencode(upstream_query)
     moshi_url = f"{moshi_ws_base}/api/chat?{query_params}"
     logging.info(f"🎤 Voice proxy: Connecting to Moshi at {moshi_ws_base}/api/chat")
 
@@ -2223,503 +2417,6 @@ async def voice_chat(
     )
 
 
-# --- Channels (Phase 2) ---
-@app.get("/channels", response_model=List[ChannelResponse])
-async def list_channels(api_key: ApiKey = Depends(get_api_key)):
-    """List all configured channels"""
-    db = SessionLocal()
-    try:
-        channels = db.query(Channel).all()
-        return [
-            ChannelResponse(
-                id=c.id, name=c.name, type=c.type, provider=c.provider,
-                config=c.config, agent_id=c.agent_id,
-                created_at=c.created_at.isoformat() if c.created_at else None
-            )
-            for c in channels
-        ]
-    finally:
-        db.close()
-
-@app.post("/channels", response_model=ChannelResponse)
-async def create_channel(channel: ChannelCreate, api_key: ApiKey = Depends(get_api_key)):
-    """Create a new channel"""
-    db = SessionLocal()
-    try:
-        new_channel = Channel(
-            id=str(uuid.uuid4()),
-            name=channel.name,
-            type=channel.type,
-            provider=channel.provider,
-            config=channel.config,
-            agent_id=channel.agent_id
-        )
-        db.add(new_channel)
-        db.commit()
-        db.refresh(new_channel)
-        return ChannelResponse(
-            id=new_channel.id, name=new_channel.name, type=new_channel.type,
-            provider=new_channel.provider, config=new_channel.config,
-            agent_id=new_channel.agent_id,
-            created_at=new_channel.created_at.isoformat() if new_channel.created_at else None
-        )
-    finally:
-        db.close()
-
-@app.delete("/channels/{channel_id}")
-async def delete_channel(channel_id: str, api_key: ApiKey = Depends(get_api_key)):
-    """Delete a channel"""
-    db = SessionLocal()
-    try:
-        channel = db.query(Channel).filter(Channel.id == channel_id).first()
-        if not channel:
-            raise HTTPException(status_code=404, detail="Channel not found")
-        db.delete(channel)
-        db.commit()
-        return {"status": "deleted", "id": channel_id}
-    finally:
-        db.close()
-
-
-# --- Tools (Phase 2) ---
-@app.get("/agents/{agent_id}/tools", response_model=List[ToolResponse])
-async def list_agent_tools(agent_id: str, api_key: ApiKey = Depends(get_api_key)):
-    """List tools for a specific agent"""
-    db = SessionLocal()
-    try:
-        tools = db.query(Tool).filter(Tool.agent_id == agent_id).all()
-        return [
-            ToolResponse(
-                id=t.id, name=t.name, type=t.type, content=t.content,
-                agent_id=t.agent_id,
-                created_at=t.created_at.isoformat() if t.created_at else None
-            )
-            for t in tools
-        ]
-    finally:
-        db.close()
-
-@app.post("/agents/{agent_id}/tools", response_model=ToolResponse)
-async def create_tool(agent_id: str, tool: ToolCreate, api_key: ApiKey = Depends(get_api_key)):
-    """Create a new messaging tool for an agent"""
-    if tool.agent_id != agent_id:
-        raise HTTPException(status_code=400, detail="Agent ID mismatch")
-        
-    db = SessionLocal()
-    try:
-        # Check if agent exists
-        if not get_agent(agent_id):
-             raise HTTPException(status_code=404, detail="Agent not found")
-             
-        new_tool = Tool(
-            id=str(uuid.uuid4()),
-            name=tool.name,
-            type=tool.type,
-            content=tool.content,
-            agent_id=agent_id
-        )
-        db.add(new_tool)
-        db.commit()
-        db.refresh(new_tool)
-        return ToolResponse(
-            id=new_tool.id, name=new_tool.name, type=new_tool.type,
-            content=new_tool.content, agent_id=new_tool.agent_id,
-            created_at=new_tool.created_at.isoformat() if new_tool.created_at else None
-        )
-    finally:
-        db.close()
-
-@app.delete("/tools/{tool_id}")
-async def delete_tool(tool_id: str, api_key: ApiKey = Depends(get_api_key)):
-    """Delete a tool"""
-    db = SessionLocal()
-    try:
-        tool = db.query(Tool).filter(Tool.id == tool_id).first()
-        if not tool:
-            raise HTTPException(status_code=404, detail="Tool not found")
-        db.delete(tool)
-        db.commit()
-        return {"status": "deleted", "id": tool_id}
-    finally:
-        db.close()
-
-
-@app.post("/tools/{tool_id}/dispatch")
-async def dispatch_tool(tool_id: str, payload: ToolDispatchRequest, api_key: ApiKey = Depends(get_api_key)):
-    """
-    Dispatch a tool (flow/button) to a WhatsApp user.
-    Use dry_run=true to preview payload without sending.
-    """
-    db = SessionLocal()
-    try:
-        tool = db.query(Tool).filter(Tool.id == tool_id).first()
-        if not tool:
-            raise HTTPException(status_code=404, detail="Tool not found")
-
-        content = tool.content or {}
-        tool_type = (tool.type or "").strip().lower()
-
-        if tool_type == "flow":
-            flow_payload = {
-                "to_number": payload.to_number,
-                "flow_id": content.get("flow_id"),
-                "flow_token": content.get("flow_token"),
-                "header": content.get("header", "Flow"),
-                "body": content.get("body", "Please continue"),
-                "footer": content.get("footer", ""),
-                "cta": content.get("cta", "Open"),
-                "screen": content.get("screen", "START"),
-                "data": content.get("data", {}),
-            }
-            if payload.dry_run:
-                return {"status": "preview", "tool_type": "flow", "payload": flow_payload}
-
-            from core.whatsapp import WhatsAppHandler
-
-            wa = WhatsAppHandler()
-            result = wa.send_flow_message(**flow_payload)
-            return {"status": "sent", "tool_type": "flow", "result": result}
-
-        if tool_type == "button_reply":
-            button_payload = {
-                "to_number": payload.to_number,
-                "text": content.get("text", "Choose an option"),
-                "buttons": content.get("buttons", []),
-            }
-            if payload.dry_run:
-                return {"status": "preview", "tool_type": "button_reply", "payload": button_payload}
-
-            from core.whatsapp import WhatsAppHandler
-
-            wa = WhatsAppHandler()
-            result = wa.send_interactive_message(
-                to_number=button_payload["to_number"],
-                text=button_payload["text"],
-                buttons=button_payload["buttons"],
-            )
-            return {"status": "sent", "tool_type": "button_reply", "result": result}
-
-        raise HTTPException(
-            status_code=400,
-            detail="Unsupported tool type. Supported: flow, button_reply",
-        )
-    finally:
-        db.close()
-
-
-# --- WhatsApp ---
-from fastapi import Request
-from core.whatsapp import WhatsAppHandler
-
-@app.get("/api/v1/whatsapp/webhook")
-async def verify_whatsapp_webhook(request: Request):
-    """Meta Webhook Verification"""
-    from core.config import WHATSAPP_VERIFY_TOKEN
-    token = request.query_params.get("hub.verify_token")
-    challenge = request.query_params.get("hub.challenge")
-    mode = request.query_params.get("hub.mode")
-
-    if mode == "subscribe" and token == WHATSAPP_VERIFY_TOKEN:
-        return int(challenge)
-    raise HTTPException(status_code=403, detail="Verification failed")
-
-
-@app.post("/api/v1/whatsapp/webhook")
-async def whatsapp_webhook(request: Request):
-    """Receive WhatsApp Messages"""
-    data = await request.json()
-    loop = asyncio.get_running_loop()
-    
-    # Simple extraction
-    handler = WhatsAppHandler()
-    msg_data = handler.extract_message_from_webhook(data)
-    
-    if not msg_data:
-        return {"status": "ignored", "reason": "not_text_message"}
-    
-    user_phone = msg_data["user_id"]
-    text = msg_data.get("text")
-    msg_type = msg_data.get("type", "text")
-    user_name = msg_data.get("name", "User")
-    
-    # Handle Audio
-    if msg_type == "audio":
-        audio_meta = msg_data.get("audio")
-        wa_logger.info(f"IN | Audio from {user_name}: {audio_meta}")
-        print(f"🎤 Voice Note from {user_name} ({user_phone})")
-        
-        try:
-            # 1. Get URL
-            media_id = audio_meta.get("id")
-            media_url = handler.get_media_url(media_id)
-            if not media_url:
-                raise ValueError("Could not get media URL")
-                
-            # 2. Download
-            audio_data = handler.download_media(media_url)
-            if not audio_data:
-                raise ValueError("Could not download media")
-                
-            # 3. Transcribe
-            import tempfile
-            from core.voice import transcribe_audio
-            
-            with tempfile.NamedTemporaryFile(suffix=".ogg", delete=False) as f:
-                f.write(audio_data)
-                temp_path = f.name
-            
-            try:
-                print("⏳ Transcribing audio...")
-                text = await loop.run_in_executor(None, transcribe_audio, temp_path)
-                print(f"📝 Transcribed: {text}")
-                wa_logger.info(f"TRANSCRIBED | {text}")
-            finally:
-                os.unlink(temp_path)
-                
-            if not text:
-                return {"status": "ignored", "reason": "empty_transcription"}
-                
-        except Exception as e:
-            wa_logger.error(f"AUDIO_ERR | {e}")
-            print(f"❌ Audio Error: {e}")
-            handler.send_message(user_phone, "Sorry, I couldn't listen to your voice note.")
-            return {"status": "error", "detail": str(e)}
-
-    # Fallback if neither text nor audio successfully processed
-    if not text:
-         return {"status": "ignored", "reason": "no_content"}
-
-    wa_logger.info(f"IN | {user_name} ({user_phone}): {text}")
-    print(f"📩 WhatsApp from {user_name} ({user_phone}): {text}")
-    
-    try:
-        # Use first available agent or "default"
-        # Ideally, we should check if the user is already talking to a specific agent.
-        # For now, we default to the first agent in the list.
-        agents = get_all_agents()
-        agent_id = agents[0]['id'] if agents else None
-        
-        # Get persistent conversation history for this phone number
-        from core.whatsapp_history import get_whatsapp_history
-        wa_history = get_whatsapp_history()
-        
-        # Get or create session
-        wa_session_id = str(wa_history.get_or_create_session(user_phone, agent_id))
-        
-        # Get conversation history
-        conversation_history = wa_history.get_history_for_llm(user_phone, limit=5)
-        
-        answer = await loop.run_in_executor(
-            None,
-            lambda: process_question(
-                question=text,
-                agent_id=agent_id,
-                conversation_history=conversation_history,
-                max_history=5,
-                request_id=str(uuid.uuid4()),
-                session_id=wa_session_id,
-                user_id=user_phone,
-                channel_name="whatsapp",
-            )
-        )
-        
-        # Save both user message and assistant response
-        wa_history.add_message(user_phone, "user", text)
-        wa_history.add_message(user_phone, "assistant", answer)
-        
-        # Smart Dispatch: parse response for image/video/doc tags
-        from core.response_parser import parse_response
-        parts = parse_response(answer, agent_id=agent_id)
-        
-        wa_logger.info(f"OUT | {user_phone}: {answer[:100]}")
-        print(f"📤 Replying to {user_phone}: {len(parts)} part(s)")
-        
-        last_result = {}
-        for part in parts:
-            if part["type"] == "text" and part.get("content"):
-                print(f"  💬 Sending text: {part['content'][:50]}...")
-                last_result = handler.send_message(
-                    user_phone,
-                    part["content"],
-                    preview_url=bool(part.get("preview_url")),
-                )
-            
-            elif part["type"] == "image" and part.get("url"):
-                caption = part.get("caption", "")
-                print(f"  🖼️ Sending image: {part['url'][:60]}...")
-                last_result = handler.send_image(user_phone, part["url"], caption)
-
-            elif part["type"] == "video" and part.get("url"):
-                caption = part.get("caption", "")
-                print(f"  🎥 Sending video: {part['url'][:60]}...")
-                last_result = handler.send_video(user_phone, part["url"], caption)
-
-            elif part["type"] == "document" and part.get("url"):
-                caption = part.get("caption", "")
-                filename = part.get("filename", "document.pdf")
-                print(f"  📄 Sending doc: {filename}...")
-                last_result = handler.send_document(user_phone, part["url"], caption, filename)
-
-            elif part["type"] == "location":
-                 print(f"  📍 Sending location: {part.get('name')}...")
-                 last_result = handler.send_location(
-                     user_phone, 
-                     part["latitude"], part["longitude"], 
-                     part["name"], part["address"]
-                 )
-
-            elif part["type"] == "interactive" and part.get("interaction_type") == "button":
-                 print(f"  🔘 Sending buttons: {part['body'][:20]}...")
-                 last_result = handler.send_interactive_buttons(
-                     user_phone, part["body"], part["buttons"]
-                 )
-        
-        return {"status": "processed", "reply_id": last_result.get("messages", [{}])[0].get("id") if last_result else None}
-        
-    except Exception as e:
-        wa_logger.error(f"ERR | {user_phone}: {e}")
-        print(f"❌ Error processing WhatsApp: {e}")
-        return {"status": "error", "detail": str(e)}
-
-
-# --- Webhook Capture ---
-from core.database import save_webhook_log, get_webhook_logs, clear_webhook_logs
-import json as json_lib
-
-
-
-
-@app.api_route("/webhooks/agent-reply", methods=["GET", "POST", "PUT"])
-@app.api_route("/webhooks/capture/{path:path}", methods=["GET", "POST", "PUT"])
-async def agent_reply_webhook(request: Request, path: str = None):
-    """
-    Enhanced Webhook:
-    1. Captures/Logs the webhook data.
-    2. Extract message (WhatsApp or simple JSON).
-    3. Queries Agent.
-    4. Returns Answer.
-    
-    Supports URL: /webhooks/capture/{agent_name_date} or /webhooks/agent-reply
-    """
-    try:
-        # --- 1. CAPTURE LOGIC ---
-        method = request.method
-        url = str(request.url)
-        query_params = str(request.query_params) if request.query_params else None
-        headers = json_lib.dumps(dict(request.headers))
-        source_ip = request.client.host if request.client else None
-        
-        body_bytes = await request.body()
-        try:
-            body_str = body_bytes.decode("utf-8")
-            data = json_lib.loads(body_str) if body_str else {}
-        except:
-            body_str = "(binary/invalid)"
-            data = {}
-            
-        print(f"📥 Agent Webhook Received (Path: {path}): {method} {url}")
-        
-        try:
-            save_webhook_log(
-                method=method,
-                url=url,
-                query_params=query_params,
-                headers=headers,
-                body=body_str,
-                source_ip=source_ip
-            )
-        except Exception as log_err:
-            print(f"⚠️ Failed to log webhook: {log_err}")
-
-        # If it's just a GET verification (like Meta), return challenge if present
-        if method == "GET":
-             hub_mode = request.query_params.get("hub.mode")
-             hub_challenge = request.query_params.get("hub.challenge")
-             if hub_mode == "subscribe" and hub_challenge:
-                 return int(hub_challenge)
-             return {"status": "captured", "message": "GET request logged"}
-
-        # --- 2. MESSAGE EXTRACTION ---
-        text = None
-        user_id = "unknown"
-        
-        # Try WhatsApp structure
-        try:
-            entry = data.get("entry", [])[0]
-            change = entry.get("changes", [])[0]
-            value = change.get("value", {})
-            if "messages" in value:
-                message = value["messages"][0]
-                if message.get("type") == "text":
-                    text = message["text"]["body"]
-                    user_id = message.get("from", "whatsapp_user")
-        except (IndexError, KeyError, TypeError):
-            pass
-            
-        # Try Fallback (simple JSON)
-        if not text:
-            text = data.get("message") or data.get("text") or data.get("question")
-            
-        if not text:
-            return {"status": "ignored", "reason": "no_text_found", "data": data}
-
-        print(f"📝 Processing Question from {user_id}: {text}")
-
-        # --- 3. AGENT SELECTION ---
-        # Try to infer agent from path (e.g., "sales_agent_2023")
-        agents = get_all_agents()
-        target_agent_id = None
-        
-        if path:
-            # Simple heuristic: matches agent name in path
-            for agent in agents:
-                if agent['name'].lower() in path.lower():
-                    target_agent_id = agent['id']
-                    break
-        
-        if not target_agent_id:
-             target_agent_id = agents[0]['id'] if agents else None
-
-        # --- 4. PROCESS RESPONSE ---
-        answer = process_question(
-            question=text,
-            agent_id=target_agent_id,
-            conversation_history=[], # Stateless for now
-            max_history=5,
-            request_id=str(uuid.uuid4()),
-            user_id=user_id,
-            channel_name="webhook",
-        )
-        
-        print(f"📤 Agent Answer: {answer[:100]}...")
-        
-        return {
-            "status": "success",
-            "user_id": user_id,
-            "question": text,
-            "agent_id": target_agent_id,
-            "answer": answer
-        }
-
-    except Exception as e:
-        print(f"❌ Agent Webhook Error: {e}")
-        return {"status": "error", "detail": str(e)}
-
-
-@app.get("/webhooks/logs")
-async def get_webhooks(limit: int = 50, offset: int = 0, api_key: ApiKey = Depends(get_api_key)):
-    """Get captured webhook logs"""
-    return get_webhook_logs(limit=limit, offset=offset)
-
-
-
-@app.delete("/webhooks/logs")
-async def clear_webhooks(api_key: ApiKey = Depends(get_api_key)):
-    """Clear all webhook logs"""
-    clear_webhook_logs()
-    return {"status": "cleared"}
-
-
 # --- LiquidAI Voice ---
 @app.post("/api/v1/voice/liquid")
 async def voice_chat_liquid(
@@ -2741,4 +2438,6 @@ async def voice_chat_liquid(
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000)
+
+
 

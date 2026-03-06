@@ -46,7 +46,6 @@ _USAGE_COLS = [
     "channel_type",
     "model",
     "query_tokens",
-    "rag_query_tokens",
     "prompt_tokens",
     "completion_tokens",
     "latency",
@@ -80,7 +79,7 @@ _AGENT_EVENT_COLS = [
     "agent_name",
     "model_selection",
     "role_type",
-    "industry",
+    "subagent_type",
     "vector_store",
     "vector_chunks",
     "parent_chunks",
@@ -374,7 +373,7 @@ def log_usage_to_clickhouse(
     prompt_tokens: int = 0,
     completion_tokens: int = 0,
     query_tokens: int = 0,
-    rag_query_tokens: int = 0,
+    rag_query_tokens: int = 0,  # kept for backward-compatible callers; not persisted
     latency_ms: float = 0.0,
     cost: float = 0.0,
     request_id: Optional[str] = None,
@@ -405,7 +404,6 @@ def log_usage_to_clickhouse(
         normalized_channel_type,
         str(model or "unknown"),
         max(0, int(query_tokens or 0)),
-        max(0, int(rag_query_tokens or 0)),
         max(0, int(prompt_tokens or 0)),
         max(0, int(completion_tokens or 0)),
         float(latency_ms or 0.0),
@@ -426,6 +424,7 @@ def log_agent_event_to_clickhouse(
     deleted_at: Optional[Any] = None,
     model_selection: Optional[str] = None,
     role_type: Optional[str] = None,
+    subagent_type: Optional[str] = None,
     industry: Optional[str] = None,
     vector_store: Optional[str] = None,
     vector_chunks: int = 0,
@@ -447,6 +446,7 @@ def log_agent_event_to_clickhouse(
 
     created_ts = _coerce_datetime(created_at) or _now_utc()
     deleted_ts = _coerce_datetime(deleted_at)
+    normalized_subagent_type = str(subagent_type or industry or "")
 
     row = [
         _now_utc(),
@@ -459,7 +459,7 @@ def log_agent_event_to_clickhouse(
         str(agent_name or ""),
         str(model_selection or ""),
         str(role_type or ""),
-        str(industry or ""),
+        normalized_subagent_type,
         str(vector_store or ""),
         max(0, int(vector_chunks or 0)),
         max(0, int(parent_chunks or 0)),

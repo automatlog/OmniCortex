@@ -1681,6 +1681,81 @@ def _validate_list_limits(agent_payload=None, *, urls=None, conversation_starter
         raise HTTPException(status_code=400, detail=f"video_urls limit exceeded ({MAX_MEDIA_URLS})")
 
 
+def _resolve_agent_profile_kind(agent_type: Optional[str], role_type: Optional[str]) -> Optional[str]:
+    """Return one of: blank | personal | business | None."""
+    agent_key = _selector_key(agent_type)
+    if agent_key in {"blankagent", "blank"}:
+        return "blank"
+    if agent_key in {"personalassistant", "personal"}:
+        return "personal"
+    if agent_key in {"businessagent", "business"}:
+        return "business"
+
+    role_key = _selector_key(role_type)
+    if role_key in PERSONAL_ROLE_CANONICAL:
+        return "personal"
+    if role_key in BUSINESS_SUBAGENT_CANONICAL:
+        return "business"
+    return None
+
+
+def _has_minimum_knowledge_source(
+    *,
+    urls: Optional[List[str]],
+    file_paths: Optional[List[str]],
+    documents_text: Optional[List[AgentDocumentText]],
+    scraped_data: Optional[List[ScrapedContent]],
+) -> bool:
+    if urls:
+        return True
+    if file_paths:
+        return any(str(path).strip() for path in file_paths)
+    if documents_text:
+        return any((str(doc.text or "").strip() or str(doc.filename or "").strip()) for doc in documents_text)
+    if scraped_data:
+        return any(str(row.text or "").strip() for row in scraped_data)
+    return False
+
+
+def _validate_create_agent_requirements(
+    *,
+    agent_type: Optional[str],
+    role_type: Optional[str],
+    system_prompt: Optional[str],
+    urls: Optional[List[str]],
+    file_paths: Optional[List[str]],
+    documents_text: Optional[List[AgentDocumentText]],
+    scraped_data: Optional[List[ScrapedContent]],
+) -> None:
+    profile_kind = _resolve_agent_profile_kind(agent_type, role_type)
+    if profile_kind not in {"blank", "personal", "business"}:
+        return
+
+    has_knowledge = _has_minimum_knowledge_source(
+        urls=urls,
+        file_paths=file_paths,
+        documents_text=documents_text,
+        scraped_data=scraped_data,
+    )
+    if not has_knowledge:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"{profile_kind.title()} agent requires at least one knowledge source: "
+                "a website URL or a document input."
+            ),
+        )
+
+    if profile_kind in {"personal", "business"}:
+        if not str(system_prompt or "").strip():
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"{profile_kind.title()} agent requires a non-empty system_prompt."
+                ),
+            )
+
+
 def _ingest_documents_text(documents_text: Optional[List[AgentDocumentText]], agent_id: str):
     if not documents_text:
         return None
@@ -1820,6 +1895,15 @@ async def create_new_agent(agent_request: AgentCreate, request: Request, backgro
             agent_type=normalized["agent_type"],
             subagent_type=normalized["subagent_type"],
         )
+        _validate_create_agent_requirements(
+            agent_type=normalized["agent_type"],
+            role_type=role_type,
+            system_prompt=agent_request.system_prompt,
+            urls=normalized["urls"],
+            file_paths=agent_request.file_paths,
+            documents_text=agent_request.documents_text,
+            scraped_data=agent_request.scraped_data,
+        )
 
         created_id = create_agent(
             id=normalized["id"],
@@ -1921,7 +2005,7 @@ async def create_new_agent(agent_request: AgentCreate, request: Request, backgro
                 deleted_at=None,
                 model_selection=normalized["model_selection"],
                 role_type=role_type,
-                industry=industry,
+                subagent_type=industry,
                 vector_store=f"omni_agent_{created_id}",
                 vector_chunks=vector_chunks_total,
                 parent_chunks=parent_chunks_total,
@@ -2115,7 +2199,7 @@ async def update_agent_endpoint(
             deleted_at=None,
             model_selection=(normalized["model_selection"] or current.get("model_selection")),
             role_type=(role_type if normalized["role_type"] is not None else current.get("role_type")),
-            industry=(industry_update if industry_update is not None else current.get("industry")),
+            subagent_type=(industry_update if industry_update is not None else current.get("industry")),
             vector_store=f"omni_agent_{agent_id}",
             vector_chunks=vector_chunks_total,
             parent_chunks=parent_chunks_total,
@@ -2159,7 +2243,7 @@ async def delete_agent_endpoint(agent_id: str, api_key: ApiKey = Depends(get_api
             deleted_at=datetime.datetime.utcnow(),
             model_selection=(existing_agent or {}).get("model_selection"),
             role_type=(existing_agent or {}).get("role_type"),
-            industry=(existing_agent or {}).get("industry"),
+            subagent_type=(existing_agent or {}).get("industry"),
             vector_store=f"omni_agent_{agent_id}",
             vector_chunks=0,
             parent_chunks=0,

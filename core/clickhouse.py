@@ -16,7 +16,7 @@ import time
 import uuid
 import zlib
 from datetime import datetime, timezone
-from typing import Any, List, Optional
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -97,6 +97,39 @@ def _clickhouse_enabled() -> bool:
 
 def _clickhouse_db() -> str:
     return os.getenv("CLICKHOUSE_DB", "omnicortex")
+
+
+def _as_bool(value: Optional[str], default: bool = False) -> bool:
+    if value is None:
+        return default
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
+def _clickhouse_connection_string_raw() -> str:
+    # Supports requested mixed-case key and an uppercase alternative.
+    return (
+        os.getenv("ClickHouseAIConnectionString", "").strip()
+        or os.getenv("CLICKHOUSE_AI_CONNECTION_STRING", "").strip()
+    )
+
+
+def _parse_clickhouse_connection_string(raw: str) -> Dict[str, str]:
+    if not raw:
+        return {}
+
+    parsed: Dict[str, str] = {}
+    for token in raw.split(";"):
+        part = token.strip()
+        if not part or "=" not in part:
+            continue
+        key, value = part.split("=", 1)
+        parsed[key.strip().lower()] = value.strip().strip("\"' ")
+    return parsed
 
 
 def _clickhouse_batch_size() -> int:
@@ -240,11 +273,18 @@ def get_clickhouse_client():
         if _CLIENT is not None:
             return _CLIENT
 
-        host = os.getenv("CLICKHOUSE_HOST", "localhost")
-        port = int(os.getenv("CLICKHOUSE_PORT", "8123"))
-        username = os.getenv("CLICKHOUSE_USER", "default")
-        password = os.getenv("CLICKHOUSE_PASSWORD", "")
-        secure = os.getenv("CLICKHOUSE_SECURE", "false").strip().lower() == "true"
+        conn = _parse_clickhouse_connection_string(_clickhouse_connection_string_raw())
+        host = conn.get("host") or os.getenv("CLICKHOUSE_HOST", "localhost")
+        port = int(conn.get("port") or os.getenv("CLICKHOUSE_PORT", "8123"))
+        username = (
+            conn.get("user")
+            or conn.get("username")
+            or os.getenv("CLICKHOUSE_USER", "default")
+        )
+        password = conn.get("password") or os.getenv("CLICKHOUSE_PASSWORD", "")
+        database = conn.get("database") or _clickhouse_db()
+        secure = _as_bool(conn.get("secure"), _as_bool(os.getenv("CLICKHOUSE_SECURE", "false")))
+        compress = _as_bool(conn.get("compress"), _as_bool(os.getenv("CLICKHOUSE_COMPRESS", "false")))
 
         try:
             import clickhouse_connect
@@ -254,8 +294,9 @@ def get_clickhouse_client():
                 port=port,
                 username=username,
                 password=password,
-                database=_clickhouse_db(),
+                database=database,
                 secure=secure,
+                compress=compress,
             )
             return _CLIENT
         except ImportError:
@@ -324,9 +365,9 @@ def _flush_buffers() -> None:
 
     if agent_event_rows:
         try:
-            client.insert("agent_events", agent_event_rows, column_names=_AGENT_EVENT_COLS)
+            client.insert("agent_logs", agent_event_rows, column_names=_AGENT_EVENT_COLS)
         except Exception as exc:
-            logger.warning("ClickHouse agent_events insert failed: %s", exc)
+            logger.warning("ClickHouse agent_logs insert failed: %s", exc)
 
 
 def log_chat_to_clickhouse(
@@ -466,4 +507,4 @@ def log_agent_event_to_clickhouse(
         payload_text,
         str(error) if error else "",
     ]
-    _append_row(_AGENT_EVENT_BUFFER, row, "agent_events")
+    _append_row(_AGENT_EVENT_BUFFER, row, "agent_logs")

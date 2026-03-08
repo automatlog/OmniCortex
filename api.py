@@ -303,7 +303,6 @@ class AgentListItem(BaseModel):
     id: str
     agent_type: Optional[str] = None
     agent_name: str
-    description: Optional[str] = None
 
 class AgentCreateResponse(BaseModel):
     status: str
@@ -702,19 +701,25 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
     """Chat with an agent using RAG."""
     request_id = str(uuid.uuid4())
     started = time.perf_counter()
+    agent_id = _normalize_uuid(request.id, "id", required=True)
+    agent = get_agent(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
     resolved_question = _resolve_query_text(request)
     if not resolved_question:
         raise HTTPException(status_code=400, detail="question (or query) is required")
 
-    resolved_model_selection = _resolve_model_selection_for_agent(request.id)
+    resolved_model_selection = _normalize_model_selection(agent.get("model_selection"))
     normalized_channel_name = _normalize_channel_name(request.channel_name)
     normalized_channel_type = _normalize_channel_type(request.channel_type)
     question_preview = resolved_question[:500].replace("\n", " ").strip()
     auth_user_id = str((api_key or {}).get("x_user_id") or "").strip()
     request_user_id = str(request.user_id or "").strip()
+    agent_user_id = str(agent.get("user_id") or "").strip()
     effective_user_id = request_user_id
     if not effective_user_id or effective_user_id.lower() == "anonymous":
-        effective_user_id = auth_user_id or "anonymous"
+        effective_user_id = agent_user_id or auth_user_id or "anonymous"
 
     # Privacy/Logging config
     PRIVACY_PSEUDONYMIZE = os.getenv("LOG_PSEUDONYMIZE", "true").lower() == "true"
@@ -745,7 +750,7 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
     query_logger.info(json.dumps({
         "event": "query_in",
         "request_id": request_id,
-        "id": request.id,
+        "id": agent_id,
         "session_id": request.session_id,
         "user_id": pseudonymize_user_id(effective_user_id),
         "model_selection": resolved_model_selection,
@@ -758,7 +763,7 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
 
     try:
         # Track metrics
-        CHAT_REQUESTS.labels(agent_id=request.id or "default").inc()
+        CHAT_REQUESTS.labels(agent_id=agent_id).inc()
         
         # Session Tracking
         session_id = request.session_id
@@ -766,7 +771,7 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
         try:
             if not session_id:
                 # Auto-session policy: one generated session per agent+user+channel per day.
-                if request.id:
+                if agent_id:
                     from sqlalchemy import func as sa_func
 
                     db = SessionLocal()
@@ -777,7 +782,7 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
                     existing_session = (
                         db.query(DBSession)
                         .filter(
-                            DBSession.agent_id == request.id,
+                            DBSession.agent_id == agent_id,
                             DBSession.user_id == user_key,
                             DBSession.channel_type == channel_key,
                             sa_func.date(DBSession.start_time) == today,
@@ -792,7 +797,7 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
                         session_id = str(uuid.uuid4())
                         new_sess = DBSession(
                             id=session_id,
-                            agent_id=request.id,
+                            agent_id=agent_id,
                             user_id=user_key,
                             status="active",
                             channel_type=channel_key,
@@ -819,7 +824,7 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
             time.sleep(0.1)  # Simulate network latency
             response = QueryResponse(
                 answer="[MOCK] Load test response - LLM bypassed",
-                id=request.id,
+                id=agent_id,
                 session_id=session_id,
                 request_id=request_id,
             )
@@ -836,16 +841,16 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
         
         # Get conversation history
         history = []
-        if request.id:
+        if agent_id:
             history = get_conversation_history(
-                agent_id=request.id,
+                agent_id=agent_id,
                 limit=request.max_history * 2
             )
         
         # Process question
         answer = process_question(
             question=resolved_question,
-            agent_id=request.id,
+            agent_id=agent_id,
             conversation_history=history,
             max_history=request.max_history,
             model_selection=resolved_model_selection,
@@ -858,11 +863,11 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
         
         # Replace [image][filename] and other tags with actual URLs/Markdown for frontend
         from core.response_parser import process_rich_response_for_frontend
-        answer = process_rich_response_for_frontend(answer, agent_id=request.id)
+        answer = process_rich_response_for_frontend(answer, agent_id=agent_id)
         
         response = QueryResponse(
             answer=answer,
-            id=request.id,
+            id=agent_id,
             session_id=session_id,
             request_id=request_id,
         )
@@ -883,7 +888,7 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
             from core.clickhouse import log_usage_to_clickhouse
 
             log_usage_to_clickhouse(
-                agent_id=request.id,
+                agent_id=agent_id,
                 model=resolved_model_selection or os.getenv("VLLM_MODEL", "unknown"),
                 prompt_tokens=0,
                 completion_tokens=0,
@@ -913,7 +918,7 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
             from core.clickhouse import log_usage_to_clickhouse
 
             log_usage_to_clickhouse(
-                agent_id=request.id,
+                agent_id=agent_id,
                 model=resolved_model_selection or os.getenv("VLLM_MODEL", "unknown"),
                 prompt_tokens=0,
                 completion_tokens=0,
@@ -1203,6 +1208,18 @@ def _normalize_model_selection(value: Optional[str]) -> Optional[str]:
 
 def _resolve_query_text(request_payload: QueryRequest) -> str:
     return str((request_payload.question or request_payload.query or "")).strip()
+
+
+def _normalize_uuid(value: Optional[str], field_name: str, *, required: bool = False) -> Optional[str]:
+    text = str(value or "").strip()
+    if not text:
+        if required:
+            raise HTTPException(status_code=400, detail=f"{field_name} is required")
+        return None
+    try:
+        return str(uuid.UUID(text))
+    except Exception:
+        raise HTTPException(status_code=400, detail=f"{field_name} must be a valid UUID")
 
 
 def _resolve_model_selection_for_agent(id: Optional[str]) -> Optional[str]:
@@ -1847,7 +1864,6 @@ async def list_agents(api_key: ApiKey = Depends(get_api_key)):
             id=a["id"],
             agent_type=(a.get("agent_type") or a.get("role_type")),
             agent_name=a["name"],
-            description=a.get("description"),
         )
         for a in agents
     ]
@@ -1904,9 +1920,10 @@ async def create_new_agent(agent_request: AgentCreate, request: Request, backgro
             documents_text=agent_request.documents_text,
             scraped_data=agent_request.scraped_data,
         )
+        normalized_id = _normalize_uuid(normalized["id"], "id", required=True)
 
         created_id = create_agent(
-            id=normalized["id"],
+            id=normalized_id,
             name=normalized["name"],
             description=normalized["description"],
             system_prompt=normalized["system_prompt"],
@@ -1968,29 +1985,6 @@ async def create_new_agent(agent_request: AgentCreate, request: Request, backgro
         # Trigger URL Scraping in Background
         if normalized["urls"]:
             background_tasks.add_task(process_urls, normalized["urls"], created_id)
-
-        # Audit create action in ClickHouse with user_id from auth header.
-        try:
-            from core.clickhouse import log_usage_to_clickhouse
-
-            log_usage_to_clickhouse(
-                agent_id=created_id,
-                model="api/agents",
-                query_tokens=0,
-                rag_query_tokens=0,
-                prompt_tokens=0,
-                completion_tokens=0,
-                latency_ms=0.0,
-                cost=0.0,
-                request_id=str(uuid.uuid4()),
-                session_id="",
-                user_id=effective_user_id,
-                channel_name="TEXT",
-                channel_type="UTILITY",
-                status="agent_created",
-            )
-        except Exception:
-            pass
 
         # Agent lifecycle analytics row in ClickHouse.
         try:
@@ -2162,29 +2156,6 @@ async def update_agent_endpoint(
         clear_history(agent_id=agent_id)
         update_agent_metadata(agent_id, message_count=0)
         reset_chain()
-
-    # Audit update action in ClickHouse with user_id from auth header.
-    try:
-        from core.clickhouse import log_usage_to_clickhouse
-
-        log_usage_to_clickhouse(
-            agent_id=agent_id,
-            model="api/agents",
-            query_tokens=0,
-            rag_query_tokens=0,
-            prompt_tokens=0,
-            completion_tokens=0,
-            latency_ms=0.0,
-            cost=0.0,
-            request_id=str(uuid.uuid4()),
-            session_id="",
-            user_id=effective_user_id,
-            channel_name="TEXT",
-            channel_type="UTILITY",
-            status="agent_updated",
-        )
-    except Exception:
-        pass
 
     # Agent lifecycle analytics row in ClickHouse.
     try:

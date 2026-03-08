@@ -36,11 +36,11 @@ clickhouse-client --host <clickhouse-host> --port 9000 --user <clickhouse-user> 
 CREATE DATABASE IF NOT EXISTS omnicortex;
 USE omnicortex;
 
-DROP TABLE IF EXISTS usage_log;
+DROP TABLE IF EXISTS usage_logs;
 DROP TABLE IF EXISTS chat_archive;
-DROP TABLE IF EXISTS agent_log;
+DROP TABLE IF EXISTS agent_logs;
 
-CREATE TABLE usage_log
+CREATE TABLE usage_logs
 (
     timestamp DateTime64(3) DEFAULT now64(3),
     request_id String DEFAULT '',
@@ -85,7 +85,7 @@ ORDER BY (id, timestamp)
 TTL timestamp + toIntervalDay(365)
 SETTINGS index_granularity = 8192;
 
-CREATE TABLE agent_log
+CREATE TABLE agent_logs
 (
     timestamp DateTime64(3) DEFAULT now64(3),
     event_id String DEFAULT '',
@@ -116,21 +116,21 @@ SETTINGS index_granularity = 8192;
 ```sql
 USE omnicortex;
 
-ALTER TABLE usage_log ADD COLUMN IF NOT EXISTS query_tokens UInt32 DEFAULT 0;
-ALTER TABLE usage_log ADD COLUMN IF NOT EXISTS prompt_tokens UInt32 DEFAULT 0;
-ALTER TABLE usage_log ADD COLUMN IF NOT EXISTS completion_tokens UInt32 DEFAULT 0;
-ALTER TABLE usage_log ADD COLUMN IF NOT EXISTS status LowCardinality(String) DEFAULT 'success';
-ALTER TABLE usage_log ADD COLUMN IF NOT EXISTS error String DEFAULT '';
+ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS query_tokens UInt32 DEFAULT 0;
+ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS prompt_tokens UInt32 DEFAULT 0;
+ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS completion_tokens UInt32 DEFAULT 0;
+ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS status LowCardinality(String) DEFAULT 'success';
+ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS error String DEFAULT '';
 
 ALTER TABLE chat_archive ADD COLUMN IF NOT EXISTS status LowCardinality(String) DEFAULT 'success';
 ALTER TABLE chat_archive ADD COLUMN IF NOT EXISTS error String DEFAULT '';
 
-ALTER TABLE agent_log ADD COLUMN IF NOT EXISTS created_at DateTime64(3) DEFAULT now64(3);
-ALTER TABLE agent_log ADD COLUMN IF NOT EXISTS deleted_at Nullable(DateTime64(3));
-ALTER TABLE agent_log ADD COLUMN IF NOT EXISTS vector_store String DEFAULT '';
-ALTER TABLE agent_log ADD COLUMN IF NOT EXISTS vector_chunks UInt32 DEFAULT 0;
-ALTER TABLE agent_log ADD COLUMN IF NOT EXISTS parent_chunks UInt32 DEFAULT 0;
-ALTER TABLE agent_log ADD COLUMN IF NOT EXISTS payload String DEFAULT '';
+ALTER TABLE agent_logs ADD COLUMN IF NOT EXISTS created_at DateTime64(3) DEFAULT now64(3);
+ALTER TABLE agent_logs ADD COLUMN IF NOT EXISTS deleted_at Nullable(DateTime64(3));
+ALTER TABLE agent_logs ADD COLUMN IF NOT EXISTS vector_store String DEFAULT '';
+ALTER TABLE agent_logs ADD COLUMN IF NOT EXISTS vector_chunks UInt32 DEFAULT 0;
+ALTER TABLE agent_logs ADD COLUMN IF NOT EXISTS parent_chunks UInt32 DEFAULT 0;
+ALTER TABLE agent_logs ADD COLUMN IF NOT EXISTS payload String DEFAULT '';
 ```
 
 ## 5) Verify Schema
@@ -138,12 +138,12 @@ ALTER TABLE agent_log ADD COLUMN IF NOT EXISTS payload String DEFAULT '';
 ```sql
 USE omnicortex;
 SHOW TABLES;
-DESCRIBE TABLE usage_log;
+DESCRIBE TABLE usage_logs;
 DESCRIBE TABLE chat_archive;
-DESCRIBE TABLE agent_log;
-SHOW CREATE TABLE usage_log;
+DESCRIBE TABLE agent_logs;
+SHOW CREATE TABLE usage_logs;
 SHOW CREATE TABLE chat_archive;
-SHOW CREATE TABLE agent_log;
+SHOW CREATE TABLE agent_logs;
 ```
 
 ## 6) Validation Queries
@@ -167,7 +167,7 @@ SELECT
   cost,
   status,
   error
-FROM usage_log
+FROM usage_logs
 ORDER BY timestamp DESC
 LIMIT 50;
 ```
@@ -206,7 +206,7 @@ SELECT
   u.status AS usage_status,
   c.status AS chat_status,
   c.content
-FROM usage_log u
+FROM usage_logs u
 LEFT JOIN chat_archive c
   ON u.request_id = c.request_id
  AND u.session_id = c.session_id
@@ -233,7 +233,7 @@ SELECT
   vector_chunks,
   parent_chunks,
   error
-FROM agent_log
+FROM agent_logs
 ORDER BY timestamp DESC
 LIMIT 50;
 ```
@@ -253,18 +253,24 @@ SELECT
   round(avg(latency), 2) AS avg_latency,
   quantile(0.95)(latency) AS p95_latency,
   round(sum(cost), 6) AS total_cost
-FROM usage_log
+FROM usage_logs
 GROUP BY day, model, channel_name, channel_type
 ORDER BY day DESC, requests DESC;
 ```
 
 ## 7) Runtime Name Compatibility (Important)
 
-Current code may still write to legacy names:
-1. `usage_logs` (legacy) vs `usage_log` (canonical)
-2. `agent_events` (legacy) vs `agent_log` (canonical)
+Canonical tables used by runtime code:
+1. `usage_logs`
+2. `chat_archive`
+3. `agent_logs`
+
+If you have older tables, migrate/alias from:
+1. `usage_log` -> `usage_logs`
+2. `agent_events` / `agent_log` -> `agent_logs`
 
 Also note:
 1. `rag_query_tokens` has been removed from the ClickHouse writer payload.
-2. if you had `industry` in `agent_log`, migrate to `subagent_type`:
-   `ALTER TABLE agent_log RENAME COLUMN industry TO subagent_type;`
+2. if you had `industry` in `agent_logs`, migrate to `subagent_type`:
+   `ALTER TABLE agent_logs RENAME COLUMN industry TO subagent_type;`
+

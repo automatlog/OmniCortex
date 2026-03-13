@@ -513,7 +513,8 @@ The services are automatically used by the FastAPI backend:
 
 ```python
 # api.py uses vLLM automatically
-VLLM_BASE_URL = "http://localhost:8080/v1"
+VLLM1_BASE_URL = "http://localhost:8080/v1"
+VLLM2_BASE_URL = "http://localhost:8081/v1"
 
 # Moshi is used for voice endpoints
 MOSHI_URL = "http://localhost:8998"

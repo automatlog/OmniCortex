@@ -6,6 +6,15 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def _first_non_empty(*keys: str, default: str = "") -> str:
+    """Return the first non-empty environment value across candidate keys."""
+    for key in keys:
+        value = os.getenv(key)
+        if value is not None and str(value).strip() != "":
+            return value
+    return default
+
 # =============================================================================
 # DATABASE
 # =============================================================================
@@ -16,23 +25,38 @@ if not DATABASE_URL:
 # =============================================================================
 # LLM INFERENCE (Hybrid vLLM)
 # =============================================================================
-# Hybrid Model Configuration
+# Hybrid Model Configuration (primary + secondary vLLM backends)
+VLLM1_BASE_URL = _first_non_empty("VLLM1_BASE_URL", "VLLM_BASE_URL", default="http://localhost:8080/v1")
+VLLM1_MODEL = _first_non_empty(
+    "VLLM1_MODEL",
+    "VLLM_MODEL",
+    default="meta-llama/Llama-3.1-8B-Instruct",
+)
+VLLM1_API_KEY = _first_non_empty("VLLM1_API_KEY", "VLLM_API_KEY", default="not-needed")
+
+VLLM2_BASE_URL = _first_non_empty("VLLM2_BASE_URL", "LLAMA_BASE_URL", default="http://localhost:8081/v1")
+VLLM2_MODEL = _first_non_empty(
+    "VLLM2_MODEL",
+    "LLAMA_MODEL",
+    default="meta-llama/Llama-4-Maverick-17B-128E-Instruct",
+)
+VLLM2_API_KEY = _first_non_empty("VLLM2_API_KEY", "LLAMA_API_KEY", "VLLM1_API_KEY", default="not-needed")
+
 MODEL_BACKENDS = {
     "default": {
-        "base_url": os.getenv("VLLM_BASE_URL", "http://localhost:8080/v1"),
-        "model": os.getenv("VLLM_MODEL", "meta-llama/Llama-3.1-8B-Instruct"),
-        "api_key": os.getenv("VLLM_API_KEY", ""),
+        "base_url": VLLM1_BASE_URL,
+        "model": VLLM1_MODEL,
+        "api_key": VLLM1_API_KEY,
     },
-    # Keep this alias for UI/backward compatibility, but bind it to the
-    # same primary vLLM backend to avoid LLAMA_* env drift.
     "Meta Llama 3.1": {
-        "base_url": os.getenv("VLLM_BASE_URL", "http://localhost:8080/v1"),
-        "model": os.getenv("VLLM_MODEL", "meta-llama/Llama-3.1-8B-Instruct"),
+        "base_url": VLLM1_BASE_URL,
+        "model": VLLM1_MODEL,
+        "api_key": VLLM1_API_KEY,
     },
     "Llama 4 Maverick": {
-        "base_url": os.getenv("LLAMA_BASE_URL", "http://localhost:8080/v1"),
-        "model": os.getenv("LLAMA_MODEL", "meta-llama/Llama-4-Maverick-17B-128E-Instruct"),
-        "api_key": os.getenv("LLAMA_API_KEY", os.getenv("VLLM_API_KEY", "")),
+        "base_url": VLLM2_BASE_URL,
+        "model": VLLM2_MODEL,
+        "api_key": VLLM2_API_KEY,
     },
 }
 
@@ -41,9 +65,12 @@ PERSONAPLEX_MODEL = os.getenv("PERSONAPLEX_MODEL", "nvidia/personaplex-7b-v1")
 PERSONAPLEX_URL = os.getenv("PERSONAPLEX_URL", "http://localhost:8998")
 
 # Defaults (from primary backend)
-VLLM_BASE_URL = MODEL_BACKENDS["default"]["base_url"]
-VLLM_MODEL = MODEL_BACKENDS["default"]["model"]
-VLLM_API_KEY = MODEL_BACKENDS["default"]["api_key"]
+VLLM_BASE_URL = VLLM1_BASE_URL  # backward-compatible alias
+VLLM_MODEL = VLLM1_MODEL  # backward-compatible alias
+VLLM_API_KEY = VLLM1_API_KEY  # backward-compatible alias
+LLAMA_BASE_URL = VLLM2_BASE_URL  # backward-compatible alias
+LLAMA_MODEL = VLLM2_MODEL  # backward-compatible alias
+LLAMA_API_KEY = VLLM2_API_KEY  # backward-compatible alias
 LLM_TEMPERATURE = float(os.getenv("LLM_TEMPERATURE", "0.6"))
 
 # =============================================================================

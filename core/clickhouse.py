@@ -2,7 +2,7 @@
 ClickHouse analytics writer.
 
 No-role chat model:
-- One row per turn in chat_archive.
+- One row per turn in ChatArchive.
 - content stores JSON string: {"user": "...", "ai": "..."}.
 """
 
@@ -36,59 +36,60 @@ _I32_MIN = -(2**31)
 _I32_MAX = 2**31 - 1
 
 _USAGE_COLS = [
-    "timestamp",
-    "request_id",
-    "session_id",
-    "id",
-    "user_id",
-    "product_id",
-    "channel_name",
-    "channel_type",
-    "model",
-    "query_tokens",
-    "prompt_tokens",
-    "completion_tokens",
-    "latency",
-    "hit_rate",
-    "cost",
-    "status",
-    "error",
+    "Timestamp",
+    "RequestId",
+    "SessionId",
+    "Id",
+    "UserId",
+    "ProductId",
+    "ChannelName",
+    "ChannelType",
+    "Model",
+    "QueryTokens",
+    "PromptTokens",
+    "CompletionTokens",
+    "Latency",
+    "HitRate",
+    "Cost",
+    "Status",
+    "Error",
 ]
 
 _CHAT_COLS = [
-    "timestamp",
-    "id",
-    "user_id",
-    "request_id",
-    "content",
-    "started_at",
-    "ended_at",
-    "session_id",
-    "status",
-    "error",
+    "Timestamp",
+    "Id",
+    "UserId",
+    "RequestId",
+    "Content",
+    "StartedAt",
+    "EndedAt",
+    "SessionId",
+    "Status",
+    "Error",
 ]
 
 _AGENT_EVENT_COLS = [
-    "timestamp",
-    "event_id",
-    "id",
-    "user_id",
-    "status",
-    "created_at",
-    "deleted_at",
-    "agent_name",
-    "model_selection",
-    "role_type",
-    "subagent_type",
-    "vector_store",
-    "vector_chunks",
-    "parent_chunks",
-    "payload",
-    "error",
+    "Timestamp",
+    "EventId",
+    "Id",
+    "UserId",
+    "Status",
+    "CreatedAt",
+    "DeletedAt",
+    "AgentName",
+    "ModelSelection",
+    "RoleType",
+    "SubagentType",
+    "VectorStore",
+    "VectorChunks",
+    "ParentChunks",
+    "Payload",
+    "Error",
 ]
 
 _ALLOWED_CHANNEL_NAMES = {"TEXT", "VOICE"}
-_ALLOWED_CHANNEL_TYPES = {"UTILITY", "MARKETING", "AUTHENTICATION"}
+_TEXT_CHANNEL_TYPES = {"UTILITY", "MARKETING", "AUTHENTICATION"}
+_VOICE_CHANNEL_TYPES = {"PROMOTIONAL", "TRANSACTIONAL"}
 
 
 def _clickhouse_enabled() -> bool:
@@ -153,6 +154,21 @@ def _clickhouse_max_buffer_rows() -> int:
         return 5000
 
 
+def _safe_positive_float(value: Optional[Any], default: float) -> float:
+    try:
+        number = float(value)
+        if number > 0:
+            return number
+    except Exception:
+        pass
+    return float(default)
+
+
+def _clickhouse_base_timeout() -> float:
+    # Default to 30s as requested; can be overridden via env.
+    return _safe_positive_float(os.getenv("CLICKHOUSE_TIMEOUT", "30"), 30.0)
+
+
 def _safe_uuid(value: Optional[str]) -> uuid.UUID:
     if isinstance(value, uuid.UUID):
         return value
@@ -202,25 +218,64 @@ def _channel_name(value: Optional[str]) -> str:
     return "TEXT"
 
 
-def _channel_type(value: Optional[Any]) -> str:
+_PRODUCT_ID_BY_CHANNEL_NAME = {
+    "TEXT": 6,
+    "VOICE": 2,
+}
+
+
+def _resolve_product_id(product_id: Optional[Any], normalized_channel_name: str) -> int:
+    try:
+        explicit = int(product_id) if product_id is not None else 0
+    except Exception:
+        explicit = 0
+
+    # Keep explicitly provided positive IDs, otherwise derive by channel.
+    if explicit > 0:
+        return explicit
+    return _PRODUCT_ID_BY_CHANNEL_NAME.get(
+        str(normalized_channel_name or "TEXT").upper(),
+        _PRODUCT_ID_BY_CHANNEL_NAME["TEXT"],
+    )
+
+
+def _channel_type(value: Optional[Any], normalized_channel_name: str = "TEXT") -> str:
+    channel = _channel_name(normalized_channel_name)
+    default_type = "TRANSACTIONAL" if channel == "VOICE" else "UTILITY"
+
     raw = str(value or "").strip()
     if not raw:
-        return "UTILITY"
+        return default_type
 
     upper = raw.upper()
-    if upper in _ALLOWED_CHANNEL_TYPES:
-        return upper
+
+    if channel == "VOICE":
+        if upper in _VOICE_CHANNEL_TYPES:
+            return upper
+        # Backward compatibility for old TEXT-style types sent on VOICE.
+        if upper == "MARKETING":
+            return "PROMOTIONAL"
+        if upper in {"UTILITY", "AUTHENTICATION"}:
+            return "TRANSACTIONAL"
+    else:
+        if upper in _TEXT_CHANNEL_TYPES:
+            return upper
+        # Backward compatibility for VOICE-style types sent on TEXT.
+        if upper == "PROMOTIONAL":
+            return "MARKETING"
+        if upper == "TRANSACTIONAL":
+            return "UTILITY"
 
     # Backward compatibility for numeric category inputs.
-    numeric_map = {
-        "1": "UTILITY",
-        "2": "MARKETING",
-        "3": "AUTHENTICATION",
-    }
+    numeric_map = (
+        {"1": "TRANSACTIONAL", "2": "PROMOTIONAL", "3": "TRANSACTIONAL"}
+        if channel == "VOICE"
+        else {"1": "UTILITY", "2": "MARKETING", "3": "AUTHENTICATION"}
+    )
     if raw in numeric_map:
         return numeric_map[raw]
 
-    return "UTILITY"
+    return default_type
 
 
 def _now_utc() -> datetime:
@@ -285,6 +340,16 @@ def get_clickhouse_client():
         database = conn.get("database") or _clickhouse_db()
         secure = _as_bool(conn.get("secure"), _as_bool(os.getenv("CLICKHOUSE_SECURE", "false")))
         compress = _as_bool(conn.get("compress"), _as_bool(os.getenv("CLICKHOUSE_COMPRESS", "false")))
+        base_timeout = _clickhouse_base_timeout()
+        connect_timeout = _safe_positive_float(
+            conn.get("connecttimeout") or os.getenv("CLICKHOUSE_CONNECT_TIMEOUT", base_timeout),
+            base_timeout,
+        )
+        send_receive_timeout = _safe_positive_float(
+            conn.get("sendreceivetimeout")
+            or os.getenv("CLICKHOUSE_SEND_RECEIVE_TIMEOUT", base_timeout),
+            base_timeout,
+        )
 
         try:
             import clickhouse_connect
@@ -297,6 +362,8 @@ def get_clickhouse_client():
                 database=database,
                 secure=secure,
                 compress=compress,
+                connect_timeout=connect_timeout,
+                send_receive_timeout=send_receive_timeout,
             )
             return _CLIENT
         except ImportError:
@@ -353,21 +420,21 @@ def _flush_buffers() -> None:
 
     if usage_rows:
         try:
-            client.insert("usage_logs", usage_rows, column_names=_USAGE_COLS)
+            client.insert("UsageLogs", usage_rows, column_names=_USAGE_COLS)
         except Exception as exc:
-            logger.warning("ClickHouse usage_logs insert failed: %s", exc)
+            logger.warning("ClickHouse UsageLogs insert failed: %s", exc)
 
     if chat_rows:
         try:
-            client.insert("chat_archive", chat_rows, column_names=_CHAT_COLS)
+            client.insert("ChatArchive", chat_rows, column_names=_CHAT_COLS)
         except Exception as exc:
-            logger.warning("ClickHouse chat_archive insert failed: %s", exc)
+            logger.warning("ClickHouse ChatArchive insert failed: %s", exc)
 
     if agent_event_rows:
         try:
-            client.insert("agent_logs", agent_event_rows, column_names=_AGENT_EVENT_COLS)
+            client.insert("AgentLogs", agent_event_rows, column_names=_AGENT_EVENT_COLS)
         except Exception as exc:
-            logger.warning("ClickHouse agent_logs insert failed: %s", exc)
+            logger.warning("ClickHouse AgentLogs insert failed: %s", exc)
 
 
 def log_chat_to_clickhouse(
@@ -432,7 +499,7 @@ def log_usage_to_clickhouse(
         return
 
     normalized_channel_name = _channel_name(channel_name)
-    normalized_channel_type = _channel_type(channel_type)
+    normalized_channel_type = _channel_type(channel_type, normalized_channel_name)
 
     row = [
         _now_utc(),
@@ -440,7 +507,7 @@ def log_usage_to_clickhouse(
         str(session_id or ""),
         _safe_uuid(agent_id),
         _safe_int32(user_id),
-        int(product_id or 0),
+        _resolve_product_id(product_id, normalized_channel_name),
         normalized_channel_name,
         normalized_channel_type,
         str(model or "unknown"),
@@ -507,4 +574,4 @@ def log_agent_event_to_clickhouse(
         payload_text,
         str(error) if error else "",
     ]
-    _append_row(_AGENT_EVENT_BUFFER, row, "agent_logs")
+    _append_row(_AGENT_EVENT_BUFFER, row, "AgentLogs")

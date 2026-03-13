@@ -1,0 +1,1346 @@
+﻿@using OmniApp.Domain.Commons
+@model OmniApp.Domain.AIModels.AIAgentModel
+@addTagHelper *, Microsoft.AspNetCore.Mvc.TagHelpers
+
+<style>
+    @@import url('https://fonts.googleapis.com/css2?family=Orbitron:wght@400;600;700&family=Inter:wght@300;400;500;600&display=swap');
+
+    :root {
+        --c-bg: #f0f4f8;
+        --c-surface: #ffffff;
+        --c-border: #d0e4f7;
+        --c-border2: #a8cff0;
+        --c-accent: #0a7cf5;
+        --c-accent2: #00c6e0;
+        --c-text: #0f1c2e;
+        --c-text2: #3a5575;
+        --c-muted: #8aabcc;
+        --c-green: #00c896;
+        --c-orange: #ff7340;
+        --font-head: 'Orbitron', monospace;
+        --font-body: 'Inter', sans-serif;
+    }
+
+    .ag-wrap * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+    }
+
+    .ag-wrap {
+        font-family: var(--font-body);
+        background: var(--c-bg);
+        color: var(--c-text);
+        padding: 2rem;
+        min-height: 100vh;
+        position: relative;
+        overflow: hidden;
+    }
+
+        .ag-wrap::before {
+            content: '';
+            position: fixed;
+            inset: 0;
+            background-image: linear-gradient(rgba(10,124,245,0.04) 1px, transparent 1px), linear-gradient(90deg, rgba(10,124,245,0.04) 1px, transparent 1px);
+            background-size: 48px 48px;
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .ag-wrap::after {
+            content: '';
+            position: fixed;
+            top: -80px;
+            right: -80px;
+            width: 400px;
+            height: 400px;
+            background: radial-gradient(circle, rgba(0,198,224,0.12) 0%, transparent 70%);
+            pointer-events: none;
+            z-index: 0;
+        }
+
+        .ag-wrap > * {
+            position: relative;
+            z-index: 1;
+        }
+
+    /* HEADER */
+    .ag-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        margin-bottom: 1.75rem;
+        padding-bottom: 1.25rem;
+        border-bottom: 1.5px solid var(--c-border);
+    }
+
+    .ag-brand {
+        display: flex;
+        align-items: center;
+        gap: 14px;
+    }
+
+    .ag-logo-ring {
+        width: 46px;
+        height: 46px;
+        border-radius: 50%;
+        border: 2px solid var(--c-accent2);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: linear-gradient(135deg, rgba(0,198,224,0.1), rgba(10,124,245,0.06));
+        position: relative;
+    }
+
+        .ag-logo-ring::after {
+            content: '';
+            position: absolute;
+            inset: 4px;
+            border-radius: 50%;
+            border: 1px dashed rgba(10,124,245,0.3);
+            animation: spin 10s linear infinite;
+        }
+
+    @@keyframes spin {
+        to {
+            transform: rotate(360deg);
+        }
+    }
+
+    .ag-logo-ring svg {
+        width: 20px;
+        height: 20px;
+        fill: var(--c-accent);
+    }
+
+    .ag-title {
+        font-family: var(--font-head);
+        font-size: 0.75rem;
+        font-weight: 700;
+        letter-spacing: 0.18em;
+        color: var(--c-accent);
+        text-transform: uppercase;
+        line-height: 1;
+    }
+
+    .ag-subtitle {
+        font-family: var(--font-head);
+        font-size: 0.6rem;
+        color: var(--c-muted);
+        letter-spacing: 0.1em;
+        margin-top: 4px;
+        font-weight: 400;
+    }
+
+    .status-chip {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-family: var(--font-head);
+        font-size: 0.6rem;
+        letter-spacing: 0.1em;
+        color: var(--c-text2);
+    }
+
+    .status-dot {
+        width: 7px;
+        height: 7px;
+        border-radius: 50%;
+        background: var(--c-green);
+        box-shadow: 0 0 6px var(--c-green);
+        animation: pulse 2s ease-in-out infinite;
+    }
+
+    @@keyframes pulse {
+        0%, 100% {
+            opacity: 1;
+            transform: scale(1)
+        }
+
+        50% {
+            opacity: 0.6;
+            transform: scale(0.85)
+        }
+    }
+
+    /* MAIN PANEL */
+    .main-panel {
+        background: var(--c-surface);
+        border: 1.5px solid var(--c-border);
+        border-radius: 14px;
+        overflow: hidden;
+        position: relative;
+        box-shadow: 0 2px 24px rgba(10,124,245,0.06);
+    }
+
+        .main-panel::before {
+            content: '';
+            position: absolute;
+            top: -1px;
+            left: -1px;
+            width: 24px;
+            height: 24px;
+            border-top: 3px solid var(--c-accent);
+            border-left: 3px solid var(--c-accent);
+            border-radius: 12px 0 0 0;
+            z-index: 2;
+        }
+
+        .main-panel::after {
+            content: '';
+            position: absolute;
+            bottom: -1px;
+            right: -1px;
+            width: 24px;
+            height: 24px;
+            border-bottom: 3px solid var(--c-accent2);
+            border-right: 3px solid var(--c-accent2);
+            border-radius: 0 0 12px 0;
+            z-index: 2;
+        }
+
+    .panel-topbar {
+        padding: 0.85rem 1.5rem;
+        border-bottom: 1.5px solid var(--c-border);
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        background: linear-gradient(90deg, rgba(10,124,245,0.03), transparent);
+    }
+
+    .panel-section-label {
+        font-family: var(--font-head);
+        font-size: 0.62rem;
+        letter-spacing: 0.2em;
+        color: var(--c-accent);
+        font-weight: 600;
+    }
+
+    .panel-indicators {
+        display: flex;
+        gap: 5px;
+    }
+
+        .panel-indicators span {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+        }
+
+    .pi-r {
+        background: #ff5f57;
+    }
+
+    .pi-y {
+        background: #febc2e;
+    }
+
+    .pi-g {
+        background: var(--c-green);
+        box-shadow: 0 0 5px var(--c-green);
+    }
+
+    .panel-body {
+        padding: 2rem;
+        display: flex;
+        flex-direction: column;
+        gap: 2.5rem;
+    }
+
+    /* SECTION BLOCK */
+    .section-block {
+    }
+
+    /* Section heading row */
+    .section-heading {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        margin-bottom: 1.5rem;
+    }
+
+    .section-heading-icon {
+        width: 36px;
+        height: 36px;
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+    }
+
+        .section-heading-icon svg {
+            width: 18px;
+            height: 18px;
+        }
+
+    .shi-a {
+        background: rgba(255,179,50,0.1);
+        border: 1.5px solid rgba(255,179,50,0.25);
+    }
+
+    .shi-b {
+        background: rgba(0,200,150,0.1);
+        border: 1.5px solid rgba(0,200,150,0.25);
+    }
+
+    .shi-c {
+        background: rgba(10,124,245,0.08);
+        border: 1.5px solid rgba(10,124,245,0.2);
+    }
+
+    .shi-a svg {
+        fill: #e08b00;
+    }
+
+    .shi-b svg {
+        fill: #00a87a;
+    }
+
+    .shi-c svg {
+        fill: var(--c-accent);
+    }
+
+    .section-heading-text {
+    }
+
+    .section-heading-title {
+        font-family: var(--font-head);
+        font-size: 0.72rem;
+        font-weight: 700;
+        letter-spacing: 0.14em;
+        color: var(--c-text);
+        text-transform: uppercase;
+    }
+
+    .section-heading-sub {
+        font-family: var(--font-head);
+        font-size: 0.55rem;
+        color: var(--c-muted);
+        letter-spacing: 0.1em;
+        margin-top: 2px;
+    }
+
+    .section-heading-line {
+        flex: 1;
+        height: 1px;
+        background: linear-gradient(90deg, var(--c-border), transparent);
+    }
+
+    /* Divider between sections */
+    .section-divider {
+        height: 1px;
+        background: linear-gradient(90deg, transparent, var(--c-border), transparent);
+        margin: 0;
+    }
+
+    /* FIELDS */
+    .field-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 1.25rem;
+        margin-bottom: 1.25rem;
+    }
+
+        .field-grid.single {
+            grid-template-columns: 1fr;
+        }
+
+        .field-grid.triple {
+            grid-template-columns: 1fr 1fr 1fr;
+        }
+
+        .field-grid:last-child {
+            margin-bottom: 0;
+        }
+
+    @@media(max-width: 768px) {
+        .field-grid, .field-grid.triple {
+            grid-template-columns: 1fr 1fr;
+        }
+    }
+
+    @@media(max-width: 560px) {
+        .field-grid, .field-grid.triple {
+            grid-template-columns: 1fr;
+        }
+
+        .ag-status-bar {
+            display: none;
+        }
+    }
+
+    .field-label {
+        display: flex;
+        align-items: center;
+        gap: 7px;
+        margin-bottom: 7px;
+    }
+
+    .label-line {
+        width: 14px;
+        height: 2px;
+        background: linear-gradient(90deg, var(--c-accent), var(--c-accent2));
+        border-radius: 2px;
+        flex-shrink: 0;
+    }
+
+    .label-text {
+        font-family: var(--font-head);
+        font-size: 0.6rem;
+        letter-spacing: 0.15em;
+        color: var(--c-text2);
+        font-weight: 600;
+        text-transform: uppercase;
+    }
+
+    .label-req {
+        color: var(--c-orange);
+        margin-left: 2px;
+        font-size: 0.75rem;
+    }
+
+    .hud-input, .hud-select, .hud-textarea {
+        width: 100%;
+        background: #f5f9ff;
+        border: 1.5px solid var(--c-border);
+        border-radius: 8px;
+        color: var(--c-text);
+        font-family: var(--font-body);
+        font-size: 0.88rem;
+        padding: 0.62rem 1rem;
+        outline: none;
+        transition: all 0.18s;
+        -webkit-appearance: none;
+    }
+
+        .hud-input:focus, .hud-select:focus, .hud-textarea:focus {
+            border-color: var(--c-accent);
+            background: #fff;
+            box-shadow: 0 0 0 3px rgba(10,124,245,0.1);
+        }
+
+        .hud-input::placeholder {
+            color: var(--c-muted);
+            font-size: 0.84rem;
+        }
+
+    .hud-select {
+        cursor: pointer;
+    }
+
+    .hud-textarea {
+        font-family: 'Courier New', monospace;
+        font-size: 0.82rem;
+        line-height: 1.7;
+        resize: vertical;
+        min-height: 200px;
+        color: #1a4a7a;
+    }
+
+    .field-note {
+        font-size: 0.7rem;
+        color: var(--c-muted);
+        margin-top: 6px;
+        display: flex;
+        align-items: center;
+        gap: 5px;
+    }
+
+        .field-note::before {
+            content: '';
+            display: inline-block;
+            width: 10px;
+            height: 1px;
+            background: var(--c-muted);
+        }
+
+    /* FILES */
+    .file-alert-bar {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 0.65rem 1rem;
+        background: rgba(10,124,245,0.05);
+        border: 1.5px solid rgba(10,124,245,0.15);
+        border-radius: 8px;
+        margin-bottom: 1rem;
+    }
+
+        .file-alert-bar svg {
+            width: 15px;
+            height: 15px;
+            fill: var(--c-accent);
+            flex-shrink: 0;
+        }
+
+        .file-alert-bar span {
+            font-family: var(--font-head);
+            font-size: 0.6rem;
+            letter-spacing: 0.1em;
+            color: var(--c-accent);
+        }
+
+    .file-row {
+        display: flex;
+        align-items: center;
+        gap: 12px;
+        padding: 0.85rem 1rem;
+        border: 1.5px solid var(--c-border);
+        border-radius: 9px;
+        background: #fafcff;
+        margin-bottom: 0.6rem;
+        transition: all 0.18s;
+        position: relative;
+        overflow: hidden;
+    }
+
+        .file-row::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            bottom: 0;
+            width: 3px;
+            background: linear-gradient(180deg, var(--c-accent), var(--c-accent2));
+            border-radius: 3px 0 0 3px;
+        }
+
+        .file-row:hover {
+            border-color: var(--c-accent2);
+            box-shadow: 0 2px 12px rgba(10,124,245,0.08);
+        }
+
+    .file-icon {
+        width: 38px;
+        height: 38px;
+        border-radius: 8px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-shrink: 0;
+        font-size: 1.1rem;
+    }
+
+    .fi-txt {
+        background: #f1f3f5;
+        border: 1.5px solid #dde1e7;
+    }
+
+    .fi-csv {
+        background: rgba(0,200,150,0.08);
+        border: 1.5px solid rgba(0,200,150,0.25);
+    }
+
+    .fi-pdf {
+        background: rgba(255,115,64,0.08);
+        border: 1.5px solid rgba(255,115,64,0.25);
+    }
+
+    .fi-img {
+        border: 1.5px solid var(--c-border);
+        overflow: hidden;
+    }
+
+    .fi-vid {
+        background: rgba(10,124,245,0.06);
+        border: 1.5px solid rgba(10,124,245,0.2);
+    }
+
+    .file-info {
+        flex: 1;
+        min-width: 0;
+    }
+
+    .file-name {
+        font-size: 0.85rem;
+        font-weight: 500;
+        color: var(--c-text);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+    }
+
+    .file-type {
+        font-family: var(--font-head);
+        font-size: 0.55rem;
+        letter-spacing: 0.12em;
+        color: var(--c-muted);
+        margin-top: 2px;
+    }
+
+    .btn-view {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        padding: 0.38rem 0.9rem;
+        background: transparent;
+        border: 1.5px solid var(--c-border2);
+        border-radius: 6px;
+        color: var(--c-accent);
+        font-family: var(--font-head);
+        font-size: 0.58rem;
+        letter-spacing: 0.1em;
+        cursor: pointer;
+        transition: all 0.15s;
+        white-space: nowrap;
+    }
+
+        .btn-view:hover {
+            background: rgba(10,124,245,0.06);
+            border-color: var(--c-accent);
+            box-shadow: 0 0 10px rgba(10,124,245,0.15);
+        }
+
+    .empty-state {
+        text-align: center;
+        padding: 2.5rem 1rem;
+        color: var(--c-muted);
+    }
+
+        .empty-state i {
+            font-size: 2.5rem;
+            opacity: 0.3;
+            display: block;
+            margin-bottom: 0.75rem;
+        }
+
+        .empty-state p {
+            font-family: var(--font-head);
+            font-size: 0.65rem;
+            letter-spacing: 0.12em;
+        }
+
+    /* FOOTER */
+    .panel-footer {
+        padding: 1rem 1.75rem;
+        border-top: 1.5px solid var(--c-border);
+        display: flex;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 0.75rem;
+        background: linear-gradient(90deg, transparent, rgba(10,124,245,0.02));
+    }
+
+    .btn-cancel {
+        padding: 0.58rem 1.5rem;
+        background: transparent;
+        border: 1.5px solid var(--c-border);
+        border-radius: 8px;
+        color: var(--c-text2);
+        font-family: var(--font-head);
+        font-size: 0.62rem;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        cursor: pointer;
+        transition: all 0.15s;
+    }
+
+        .btn-cancel:hover {
+            border-color: var(--c-text2);
+            color: var(--c-text);
+        }
+
+    .btn-deploy {
+        position: relative;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 0.62rem 1.75rem;
+        background: linear-gradient(135deg, var(--c-accent) 0%, var(--c-accent2) 100%);
+        border: none;
+        border-radius: 8px;
+        color: #fff;
+        font-family: var(--font-head);
+        font-size: 0.65rem;
+        letter-spacing: 0.15em;
+        text-transform: uppercase;
+        cursor: pointer;
+        transition: all 0.22s;
+        overflow: hidden;
+        box-shadow: 0 4px 14px rgba(10,124,245,0.3);
+    }
+
+        .btn-deploy::before {
+            content: '';
+            position: absolute;
+            inset: 0;
+            background: linear-gradient(90deg, transparent, rgba(255,255,255,0.2), transparent);
+            transform: translateX(-100%);
+            transition: transform 0.5s;
+        }
+
+        .btn-deploy:hover::before {
+            transform: translateX(100%);
+        }
+
+        .btn-deploy:hover {
+            box-shadow: 0 6px 22px rgba(10,124,245,0.45);
+            transform: translateY(-1px);
+        }
+
+    .arr {
+        transition: transform 0.2s;
+    }
+
+    .btn-deploy:hover .arr {
+        transform: translateX(3px);
+    }
+
+    /* MODAL */
+    #filePreviewModal .modal-content {
+        border: 1.5px solid var(--c-border);
+        border-radius: 12px;
+        overflow: hidden;
+    }
+
+    #filePreviewModal .modal-header {
+        background: linear-gradient(90deg, rgba(10,124,245,0.04), transparent);
+        border-bottom: 1.5px solid var(--c-border);
+        padding: 1rem 1.5rem;
+    }
+
+    #filePreviewModal .modal-title {
+        font-family: var(--font-head);
+        font-size: 0.7rem;
+        letter-spacing: 0.15em;
+        color: var(--c-accent);
+    }
+</style>
+
+<style>
+    /* Minimal modern UI overrides */
+    :root {
+        --c-bg: #f6f8fb;
+        --c-surface: #ffffff;
+        --c-border: #e5eaf2;
+        --c-border2: #c7d2e3;
+        --c-accent: #2563eb;
+        --c-accent2: #1d4ed8;
+        --c-text: #0f172a;
+        --c-text2: #334155;
+        --c-muted: #64748b;
+        --c-green: #16a34a;
+        --c-orange: #ea580c;
+        --font-head: 'Inter', sans-serif;
+        --font-body: 'Inter', sans-serif;
+    }
+
+    .ag-wrap {
+        background: var(--c-bg);
+        padding: 1.25rem;
+        min-height: auto;
+    }
+
+        .ag-wrap::before,
+        .ag-wrap::after {
+            display: none;
+        }
+
+    .ag-header {
+        margin-bottom: 1rem;
+        padding: 0.75rem 0;
+        border-bottom: 1px solid var(--c-border);
+    }
+
+    .ag-logo-ring {
+        width: 38px;
+        height: 38px;
+        border: 1px solid var(--c-border);
+        background: #f8fafc;
+    }
+
+        .ag-logo-ring::after {
+            display: none;
+        }
+
+    .ag-logo-ring svg {
+        width: 17px;
+        height: 17px;
+    }
+
+    .ag-title {
+        font-size: 0.8rem;
+        letter-spacing: 0.04em;
+        color: var(--c-text);
+        text-transform: none;
+    }
+
+    .ag-subtitle {
+        font-size: 0.72rem;
+        color: var(--c-muted);
+        letter-spacing: 0.02em;
+    }
+
+    .status-chip {
+        font-family: var(--font-body);
+        font-size: 0.78rem;
+        letter-spacing: 0;
+        color: var(--c-text2);
+    }
+
+    .status-dot {
+        box-shadow: none;
+        animation: none;
+    }
+
+    .main-panel {
+        border: 1px solid var(--c-border);
+        border-radius: 12px;
+        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.05);
+    }
+
+        .main-panel::before,
+        .main-panel::after {
+            display: none;
+        }
+
+    .panel-topbar {
+        padding: 0.85rem 1.1rem;
+        border-bottom: 1px solid var(--c-border);
+        background: #fbfcfe;
+    }
+
+    .panel-section-label {
+        font-size: 0.8rem;
+        letter-spacing: 0.02em;
+        font-weight: 600;
+        color: var(--c-text2);
+        text-transform: none;
+    }
+
+    .panel-indicators {
+        gap: 6px;
+    }
+
+        .panel-indicators span {
+            width: 7px;
+            height: 7px;
+            opacity: 0.85;
+        }
+
+    .panel-body {
+        padding: 1.1rem;
+        gap: 1.5rem;
+    }
+
+    .section-heading {
+        gap: 10px;
+        margin-bottom: 1rem;
+    }
+
+    .section-heading-icon {
+        width: 30px;
+        height: 30px;
+        border-radius: 8px;
+        border-width: 1px;
+    }
+
+        .section-heading-icon svg {
+            width: 14px;
+            height: 14px;
+        }
+
+    .section-heading-title {
+        font-size: 0.9rem;
+        letter-spacing: 0;
+        font-weight: 600;
+        text-transform: none;
+    }
+
+    .section-heading-sub {
+        font-size: 0.72rem;
+        letter-spacing: 0;
+        text-transform: none;
+    }
+
+    .section-heading-line {
+        background: linear-gradient(90deg, var(--c-border), transparent);
+    }
+
+    .section-divider {
+        background: var(--c-border);
+    }
+
+    .field-grid {
+        gap: 0.9rem;
+        margin-bottom: 0.9rem;
+    }
+
+    .field-label {
+        margin-bottom: 6px;
+        gap: 6px;
+    }
+
+    .label-line {
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--c-accent);
+    }
+
+    .label-text {
+        font-family: var(--font-body);
+        font-size: 0.78rem;
+        letter-spacing: 0;
+        text-transform: none;
+        color: var(--c-text2);
+    }
+
+    .label-req {
+        font-size: 0.85rem;
+    }
+
+    .hud-input, .hud-select, .hud-textarea {
+        border: 1px solid var(--c-border);
+        border-radius: 8px;
+        background: #fff;
+        font-size: 0.88rem;
+        padding: 0.62rem 0.75rem;
+        color: var(--c-text);
+    }
+
+        .hud-input:focus, .hud-select:focus, .hud-textarea:focus {
+            border-color: #93c5fd;
+            box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+        }
+
+    .hud-textarea {
+        font-family: var(--font-body);
+        line-height: 1.55;
+        min-height: 170px;
+        color: var(--c-text2);
+    }
+
+    .field-note {
+        font-size: 0.72rem;
+        color: var(--c-muted);
+    }
+
+        .field-note::before {
+            display: none;
+        }
+
+    .file-alert-bar {
+        border: 1px solid #dbeafe;
+        background: #eff6ff;
+        border-radius: 8px;
+        margin-bottom: 0.8rem;
+        padding: 0.6rem 0.8rem;
+    }
+
+        .file-alert-bar span {
+            font-family: var(--font-body);
+            font-size: 0.75rem;
+            letter-spacing: 0;
+            color: #1d4ed8;
+        }
+
+    .file-row {
+        border: 1px solid var(--c-border);
+        border-radius: 8px;
+        background: #fff;
+        margin-bottom: 0.5rem;
+        padding: 0.7rem 0.8rem;
+        box-shadow: none;
+    }
+
+        .file-row::before {
+            display: none;
+        }
+
+        .file-row:hover {
+            border-color: #bfdbfe;
+            box-shadow: 0 4px 12px rgba(15, 23, 42, 0.05);
+        }
+
+    .file-icon {
+        width: 34px;
+        height: 34px;
+        border-radius: 8px;
+        font-size: 1rem;
+    }
+
+    .file-name {
+        font-size: 0.84rem;
+        font-weight: 500;
+    }
+
+    .file-type {
+        font-family: var(--font-body);
+        font-size: 0.7rem;
+        letter-spacing: 0;
+        margin-top: 1px;
+    }
+
+    .btn-view {
+        border: 1px solid var(--c-border2);
+        border-radius: 7px;
+        background: #fff;
+        color: var(--c-text2);
+        font-family: var(--font-body);
+        font-size: 0.74rem;
+        letter-spacing: 0;
+        padding: 0.4rem 0.75rem;
+    }
+
+        .btn-view:hover {
+            background: #f8fafc;
+            border-color: #93c5fd;
+            color: #1d4ed8;
+            box-shadow: none;
+        }
+
+    .arr {
+        transition: transform .15s ease;
+    }
+
+    .empty-state p {
+        font-family: var(--font-body);
+        letter-spacing: 0;
+        font-size: 0.8rem;
+    }
+
+    .panel-footer {
+        border-top: 1px solid var(--c-border);
+        background: #fbfcfe;
+        padding: 0.9rem 1.1rem;
+    }
+
+    .btn-cancel {
+        border: 1px solid var(--c-border2);
+        border-radius: 8px;
+        padding: 0.5rem 1rem;
+        background: #fff;
+        color: var(--c-text2);
+        font-family: var(--font-body);
+        font-size: 0.8rem;
+        letter-spacing: 0;
+        text-transform: none;
+    }
+
+    .btn-deploy {
+        border-radius: 8px;
+        padding: 0.56rem 1.1rem;
+        box-shadow: none;
+        font-family: var(--font-body);
+        font-size: 0.8rem;
+        letter-spacing: 0;
+        text-transform: none;
+        background: var(--c-accent);
+    }
+
+        .btn-deploy::before {
+            display: none;
+        }
+
+        .btn-deploy:hover {
+            background: var(--c-accent2);
+            box-shadow: 0 8px 18px rgba(37, 99, 235, 0.22);
+            transform: translateY(-1px);
+        }
+
+    #filePreviewModal .modal-content {
+        border: 1px solid var(--c-border);
+        border-radius: 10px;
+    }
+
+    #filePreviewModal .modal-header {
+        border-bottom: 1px solid var(--c-border);
+        background: #f8fafc;
+    }
+
+    #filePreviewModal .modal-title {
+        font-family: var(--font-body);
+        font-size: 0.9rem;
+        letter-spacing: 0;
+        color: var(--c-text2);
+    }
+
+    @@media (max-width: 768px) {
+        .ag-wrap {
+            padding: 0.75rem;
+        }
+
+        .panel-body {
+            padding: 0.85rem;
+        }
+
+        .field-grid,
+        .field-grid.triple {
+            grid-template-columns: 1fr;
+        }
+
+        .ag-header {
+            align-items: flex-start;
+            flex-direction: column;
+            gap: 8px;
+        }
+
+        .panel-footer {
+            justify-content: stretch;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+        }
+    }
+</style>
+
+<form method="post" asp-area="AI" asp-controller="AgentManagement" asp-action="AddAgent"
+      id="EditAgentForm" enctype="multipart/form-data">
+    <div class="ag-wrap">
+
+        <div style="display:none">
+            <input type="hidden" asp-for="AgentId">
+            <input type="hidden" asp-for="UserId">
+            <input type="hidden" asp-for="RoleType">
+            <input type="hidden" asp-for="AgentType">
+            <input type="hidden" asp-for="SubAgentType">
+            <input type="hidden" asp-for="KnowledgeFiles">
+            <input type="hidden" asp-for="ConversationEnd">
+            <input type="hidden" asp-for="ConversationStarters">
+            <input type="hidden" asp-for="Instructions">
+            <input type="hidden" asp-for="AgentLogic">
+            <input type="hidden" asp-for="GuId">
+            <input type="hidden" asp-for="Rule">
+            <input type="hidden" asp-for="Description">
+            <input type="hidden" asp-for="Handler">
+        </div>
+
+        <!-- Header -->
+        <div class="ag-header">
+            <div class="ag-brand">
+                <div class="ag-logo-ring">
+                    <svg viewBox="0 0 24 24"><path d="M12 2a5 5 0 015 5 5 5 0 01-5 5 5 5 0 01-5-5 5 5 0 015-5m0 12c5.33 0 8 2.67 8 4v2H4v-2c0-1.33 2.67-4 8-4z" /></svg>
+                </div>
+                <div>
+                    <div class="ag-title">OMNI · AGENT CONFIG</div>
+                    <div class="ag-subtitle">SYSTEM · v2.4.1</div>
+                </div>
+            </div>
+            <div class="status-chip">
+                <span class="status-dot"></span>
+                NODE ACTIVE
+            </div>
+        </div>
+
+        <!-- Single Panel -->
+        <div class="main-panel">
+
+            <div class="panel-topbar">
+                <div class="panel-section-label">AGENT CONFIGURATION</div>
+                <div class="panel-indicators">
+                    <span class="pi-r"></span><span class="pi-y"></span><span class="pi-g"></span>
+                </div>
+            </div>
+
+            <div class="panel-body">
+
+                <!-- ─── SECTION 1: Agent Details ─── -->
+                <div class="section-block">
+                    <div class="section-heading">
+                        <div class="section-heading-icon shi-a">
+                            <svg viewBox="0 0 24 24"><path d="M11 17h2v-6h-2v6zm1-15C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zM11 9h2V7h-2v2z" /></svg>
+                        </div>
+                        <div class="section-heading-text">
+                            <div class="section-heading-title">Agent Details</div>
+                            <div class="section-heading-sub">NAME · GOAL · PROMPT</div>
+                        </div>
+                        <div class="section-heading-line"></div>
+                    </div>
+
+                    <div class="field-grid">
+                        <div>
+                            <div class="field-label"><span class="label-line"></span><span class="label-text">Agent Name</span><span class="label-req">*</span></div>
+                            <input asp-for="AgentName" class="hud-input" placeholder="e.g. Health Wellness Companion" />
+                        </div>
+                        <div>
+                            <div class="field-label"><span class="label-line"></span><span class="label-text">Website</span><span class="label-req">*</span></div>
+                            <input asp-for="Website" class="hud-input" placeholder="https://example.com" />
+                        </div>
+                    </div>
+                    <div class="field-grid single">
+                        <div>
+                            <div class="field-label"><span class="label-line"></span><span class="label-text">System Prompt</span></div>
+                            <textarea asp-for="SystemPrompt" class="hud-textarea" rows="10" readonly></textarea>
+                            <div class="field-note">Defines agent personality, tone &amp; behavior ruleset</div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="section-divider"></div>
+
+                <!-- ─── SECTION 2: Advanced ─── -->
+                <div class="section-block">
+                    <div class="section-heading">
+                        <div class="section-heading-icon shi-b">
+                            <svg viewBox="0 0 24 24"><path d="M19.14 12.94c.04-.3.06-.61.06-.94 0-.32-.02-.64-.07-.94l2.03-1.58c.18-.14.23-.41.12-.61l-1.92-3.32c-.12-.22-.37-.29-.59-.22l-2.39.96c-.5-.38-1.03-.7-1.62-.94l-.36-2.54c-.04-.24-.24-.41-.48-.41h-3.84c-.24 0-.43.17-.47.41l-.36 2.54c-.59.24-1.13.57-1.62.94l-2.39-.96c-.22-.08-.47 0-.59.22L2.74 8.87c-.12.21-.08.47.12.61l2.03 1.58c-.05.3-.09.63-.09.94s.02.64.07.94l-2.03 1.58c-.18.14-.23.41-.12.61l1.92 3.32c.12.22.37.29.59.22l2.39-.96c.5.38 1.03.7 1.62.94l.36 2.54c.05.24.24.41.48.41h3.84c.24 0 .44-.17.47-.41l.36-2.54c.59-.24 1.13-.56 1.62-.94l2.39.96c.22.08.47 0 .59-.22l1.92-3.32c.12-.22.07-.47-.12-.61l-2.01-1.58zM12 15.6c-1.98 0-3.6-1.62-3.6-3.6s1.62-3.6 3.6-3.6 3.6 1.62 3.6 3.6-1.62 3.6-3.6 3.6z" /></svg>
+                        </div>
+                        <div class="section-heading-text">
+                            <div class="section-heading-title">Advanced Settings</div>
+                            <div class="section-heading-sub">MODEL · TOKENS · TIMEOUT</div>
+                        </div>
+                        <div class="section-heading-line"></div>
+                    </div>
+
+                    <div class="field-grid triple">
+                        <div>
+                            <div class="field-label"><span class="label-line"></span><span class="label-text">LLM Model</span></div>
+                            <select asp-for="LLMModel" class="hud-select">
+                                <option value="">— Select Model —</option>
+                                <option value="Meta Llama-3.1-8B-Instruct">Meta Llama-3.1-8B-Instruct</option>
+                                <option value="Meta Llama-4-Maverick-17B-128E-Instruct">Meta Llama-4-Maverick-17B-128E-Instruct</option>
+                            </select>
+                        </div>
+                        <div>
+                            <div class="field-label"><span class="label-line"></span><span class="label-text">Max Tokens</span></div>
+                            <input asp-for="MaxTokens" type="number" class="hud-input" min="200" max="128000" />
+                        </div>
+                        <div>
+                            <div class="field-label"><span class="label-line"></span><span class="label-text">Timeout (sec)</span></div>
+                            <input asp-for="TimeoutSeconds" type="number" class="hud-input" min="10" max="300" step="5" />
+                        </div>
+                    </div>
+                    <div class="field-grid" style="grid-template-columns: 1fr 2fr;">
+                        <div>
+                            <div class="field-label"><span class="label-line"></span><span class="label-text">Agent Status</span></div>
+                            <select asp-for="Status" class="hud-select">
+                                <option value="">— Select Status —</option>
+                                <option value="1">Pending</option>
+                                <option value="2">Approved</option>
+                                <option value="3">Deleted</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="section-divider"></div>
+
+                <!-- ─── SECTION 3: Knowledge ─── -->
+                <div class="section-block">
+                    <div class="section-heading">
+                        <div class="section-heading-icon shi-c">
+                            <svg viewBox="0 0 24 24"><path d="M14 2H6c-1.1 0-1.99.9-1.99 2L4 20c0 1.1.89 2 1.99 2H18c1.1 0 2-.9 2-2V8l-6-6zM6 20V4h7v5h5v11H6z" /></svg>
+                        </div>
+                        <div class="section-heading-text">
+                            <div class="section-heading-title">Knowledge Base</div>
+                            <div class="section-heading-sub">FILES · CONTEXT · SEARCH</div>
+                        </div>
+                        <div class="section-heading-line"></div>
+                    </div>
+
+                    <div class="file-alert-bar">
+                        <svg viewBox="0 0 24 24"><path d="M11 17h2v-6h-2v6zm1-8a1 1 0 100-2 1 1 0 000 2z" /></svg>
+                        <span>SUPPORTED FORMATS: PDF · TXT · CSV · IMAGE · VIDEO</span>
+                    </div>
+
+                    @if (Model != null && Model.DocumentData != null)
+                    {
+                        var docsList = Model.DocumentData.DocumentsText;
+                        var imagesList = Model.DocumentData.ImageUrls;
+                        var videosList = Model.DocumentData.VideoUrls;
+                        bool hasAnyFile = (docsList != null && docsList.Count > 0) ||
+                        (imagesList != null && imagesList.Count > 0) ||
+                        (videosList != null && videosList.Count > 0);
+
+                        if (hasAnyFile)
+                        {
+                            @if (docsList != null)
+                            {
+                                foreach (var doc in docsList.Where(d => d != null && d.Type != null && d.Type.ToLower() == "txt"))
+                                {
+                                    <div class="file-row">
+                                        <div class="file-icon fi-txt"><i class="bi bi-file-earmark-text"></i></div>
+                                        <div class="file-info">
+                                            <div class="file-name">@(doc.Url != null ? doc.Url.Split('/').Last() : "Unknown")</div>
+                                            <div class="file-type">TXT</div>
+                                        </div>
+                                        <button class="btn-view" type="button" onclick="openFileModal('@doc.Url','txt','@(doc.Url.Split('/').Last())')">VIEW <span class="arr">→</span></button>
+                                    </div>
+                                }
+                                foreach (var doc in docsList.Where(d => d != null && d.Type != null && d.Type.ToLower() == "csv"))
+                                {
+                                    <div class="file-row">
+                                        <div class="file-icon fi-csv"><i class="bi bi-file-earmark-spreadsheet"></i></div>
+                                        <div class="file-info">
+                                            <div class="file-name">@(doc.Url != null ? doc.Url.Split('/').Last() : "Unknown")</div>
+                                            <div class="file-type">CSV</div>
+                                        </div>
+                                        <button class="btn-view" type="button" onclick="openFileModal('@doc.Url','csv','@(doc.Url.Split('/').Last())')">VIEW <span class="arr">→</span></button>
+                                    </div>
+                                }
+                                foreach (var doc in docsList.Where(d => d != null && d.Type != null && d.Type.ToLower() == "pdf"))
+                                {
+                                    <div class="file-row">
+                                        <div class="file-icon fi-pdf"><i class="bi bi-file-earmark-pdf"></i></div>
+                                        <div class="file-info">
+                                            <div class="file-name">@(doc.Url != null ? doc.Url.Split('/').Last() : "Unknown")</div>
+                                            <div class="file-type">PDF</div>
+                                        </div>
+                                        <button class="btn-view" type="button" onclick="openFileModal('@doc.Url','pdf','@(doc.Url.Split('/').Last())')">VIEW <span class="arr">→</span></button>
+                                    </div>
+                                }
+                            }
+                            @if (imagesList != null)
+                            {
+                                foreach (var imageUrl in imagesList.Where(x => !string.IsNullOrEmpty(x)))
+                                {
+                                    <div class="file-row">
+                                        <div class="file-icon fi-img"><img src="@imageUrl" alt="img" style="width:38px;height:38px;object-fit:cover;" /></div>
+                                        <div class="file-info">
+                                            <div class="file-name">@imageUrl.Split('/').Last()</div>
+                                            <div class="file-type">IMAGE</div>
+                                        </div>
+                                        <button class="btn-view" type="button" onclick="openFileModal('@imageUrl','image','@(imageUrl.Split('/').Last())')">VIEW <span class="arr">→</span></button>
+                                    </div>
+                                }
+                            }
+                            @if (videosList != null)
+                            {
+                                foreach (var videoUrl in videosList.Where(x => !string.IsNullOrEmpty(x)))
+                                {
+                                    <div class="file-row">
+                                        <div class="file-icon fi-vid"><i class="bi bi-camera-video"></i></div>
+                                        <div class="file-info">
+                                            <div class="file-name">@videoUrl.Split('/').Last()</div>
+                                            <div class="file-type">VIDEO</div>
+                                        </div>
+                                        <button class="btn-view" type="button" onclick="openFileModal('@videoUrl','video','@(videoUrl.Split('/').Last())')">VIEW <span class="arr">→</span></button>
+                                    </div>
+                                }
+                            }
+                        }
+                        else
+                        {
+                            <div class="empty-state">
+                                <i class="bi bi-folder2-open"></i>
+                                <p>NO FILES UPLOADED · KNOWLEDGE BASE EMPTY</p>
+                            </div>
+                        }
+                    }
+                </div>
+
+            </div>
+
+            <div class="panel-footer">
+                <button type="button" class="btn-cancel" data-bs-dismiss="modal">Cancel</button>
+                <button type="submit" class="btn-deploy">Update Agent <span class="arr">→</span></button>
+            </div>
+        </div>
+
+    </div>
+</form>
+
+<!-- Modal -->
+<div class="modal fade" id="filePreviewModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-xl modal-dialog-centered">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h6 class="modal-title" id="modalFileName">FILE PREVIEW</h6>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" onclick="clearModal()"></button>
+            </div>
+            <div class="modal-body p-0" id="modalBody" style="min-height:500px;"></div>
+        </div>
+    </div>
+</div>
+
+<script src="~/projectlibs/ai/editagent.js"></script>

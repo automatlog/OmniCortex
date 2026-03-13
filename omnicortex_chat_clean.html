@@ -1,0 +1,91 @@
+<div style="font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: var(--color-background-tertiary); min-height: 120px; padding: 24px; position: relative; border-radius: var(--border-radius-lg);">
+
+  <button id="demo-launcher" style="position: absolute; right: 24px; bottom: 24px; border: none; border-radius: 999px; padding: 11px 18px; font-weight: 600; font-size: 13px; background: #0d6efd; color: #fff; cursor: pointer; box-shadow: 0 4px 14px rgba(13,110,253,0.35);">💬 Conversation</button>
+
+  <div id="demo-popup" style="display: none; position: absolute; right: 24px; bottom: 76px; width: 360px; max-width: calc(100% - 48px); height: 460px; background: var(--color-background-primary); border: 0.5px solid var(--color-border-secondary); border-radius: 14px; overflow: hidden; flex-direction: column; box-shadow: 0 8px 30px rgba(15,23,42,0.15);">
+
+    <div style="display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-bottom: 0.5px solid var(--color-border-tertiary); background: var(--color-background-secondary);">
+      <div>
+        <p style="margin: 0; font-size: 13px; font-weight: 500; color: var(--color-text-primary);">Agent conversation</p>
+        <div id="demo-meta" style="font-size: 11px; color: var(--color-text-secondary); margin-top: 2px;">Session: not started</div>
+      </div>
+      <button id="demo-close" style="border: none; background: transparent; color: var(--color-text-secondary); font-size: 18px; cursor: pointer; line-height: 1; padding: 2px 6px;">✕</button>
+    </div>
+
+    <div id="demo-messages" style="flex: 1 1 auto; overflow-y: auto; padding: 12px; background: var(--color-background-tertiary); display: flex; flex-direction: column; gap: 8px; min-height: 0;">
+      <div style="max-width: 86%; padding: 9px 11px; border-radius: 10px; font-size: 13px; line-height: 1.5; background: var(--color-background-primary); border: 0.5px solid var(--color-border-tertiary); color: var(--color-text-primary); align-self: flex-start;">Ready. Enter a message and click Send.</div>
+    </div>
+
+    <div style="display: flex; gap: 8px; padding: 10px; border-top: 0.5px solid var(--color-border-tertiary); background: var(--color-background-primary);">
+      <textarea id="demo-input" placeholder="Enter message…" rows="2" style="flex: 1; resize: none; box-sizing: border-box; border: 0.5px solid var(--color-border-secondary); border-radius: var(--border-radius-md); padding: 8px 10px; font-size: 13px; font-family: inherit; background: var(--color-background-primary); color: var(--color-text-primary); outline: none;"></textarea>
+      <button id="demo-send" style="align-self: flex-end; border: none; border-radius: var(--border-radius-md); padding: 8px 14px; font-size: 12px; font-weight: 500; background: #0d6efd; color: #fff; cursor: pointer;">Send</button>
+    </div>
+  </div>
+</div>
+
+<script>
+(function() {
+  const API_BASE   = "http://localhost:8000";
+  const AGENT_ID   = "your-agent-uuid";
+  const TOKEN      = "your-bearer-token";
+  const USER_ID    = "";
+
+  const launcher = document.getElementById('demo-launcher');
+  const popup    = document.getElementById('demo-popup');
+  const closeBtn = document.getElementById('demo-close');
+  const sendBtn  = document.getElementById('demo-send');
+  const messages = document.getElementById('demo-messages');
+  const input    = document.getElementById('demo-input');
+  const meta     = document.getElementById('demo-meta');
+  let sessionId  = "";
+
+  function openPopup()  { popup.style.display = 'flex'; input.focus(); }
+  function closePopup() { popup.style.display = 'none'; }
+
+  launcher.addEventListener('click', () => popup.style.display === 'flex' ? closePopup() : openPopup());
+  closeBtn.addEventListener('click', closePopup);
+
+  function addMsg(type, text) {
+    const styles = {
+      user:  'align-self:flex-end;background:#dbeafe;color:#1e3a5f;',
+      agent: 'align-self:flex-start;background:var(--color-background-primary);border:0.5px solid var(--color-border-tertiary);color:var(--color-text-primary);',
+      error: 'align-self:flex-start;background:#fef2f2;border:0.5px solid #fecaca;color:#991b1b;'
+    };
+    const div = document.createElement('div');
+    div.style.cssText = 'max-width:86%;padding:9px 11px;border-radius:10px;font-size:13px;line-height:1.5;' + (styles[type] || styles.agent);
+    div.textContent = text;
+    messages.appendChild(div);
+    messages.scrollTop = messages.scrollHeight;
+  }
+
+  sendBtn.addEventListener('click', handleSend);
+  input.addEventListener('keydown', e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } });
+
+  async function handleSend() {
+    const text = input.value.trim();
+    if (!text) return;
+    addMsg('user', text);
+    input.value = '';
+    sendBtn.disabled = true;
+
+    const headers = { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + TOKEN };
+    if (USER_ID) headers['X-User-Id'] = USER_ID;
+
+    const payload = { id: AGENT_ID, channel_name: 'TEXT', channel_type: 'MARKETING', query: text };
+    if (sessionId) payload.session_id = sessionId;
+
+    try {
+      const res  = await fetch(API_BASE + '/query', { method: 'POST', headers, body: JSON.stringify(payload) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { addMsg('error', String((data && data.detail) || ('HTTP ' + res.status))); return; }
+      addMsg('agent', data.answer || '(No answer)');
+      if (data.session_id) { sessionId = data.session_id; meta.textContent = 'Session: ' + sessionId; }
+    } catch (err) {
+      addMsg('error', 'Request failed: ' + (err && err.message ? err.message : 'Unknown error'));
+    } finally {
+      sendBtn.disabled = false;
+      input.focus();
+    }
+  }
+})();
+</script>

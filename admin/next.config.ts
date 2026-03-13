@@ -3,7 +3,7 @@ import type { NextConfig } from "next";
 const nextConfig: NextConfig = {
   /* config options here */
   reactCompiler: true,
-  allowedDevOrigins: ["*.proxy.runpod.net"],
+  allowedDevOrigins: ["*.proxy.runpod.net", "*.trycloudflare.com"],
   
   // Increase timeout for API requests
   experimental: {

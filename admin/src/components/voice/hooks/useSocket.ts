@@ -14,6 +14,11 @@ export const useSocket = ({
   const lastMessageTime = useRef<null|number>(null);
   const socketRef = useRef<WebSocket | null>(null); // useRef to keep stable socket reference
   const [socketStatus, setSocketStatus] = useState<SocketStatus>("disconnected");
+  // Disable inactivity auto-close by default. Set NEXT_PUBLIC_VOICE_SOCKET_INACTIVITY_MS
+  // to a positive value (e.g. 60000) only if you explicitly want it.
+  const inactivityTimeoutMs = Number(
+    process.env.NEXT_PUBLIC_VOICE_SOCKET_INACTIVITY_MS || "0",
+  );
 
   const sendMessage = useCallback(
     (message: WSMessage) => {
@@ -35,9 +40,6 @@ export const useSocket = ({
     const closedSocket = event.target as WebSocket;
     console.log("disconnected");
     setSocketStatus("disconnected");
-    if (onDisconnectProp) {
-      onDisconnectProp();
-    }
     // ONLY clear socketRef.current if it's the one that closed
     if (socketRef.current === closedSocket) {
       console.log("disconnected (current socket)");
@@ -97,22 +99,23 @@ export const useSocket = ({
   }, []);
 
   useEffect(() => {
-    if(socketStatus !== "connected") {
+    if (socketStatus !== "connected" || !(inactivityTimeoutMs > 0)) {
       return;
     }
     const intervalId = setInterval(() => {
-      if (lastMessageTime.current && Date.now() - lastMessageTime.current > 10000) {
+      if (
+        lastMessageTime.current &&
+        Date.now() - lastMessageTime.current > inactivityTimeoutMs
+      ) {
         console.log("closing socket due to inactivity", socketRef.current);
         socketRef.current?.close();
-        // onDisconnect();
       }
     }, 500);
 
     return () => {
-      // lastMessageTime.current = null;
       clearInterval(intervalId);
     };
-  }, [socketStatus, onDisconnect]);
+  }, [socketStatus, inactivityTimeoutMs]);
 
   return {
     socketStatus,

@@ -64,18 +64,25 @@ python -m vllm.entrypoints.openai.api_server \
 
 ### Environment Variables
 ```env
-USE_VLLM=true
-VLLM_BASE_URL=http://localhost:8080/v1
-VLLM_MODEL=meta-llama/Meta-Llama-3.1-8B-Instruct
+VLLM1_BASE_URL=http://localhost:8080/v1
+VLLM1_MODEL=meta-llama/Meta-Llama-3.1-8B-Instruct
+VLLM1_API_KEY=not-needed
+VLLM2_BASE_URL=http://localhost:8081/v1
+VLLM2_MODEL=meta-llama/Llama-4-Maverick-17B-128E-Instruct
+VLLM2_API_KEY=not-needed
 ```
 
 ### Python Client
 ```python
-from core.inference import VLLMClient, get_vllm_client
+from core.llm import get_llm
 
-client = get_vllm_client()
-response = client.chat("Hello, who are you?")
-print(response)
+# Primary backend (Meta Llama 3.1)
+llm = get_llm("Meta Llama 3.1")
+print(llm.invoke("Hello, who are you?").content)
+
+# Secondary backend (Llama 4 Maverick)
+llm2 = get_llm("Llama 4 Maverick")
+print(llm2.invoke("Give a short summary of SQL joins.").content)
 ```
 
 ---

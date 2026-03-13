@@ -32,9 +32,37 @@ export const VoiceQueue: FC = () => {
   const moshiWsUrl =
     typeof window !== "undefined"
       ? (() => {
+          const explicitWsUrl = (process.env.NEXT_PUBLIC_MOSHI_WS_URL || "").trim();
+          const explicitHttpUrl = (process.env.NEXT_PUBLIC_MOSHI_HTTP_URL || "").trim();
           const apiUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
-          const wsUrl = apiUrl.replace(/^http/, "ws");
-          return `${wsUrl}/voice/ws`;
+          const wsUrl = explicitWsUrl
+            ? new URL(explicitWsUrl)
+            : (() => {
+                const base = (explicitHttpUrl || apiUrl).replace(/^http/, "ws");
+                const path = explicitHttpUrl ? "/api/chat" : "/voice/ws";
+                return new URL(`${base}${path}`);
+              })();
+
+          const pageUrl = new URL(window.location.href);
+          const agentId = (pageUrl.searchParams.get("agent_id") || "").trim();
+          const contextQuery = (pageUrl.searchParams.get("context_query") || "").trim();
+
+          // Browser clients pass token via query param.
+          const runtimeToken =
+            localStorage.getItem("omnicortex_api_key") ||
+            process.env.NEXT_PUBLIC_AUTH_TOKEN ||
+            process.env.NEXT_PUBLIC_API_KEY ||
+            "";
+          if (runtimeToken) {
+            wsUrl.searchParams.set("token", runtimeToken);
+          }
+          if (agentId) {
+            wsUrl.searchParams.set("agent_id", agentId);
+          }
+          if (contextQuery) {
+            wsUrl.searchParams.set("context_query", contextQuery);
+          }
+          return wsUrl.toString();
         })()
       : "";
 
@@ -62,6 +90,18 @@ export const VoiceQueue: FC = () => {
 
   const startProcessor = useCallback(async () => {
     try {
+      // Reuse existing context/worklet to avoid cross-context AudioNode errors.
+      if (
+        audioContext.current &&
+        worklet.current &&
+        audioContext.current.state !== "closed"
+      ) {
+        if (audioContext.current.state === "suspended") {
+          await audioContext.current.resume();
+        }
+        return;
+      }
+
       setIsLoading(true);
       const ctx = new AudioContext({ sampleRate: 24000 });
       await ctx.audioWorklet.addModule("/moshi-processor.js");

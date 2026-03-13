@@ -1,7 +1,10 @@
 // OmniCortex API Client - Enhanced with Health Checks and Retry Logic
 // Connects to FastAPI backend at localhost:8000
 
-const API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+const SERVER_API_BASE = process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000";
+// In the browser, always go through Next's same-origin /api rewrite so the
+// client never tries to call localhost on the user's machine.
+const API_BASE = typeof window === "undefined" ? SERVER_API_BASE : "/api";
 const ADMIN_API_KEY_STORAGE = "omnicortex_api_key";
 
 // Tiered Timeout Configuration
@@ -24,6 +27,7 @@ export interface Agent {
   description: string;
   created_at?: string;
   system_prompt?: string;
+  model_selection?: string;
   role_type?: string;
   industry?: string;
   agent_type?: string;
@@ -43,6 +47,7 @@ export interface AgentCreatePayload {
   name: string;
   description?: string;
   system_prompt?: string;
+  model_selection?: string;
   role_type?: AgentRoleType;
   industry?: string;
   urls?: string[];
@@ -102,7 +107,7 @@ export interface HealthResponse {
   uptime_seconds: number;
 }
 
-export interface ApiError {
+export interface ApiError extends Error {
   type: "connection" | "timeout" | "server" | "client" | "network";
   message: string;
   details?: string;
@@ -225,14 +230,15 @@ function createApiError(
   details?: string,
   operation?: string
 ): ApiError {
-  return {
-    type,
-    message,
-    details,
-    retryable: type === "server" || type === "timeout" || type === "network" || type === "connection",
-    timestamp: new Date().toISOString(),
-    operation,
-  };
+  const error = new Error(message) as ApiError;
+  error.name = "ApiError";
+  error.type = type;
+  error.details = details;
+  error.retryable =
+    type === "server" || type === "timeout" || type === "network" || type === "connection";
+  error.timestamp = new Date().toISOString();
+  error.operation = operation;
+  return error;
 }
 
 // Classify error based on error object and response
@@ -403,19 +409,9 @@ async function fetchWithHealthCheck(
   timeout: number = 30000,
   operation?: string
 ): Promise<Response> {
-  // Check health first
-  const isHealthy = await checkHealthWithCache();
-  
-  if (!isHealthy) {
-    throw createApiError(
-      "connection",
-      "Cannot connect to server. Please ensure the backend is running.",
-      "Health check failed",
-      operation
-    );
-  }
-  
-  // Proceed with request
+  // Do not block operational requests on the aggregated /health endpoint.
+  // The backend can be degraded (for example LLM down) while agent CRUD and
+  // other non-inference endpoints still work correctly.
   try {
     const response = await fetchWithRetry(url, options, timeout, 3, 1000, operation);
     return response;

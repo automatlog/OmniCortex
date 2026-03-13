@@ -26,6 +26,7 @@ def create_agent(
     subagent_type: str = None,
     model_selection: str = None,
     user_id: str = None,
+    owner_token_id: str = None,
 ) -> str:
     """Create a new agent"""
     db = SessionLocal()
@@ -40,6 +41,12 @@ def create_agent(
         id_exists = db.query(Agent).filter(Agent.id == agent_id).first()
         if id_exists:
             raise ValueError(f"Agent id '{agent_id}' already exists")
+
+        extra_data = {}
+        if owner_token_id:
+            extra_data["owner_token_id"] = str(owner_token_id).strip()
+        if user_id is not None:
+            extra_data["creator_user_id"] = str(user_id).strip()
 
         agent = Agent(
             id=agent_id,
@@ -60,6 +67,7 @@ def create_agent(
             subagent_type=subagent_type,
             model_selection=model_selection,
             user_id=user_id,
+            extra_data=extra_data or {},
         )
         db.add(agent)
         db.commit()
@@ -113,6 +121,7 @@ def get_all_agents() -> List[Dict]:
         agents = db.query(Agent).order_by(Agent.created_at.desc()).all()
         return [
             {
+                "metadata": a.extra_data or {},
                 "id": a.id,
                 "name": a.name,
                 "description": a.description,

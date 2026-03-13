@@ -68,13 +68,14 @@ For RAG vector search:
 
 | Model | Dimensions | Speed | Quality |
 |-------|------------|-------|---------|
-| **all-MiniLM-L6-v2** ⭐ | 384 | Fast | Good |
+| all-MiniLM-L6-v2 | 384 | Fast | Good |
 | bge-small-en-v1.5 | 384 | Fast | Better |
 | bge-base-en-v1.5 | 768 | Medium | Better |
+| **BAAI/bge-large-en-v1.5** ⭐ | 1024 | Slower | Best |
 | e5-large-v2 | 1024 | Slower | Best |
 | text-embedding-3-small | 1536 | API | Best |
 
-**Current**: `all-MiniLM-L6-v2` (balance of speed & quality)
+**Current (from `.env`)**: `BAAI/bge-large-en-v1.5`
 
 ---
 
@@ -138,7 +139,7 @@ docker run -d --gpus all --name vllm \
 ### Change in .env
 
 ```env
-VLLM_MODEL=meta-llama/Meta-Llama-3.1-70B-Instruct
+VLLM1_MODEL=meta-llama/Meta-Llama-3.1-70B-Instruct
 ```
 
 ---

@@ -50,6 +50,8 @@ const BUSINESS_INDUSTRIES = [
   "Entertainment Services Assistant",
 ];
 
+const MODEL_OPTIONS = ["Meta Llama 3.1", "Llama 4 Maverick"];
+
 function splitList(text: string): string[] {
   return text
     .split(/\r?\n|,/g)
@@ -69,6 +71,7 @@ export default function AgentsPage() {
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
   const [systemPrompt, setSystemPrompt] = useState("");
+  const [modelSelection, setModelSelection] = useState(MODEL_OPTIONS[0]);
   const [personalRole, setPersonalRole] = useState(PERSONAL_ROLES[0]);
   const [businessIndustry, setBusinessIndustry] = useState(BUSINESS_INDUSTRIES[0]);
   const [urlsText, setUrlsText] = useState("");
@@ -93,7 +96,13 @@ export default function AgentsPage() {
       const data = await getAgents();
       setAgents(data);
     } catch (error) {
-      console.error("Failed to load agents:", error);
+      const message =
+        error instanceof Error
+          ? error.message
+          : typeof error === "object" && error && "message" in error
+            ? String((error as { message?: unknown }).message)
+            : "Unknown error";
+      console.warn(`Failed to load agents: ${message}`);
     } finally {
       setLoading(false);
     }
@@ -104,6 +113,7 @@ export default function AgentsPage() {
     setName("");
     setDescription("");
     setSystemPrompt("");
+    setModelSelection(MODEL_OPTIONS[0]);
     setPersonalRole(PERSONAL_ROLES[0]);
     setBusinessIndustry(BUSINESS_INDUSTRIES[0]);
     setUrlsText("");
@@ -179,6 +189,7 @@ export default function AgentsPage() {
         name: string;
         description?: string;
         system_prompt?: string;
+        model_selection?: string;
         role_type?: "personal" | "business" | "knowledge";
         agent_type?: string;
         industry?: string;
@@ -193,6 +204,7 @@ export default function AgentsPage() {
         name: name.trim(),
         description: description.trim(),
         system_prompt: systemPrompt.trim() || undefined,
+        model_selection: modelSelection,
         role_type: roleType,
         agent_type: roleType,
         urls: splitList(urlsText),
@@ -397,6 +409,21 @@ export default function AgentsPage() {
                     placeholder="Instructions, logic, behavior..."
                     className="w-full min-h-[84px] rounded-md border border-neutral-700 bg-neutral-800 px-3 py-2 text-sm text-white"
                   />
+                </div>
+
+                <div>
+                  <label className="text-sm text-neutral-400 mb-1.5 block">Model</label>
+                  <select
+                    value={modelSelection}
+                    onChange={(e) => setModelSelection(e.target.value)}
+                    className="w-full rounded-md border border-neutral-700 bg-neutral-800 px-3 py-2 text-sm text-white"
+                  >
+                    {MODEL_OPTIONS.map((model) => (
+                      <option key={model} value={model}>
+                        {model}
+                      </option>
+                    ))}
+                  </select>
                 </div>
 
                 <div className="grid grid-cols-1 md:grid-cols-2 gap-3">

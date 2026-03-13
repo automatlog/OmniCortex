@@ -1,0 +1,370 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>OmniCortex Chat Tester</title>
+    <style>
+        body {
+            margin: 0;
+            font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+            background: #f5f7fb;
+            color: #0f172a;
+            min-height: 100vh;
+        }
+
+        .page-shell {
+            padding: 24px;
+        }
+
+        .page-title {
+            margin: 0 0 8px 0;
+            font-size: 28px;
+            font-weight: 700;
+        }
+
+        .page-subtitle {
+            margin: 0;
+            color: #475569;
+            font-size: 14px;
+        }
+
+        .conversation-fab {
+            position: fixed;
+            right: 24px;
+            bottom: 24px;
+            z-index: 2000;
+            border: 0;
+            border-radius: 999px;
+            padding: 12px 18px;
+            font-weight: 700;
+            background: #0d6efd;
+            color: #fff;
+            box-shadow: 0 10px 24px rgba(13, 110, 253, 0.35);
+            cursor: pointer;
+        }
+
+        .conversation-popup {
+            position: fixed;
+            right: 24px;
+            bottom: 82px;
+            width: 380px;
+            max-width: calc(100vw - 28px);
+            height: 560px;
+            max-height: calc(100vh - 100px);
+            background: #fff;
+            border: 1px solid #dbe3ee;
+            border-radius: 14px;
+            box-shadow: 0 16px 42px rgba(15, 23, 42, 0.22);
+            z-index: 2001;
+            display: none;
+            overflow: hidden;
+        }
+
+        .conversation-popup.open {
+            display: flex;
+            flex-direction: column;
+        }
+
+        .conversation-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 12px 14px;
+            border-bottom: 1px solid #edf1f7;
+            background: #f8fbff;
+        }
+
+        .conversation-title {
+            margin: 0;
+            font-size: 14px;
+            font-weight: 700;
+        }
+
+        .conversation-meta {
+            margin-top: 2px;
+            font-size: 11px;
+            color: #64748b;
+        }
+
+        .conversation-close {
+            border: 0;
+            background: transparent;
+            color: #64748b;
+            font-size: 20px;
+            line-height: 1;
+            cursor: pointer;
+        }
+
+        .conversation-config {
+            padding: 10px;
+            border-bottom: 1px solid #edf1f7;
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 8px;
+            background: #fff;
+        }
+
+        .conversation-config input,
+        .conversation-inputbar textarea {
+            width: 100%;
+            box-sizing: border-box;
+            border: 1px solid #cbd5e1;
+            border-radius: 8px;
+            padding: 8px 10px;
+            font-size: 12px;
+            outline: none;
+        }
+
+        .conversation-config input:focus,
+        .conversation-inputbar textarea:focus {
+            border-color: #60a5fa;
+            box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.2);
+        }
+
+        .conversation-messages {
+            flex: 1 1 auto;
+            overflow-y: auto;
+            padding: 12px;
+            background: #f8fafc;
+        }
+
+        .conversation-msg {
+            max-width: 86%;
+            margin-bottom: 10px;
+            padding: 9px 11px;
+            border-radius: 10px;
+            font-size: 13px;
+            line-height: 1.45;
+            white-space: pre-wrap;
+            word-break: break-word;
+        }
+
+        .conversation-msg.user {
+            margin-left: auto;
+            background: #dbeafe;
+            color: #0f172a;
+        }
+
+        .conversation-msg.agent {
+            margin-right: auto;
+            background: #fff;
+            color: #111827;
+            border: 1px solid #e2e8f0;
+        }
+
+        .conversation-msg.error {
+            margin-right: auto;
+            background: #fef2f2;
+            color: #991b1b;
+            border: 1px solid #fecaca;
+        }
+
+        .conversation-inputbar {
+            display: flex;
+            gap: 8px;
+            padding: 10px;
+            border-top: 1px solid #edf1f7;
+            background: #fff;
+        }
+
+        .conversation-inputbar textarea {
+            resize: none;
+            min-height: 40px;
+            max-height: 100px;
+        }
+
+        .conversation-actions {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .btn {
+            border: 0;
+            border-radius: 8px;
+            padding: 8px 12px;
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
+        }
+
+        .btn-primary {
+            background: #0d6efd;
+            color: #fff;
+        }
+
+        .btn-secondary {
+            background: #e2e8f0;
+            color: #0f172a;
+        }
+    </style>
+</head>
+<body>
+    <div class="page-shell">
+        <h1 class="page-title">Chat Tester</h1>
+        <p class="page-subtitle">Use the Conversation button to test <code>/query</code> with a selected agent.</p>
+    </div>
+
+    <button type="button" id="conversation-launcher" class="conversation-fab">Conversation</button>
+
+    <div id="conversation-popup" class="conversation-popup" aria-hidden="true">
+        <div class="conversation-header">
+            <div>
+                <p class="conversation-title">Agent Conversation</p>
+                <div id="conversation-meta" class="conversation-meta">Session: not started</div>
+            </div>
+            <button type="button" id="conversation-close" class="conversation-close" aria-label="Close">x</button>
+        </div>
+
+        <div class="conversation-config">
+            <input id="conv-api-base" type="text" placeholder="API Base URL (e.g., http://localhost:8000)" />
+            <input id="conv-agent-id" type="text" placeholder="Agent ID (UUID)" />
+            <input id="conv-token" type="text" placeholder="Bearer Token" />
+            <input id="conv-user-id" type="text" placeholder="X-User-Id (optional)" />
+        </div>
+
+        <div id="conversation-messages" class="conversation-messages">
+            <div class="conversation-msg agent">Ready. Enter message and click Send.</div>
+        </div>
+
+        <div class="conversation-inputbar">
+            <textarea id="conversation-input" placeholder="Enter message..."></textarea>
+            <div class="conversation-actions">
+                <button type="button" id="conversation-send" class="btn btn-primary">Send</button>
+                <button type="button" id="conversation-clear" class="btn btn-secondary">Clear</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        (function () {
+            const launcher = document.getElementById("conversation-launcher");
+            const popup = document.getElementById("conversation-popup");
+            const closeBtn = document.getElementById("conversation-close");
+            const sendBtn = document.getElementById("conversation-send");
+            const clearBtn = document.getElementById("conversation-clear");
+            const messageBox = document.getElementById("conversation-messages");
+            const input = document.getElementById("conversation-input");
+            const meta = document.getElementById("conversation-meta");
+            const apiBaseInput = document.getElementById("conv-api-base");
+            const agentIdInput = document.getElementById("conv-agent-id");
+            const tokenInput = document.getElementById("conv-token");
+            const userIdInput = document.getElementById("conv-user-id");
+
+            let sessionId = "";
+
+            const savedBase = localStorage.getItem("chat_api_base") || window.location.origin;
+            const savedToken = localStorage.getItem("chat_api_token") || "";
+            const savedUserId = localStorage.getItem("chat_api_user_id") || "";
+            const savedAgentId = localStorage.getItem("chat_agent_id") || "";
+
+            apiBaseInput.value = savedBase;
+            tokenInput.value = savedToken;
+            userIdInput.value = savedUserId;
+            agentIdInput.value = savedAgentId;
+
+            function appendMessage(type, text) {
+                const div = document.createElement("div");
+                div.className = "conversation-msg " + type;
+                div.textContent = text;
+                messageBox.appendChild(div);
+                messageBox.scrollTop = messageBox.scrollHeight;
+            }
+
+            function setSessionMeta(value) {
+                sessionId = value || "";
+                meta.textContent = sessionId ? ("Session: " + sessionId) : "Session: not started";
+            }
+
+            function openPopup() {
+                popup.classList.add("open");
+                popup.setAttribute("aria-hidden", "false");
+                input.focus();
+            }
+
+            function closePopup() {
+                popup.classList.remove("open");
+                popup.setAttribute("aria-hidden", "true");
+            }
+
+            launcher.addEventListener("click", function () {
+                if (popup.classList.contains("open")) closePopup();
+                else openPopup();
+            });
+            closeBtn.addEventListener("click", closePopup);
+
+            clearBtn.addEventListener("click", function () {
+                messageBox.innerHTML = '<div class="conversation-msg agent">Cleared. Continue testing.</div>';
+                setSessionMeta("");
+            });
+
+            async function sendQuery() {
+                const text = (input.value || "").trim();
+                const base = (apiBaseInput.value || "").trim().replace(/\/+$/, "");
+                const agentId = (agentIdInput.value || "").trim();
+                const token = (tokenInput.value || "").trim();
+                const userId = (userIdInput.value || "").trim();
+
+                if (!text) return;
+                if (!base) return appendMessage("error", "API Base URL is required.");
+                if (!agentId) return appendMessage("error", "Agent ID is required.");
+                if (!token) return appendMessage("error", "Bearer Token is required.");
+
+                localStorage.setItem("chat_api_base", base);
+                localStorage.setItem("chat_api_token", token);
+                localStorage.setItem("chat_api_user_id", userId);
+                localStorage.setItem("chat_agent_id", agentId);
+
+                appendMessage("user", text);
+                input.value = "";
+                sendBtn.disabled = true;
+
+                const headers = {
+                    "Content-Type": "application/json",
+                    "Authorization": "Bearer " + token
+                };
+                if (userId) headers["X-User-Id"] = userId;
+
+                const payload = {
+                    id: agentId,
+                    channel_name: "TEXT",
+                    channel_type: "MARKETING",
+                    query: text
+                };
+                if (sessionId) payload.session_id = sessionId;
+
+                try {
+                    const response = await fetch(base + "/query", {
+                        method: "POST",
+                        headers: headers,
+                        body: JSON.stringify(payload)
+                    });
+
+                    const data = await response.json().catch(function () { return {}; });
+                    if (!response.ok) {
+                        appendMessage("error", String((data && data.detail) || ("HTTP " + response.status)));
+                        return;
+                    }
+
+                    appendMessage("agent", data.answer || "(No answer)");
+                    if (data.session_id) setSessionMeta(data.session_id);
+                } catch (err) {
+                    appendMessage("error", "Request failed: " + (err && err.message ? err.message : "Unknown error"));
+                } finally {
+                    sendBtn.disabled = false;
+                    input.focus();
+                }
+            }
+
+            sendBtn.addEventListener("click", sendQuery);
+            input.addEventListener("keydown", function (e) {
+                if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    sendQuery();
+                }
+            });
+        })();
+    </script>
+</body>
+</html>

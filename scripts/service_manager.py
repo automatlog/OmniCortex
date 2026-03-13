@@ -32,8 +32,11 @@ PID_DIR = BASE_DIR / "storage" / "pids"
 LOG_DIR.mkdir(parents=True, exist_ok=True)
 PID_DIR.mkdir(parents=True, exist_ok=True)
 
-# Read model from environment (or .env file via dotenv loaded above)
-VLLM_MODEL = os.getenv("VLLM_MODEL", "meta-llama/Llama-3.1-8B-Instruct")
+# Read primary model from environment (or .env via dotenv loaded above)
+VLLM_MODEL = os.getenv(
+    "VLLM1_MODEL",
+    os.getenv("VLLM_MODEL", "meta-llama/Llama-3.1-8B-Instruct"),
+)
 
 # Service Configurations
 SERVICES = {

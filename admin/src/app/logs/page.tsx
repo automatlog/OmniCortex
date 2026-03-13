@@ -1,3 +1,5 @@
+"use client";
+
 import { JetBrains_Mono, Space_Mono } from "next/font/google";
 
 const jetbrainsMono = JetBrains_Mono({

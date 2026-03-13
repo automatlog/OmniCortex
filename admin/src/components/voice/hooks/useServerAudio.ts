@@ -29,8 +29,7 @@ export const useServerAudio = ({setGetAudioStats}: useServerAudioArgs) => {
   const { socket, socketStatus } = useSocketContext();
   const {startRecording, stopRecording, audioContext, worklet, micDuration, actualAudioPlayed } =
     useMediaContext();
-  const analyser = useRef(audioContext.current.createAnalyser());
-  worklet.current.connect(analyser.current);
+  const analyser = useRef<AnalyserNode | null>(null);
   const startTime = useRef<number | null>(null);
   const decoderWorker = useRef<Worker | null>(null);
   const [decoderReady, setDecoderReady] = useState(false);
@@ -57,9 +56,44 @@ export const useServerAudio = ({setGetAudioStats}: useServerAudioArgs) => {
       workletStats.current = event.data;
       actualAudioPlayed.current = workletStats.current.actualAudioPlayed;
     },
-    [],
+    [actualAudioPlayed],
   );
-  worklet.current.port.onmessage = onWorkletMessage;
+
+  useEffect(() => {
+    const workletNode = worklet.current;
+    if (!workletNode) {
+      return;
+    }
+
+    if (!analyser.current || analyser.current.context !== workletNode.context) {
+      analyser.current = workletNode.context.createAnalyser();
+    }
+    const analyserNode = analyser.current;
+    if (!analyserNode) {
+      return;
+    }
+
+    try {
+      workletNode.connect(analyserNode);
+    } catch (err) {
+      console.warn("Failed to connect worklet to analyser:", err);
+    }
+    return () => {
+      try {
+        workletNode.disconnect(analyserNode);
+      } catch {
+        // Ignore disconnect errors on teardown/hot-reload.
+      }
+    };
+  }, [worklet]);
+
+  useEffect(() => {
+    const workletNode = worklet.current;
+    workletNode.port.onmessage = onWorkletMessage;
+    return () => {
+      workletNode.port.onmessage = null;
+    };
+  }, [worklet, onWorkletMessage]);
 
   const getAudioStats = useCallback(() => {
     return {

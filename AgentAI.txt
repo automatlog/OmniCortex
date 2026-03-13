@@ -317,6 +317,131 @@
         .delete-btn:hover {
             transform: scale(1.1);
         }
+
+    /* Conversation test popup */
+    .conversation-fab {
+        position: fixed;
+        right: 24px;
+        bottom: 24px;
+        z-index: 1050;
+        border: 0;
+        border-radius: 999px;
+        padding: 12px 18px;
+        font-weight: 600;
+        background: #0d6efd;
+        color: #fff;
+        box-shadow: 0 10px 24px rgba(13, 110, 253, 0.35);
+    }
+
+    .conversation-popup {
+        position: fixed;
+        right: 24px;
+        bottom: 82px;
+        width: 360px;
+        max-width: calc(100vw - 32px);
+        height: 520px;
+        max-height: calc(100vh - 110px);
+        background: #fff;
+        border: 1px solid #e5e7eb;
+        border-radius: 14px;
+        box-shadow: 0 16px 40px rgba(0,0,0,.18);
+        z-index: 1051;
+        display: none;
+        overflow: hidden;
+    }
+
+    .conversation-popup.open {
+        display: flex;
+        flex-direction: column;
+    }
+
+    .conversation-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 10px 14px;
+        border-bottom: 1px solid #edf1f5;
+        background: #f8fafc;
+    }
+
+    .conversation-title {
+        font-weight: 700;
+        margin: 0;
+        font-size: 14px;
+    }
+
+    .conversation-close {
+        border: 0;
+        background: transparent;
+        font-size: 20px;
+        line-height: 1;
+        color: #6b7280;
+    }
+
+    .conversation-config {
+        padding: 10px 12px;
+        border-bottom: 1px solid #edf1f5;
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 8px;
+        background: #fff;
+    }
+
+    .conversation-config .form-control {
+        font-size: 12px;
+        padding: 6px 8px;
+    }
+
+    .conversation-messages {
+        flex: 1 1 auto;
+        overflow-y: auto;
+        padding: 12px;
+        background: #f9fafb;
+    }
+
+    .conversation-msg {
+        max-width: 85%;
+        margin-bottom: 10px;
+        padding: 9px 11px;
+        border-radius: 10px;
+        font-size: 13px;
+        white-space: pre-wrap;
+        word-break: break-word;
+    }
+
+    .conversation-msg.user {
+        margin-left: auto;
+        background: #dbeafe;
+        color: #0f172a;
+    }
+
+    .conversation-msg.agent {
+        margin-right: auto;
+        background: #ffffff;
+        border: 1px solid #e5e7eb;
+        color: #111827;
+    }
+
+    .conversation-msg.error {
+        margin-right: auto;
+        background: #fef2f2;
+        border: 1px solid #fecaca;
+        color: #991b1b;
+    }
+
+    .conversation-inputbar {
+        display: flex;
+        gap: 8px;
+        padding: 10px;
+        border-top: 1px solid #edf1f5;
+        background: #fff;
+    }
+
+    .conversation-inputbar textarea {
+        resize: none;
+        min-height: 40px;
+        max-height: 90px;
+    }
 </style>
 
 <form asp-area="AI" asp-controller="AgentManagement" asp-action="AddOrEditAgent" method="post" id="AddOrEditAgentForm" enctype="multipart/form-data">
@@ -605,4 +730,160 @@
     </div>
 </form>
 
+<button type="button" id="conversation-launcher" class="conversation-fab">
+    Conversation
+</button>
+
+<div id="conversation-popup" class="conversation-popup" aria-hidden="true">
+    <div class="conversation-header">
+        <p class="conversation-title">Agent Conversation Tester</p>
+        <button type="button" id="conversation-close" class="conversation-close" aria-label="Close">x</button>
+    </div>
+    <div class="conversation-config">
+        <input id="conv-api-base" class="form-control" type="text" placeholder="API Base URL (e.g., http://localhost:8000)" />
+        <input id="conv-agent-id" class="form-control" type="text" placeholder="Agent ID (UUID)" />
+        <input id="conv-token" class="form-control" type="text" placeholder="Bearer Token" />
+        <input id="conv-user-id" class="form-control" type="text" placeholder="X-User-Id (optional)" />
+    </div>
+    <div id="conversation-messages" class="conversation-messages">
+        <div class="conversation-msg agent">Type a message and click Send to call <code>/query</code>.</div>
+    </div>
+    <div class="conversation-inputbar">
+        <textarea id="conversation-input" class="form-control" placeholder="Enter message..."></textarea>
+        <button type="button" id="conversation-send" class="btn btn-primary">Send</button>
+    </div>
+</div>
+
 <script src="~/projectlibs/ai/agentmanagement.js"></script>
+<script>
+    (function () {
+        const launcher = document.getElementById("conversation-launcher");
+        const popup = document.getElementById("conversation-popup");
+        const closeBtn = document.getElementById("conversation-close");
+        const sendBtn = document.getElementById("conversation-send");
+        const messageBox = document.getElementById("conversation-messages");
+        const input = document.getElementById("conversation-input");
+        const apiBaseInput = document.getElementById("conv-api-base");
+        const agentIdInput = document.getElementById("conv-agent-id");
+        const tokenInput = document.getElementById("conv-token");
+        const userIdInput = document.getElementById("conv-user-id");
+        const hiddenId = document.querySelector('input[name="Id"]');
+
+        if (!launcher || !popup || !closeBtn || !sendBtn || !messageBox || !input) {
+            return;
+        }
+
+        const savedBase = localStorage.getItem("conv_api_base");
+        const savedToken = localStorage.getItem("conv_api_token");
+        const savedUserId = localStorage.getItem("conv_api_user_id");
+        const defaultBase = savedBase || window.location.origin;
+        apiBaseInput.value = defaultBase;
+        tokenInput.value = savedToken || "";
+        userIdInput.value = savedUserId || "";
+        agentIdInput.value = (hiddenId && hiddenId.value) ? hiddenId.value : "";
+
+        function appendMessage(type, text) {
+            const div = document.createElement("div");
+            div.className = "conversation-msg " + type;
+            div.textContent = text;
+            messageBox.appendChild(div);
+            messageBox.scrollTop = messageBox.scrollHeight;
+        }
+
+        function openPopup() {
+            popup.classList.add("open");
+            popup.setAttribute("aria-hidden", "false");
+            input.focus();
+        }
+
+        function closePopup() {
+            popup.classList.remove("open");
+            popup.setAttribute("aria-hidden", "true");
+        }
+
+        launcher.addEventListener("click", function () {
+            if (popup.classList.contains("open")) {
+                closePopup();
+            } else {
+                openPopup();
+            }
+        });
+
+        closeBtn.addEventListener("click", closePopup);
+
+        async function sendQuery() {
+            const text = (input.value || "").trim();
+            const base = (apiBaseInput.value || "").trim().replace(/\/+$/, "");
+            const agentId = (agentIdInput.value || "").trim();
+            const token = (tokenInput.value || "").trim();
+            const userId = (userIdInput.value || "").trim();
+
+            if (!text) {
+                return;
+            }
+            if (!base) {
+                appendMessage("error", "API Base URL is required.");
+                return;
+            }
+            if (!agentId) {
+                appendMessage("error", "Agent ID is required.");
+                return;
+            }
+            if (!token) {
+                appendMessage("error", "Bearer Token is required.");
+                return;
+            }
+
+            localStorage.setItem("conv_api_base", base);
+            localStorage.setItem("conv_api_token", token);
+            localStorage.setItem("conv_api_user_id", userId);
+
+            appendMessage("user", text);
+            input.value = "";
+            sendBtn.disabled = true;
+
+            const headers = {
+                "Content-Type": "application/json",
+                "Authorization": "Bearer " + token
+            };
+            if (userId) {
+                headers["X-User-Id"] = userId;
+            }
+
+            try {
+                const response = await fetch(base + "/query", {
+                    method: "POST",
+                    headers: headers,
+                    body: JSON.stringify({
+                        id: agentId,
+                        channel_name: "TEXT",
+                        channel_type: "MARKETING",
+                        query: text
+                    })
+                });
+
+                const data = await response.json().catch(function () { return {}; });
+                if (!response.ok) {
+                    const err = (data && data.detail) ? data.detail : ("HTTP " + response.status);
+                    appendMessage("error", String(err));
+                    return;
+                }
+
+                appendMessage("agent", data.answer || "(No answer returned)");
+            } catch (err) {
+                appendMessage("error", "Request failed: " + (err && err.message ? err.message : "Unknown error"));
+            } finally {
+                sendBtn.disabled = false;
+                input.focus();
+            }
+        }
+
+        sendBtn.addEventListener("click", sendQuery);
+        input.addEventListener("keydown", function (e) {
+            if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                sendQuery();
+            }
+        });
+    })();
+</script>

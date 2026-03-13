@@ -66,8 +66,13 @@ Create `.env` in repo root (minimum):
 
 ```ini
 DATABASE_URL=postgresql://<db_user>:<db_password>@<db_host>:<db_port>/<db_name>
-VLLM_BASE_URL=http://<llm_host>:<llm_port>/v1
-VLLM_MODEL=meta-llama/Llama-3.1-8B-Instruct
+VLLM1_BASE_URL=http://<llm1_host>:<llm1_port>/v1
+VLLM1_MODEL=meta-llama/Llama-3.1-8B-Instruct
+VLLM1_API_KEY=not-needed
+
+VLLM2_BASE_URL=http://<llm2_host>:<llm2_port>/v1
+VLLM2_MODEL=meta-llama/Llama-4-Maverick-17B-128E-Instruct
+VLLM2_API_KEY=not-needed
 
 AUTH_VERIFY_URL=https://<auth_host>/api/v1/omnicortex/me
 AUTH_VERIFY_TIMEOUT=8
@@ -75,9 +80,11 @@ AUTH_VERIFY_TIMEOUT=8
 CORS_ORIGINS=https://<admin_origin_1>,https://<admin_origin_2>
 ```
 
-Optional model aliases:
+Legacy aliases (optional, backward compatibility only):
 
 ```ini
+VLLM_BASE_URL=http://<llm1_host>:<llm1_port>/v1
+VLLM_MODEL=meta-llama/Llama-3.1-8B-Instruct
 LLAMA_BASE_URL=http://<llama_host>:<llama_port>/v1
 LLAMA_MODEL=meta-llama/Llama-4-Maverick-17B-128E-Instruct
 ```
@@ -213,7 +220,7 @@ curl -X POST "http://<api_host>:<api_port>/agents" \
     "subagent_type": "NULL",
     "role_type": "PersonalAssistant",
     "description": "For My Assignment Helping.",
-    "model_selection": "Meta Llama-3.1-8B-Instruct",
+    "model_selection": "Meta Llama 3.1",
     "website_data": [
       "https://www.w3schools.com/sql/",
       "https://www.w3schools.com/python/"
@@ -474,7 +481,7 @@ Modes available in script:
 - `422` on `POST /agents`
   - Missing required `id` in payload.
 - `500` during query with backend error
-  - Check vLLM endpoint (`VLLM_BASE_URL`) and loaded model.
+  - Check vLLM endpoint (`VLLM1_BASE_URL`) and loaded model.
 - Voice REST returns `501` / `410`
   - Expected in Moshi-only mode; use `/voice/ws`.
 

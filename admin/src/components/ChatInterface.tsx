@@ -1,11 +1,11 @@
 "use client";
 
 import { useState, useRef, useEffect } from "react";
+import Link from "next/link";
 import { motion, AnimatePresence } from "framer-motion";
 import { cn } from "@/lib/utils";
-import { Send, Plus, Loader2, Settings } from "lucide-react";
-import { sendMessage, sendVoice, type ApiError, type ChatMessage } from "@/lib/api";
-import { VoiceRecorder } from "./VoiceRecorder";
+import { Send, Plus, Loader2, Settings, Mic } from "lucide-react";
+import { sendMessage, type ApiError, type ChatMessage } from "@/lib/api";
 import { MessageContent } from "./MessageContent";
 import {
   Dialog,
@@ -27,7 +27,6 @@ export function ChatInterface({
   const [messages, setMessages] = useState<ChatMessage[]>([]);
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
-  const [isProcessingVoice, setIsProcessingVoice] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [retryCount, setRetryCount] = useState(0);
   
@@ -124,7 +123,7 @@ export function ChatInterface({
   };
 
   const handleSuggestionClick = async (suggestion: string) => {
-    if (isLoading || isProcessingVoice) return;
+    if (isLoading) return;
     await sendUserMessage(suggestion);
   };
 
@@ -132,47 +131,6 @@ export function ChatInterface({
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
       handleSend();
-    }
-  };
-
-  const handleVoiceRecording = async (audioBlob: Blob) => {
-    setIsProcessingVoice(true);
-    setError(null);
-
-    try {
-      // Send voice to API
-      const response = await sendVoice(agentId, audioBlob);
-      
-      // Add transcription as user message
-      const userMessage: ChatMessage = {
-        role: "user",
-        content: response.question || "[Voice message]",
-        timestamp: new Date().toISOString(),
-      };
-      setMessages((prev) => [...prev, userMessage]);
-
-      // Add response as assistant message
-      const assistantMessage: ChatMessage = {
-        role: "assistant",
-        content: response.answer || response.message || "I received your voice message.",
-        timestamp: new Date().toISOString(),
-      };
-      setMessages((prev) => [...prev, assistantMessage]);
-
-    } catch (error) {
-      console.error("Failed to process voice:", error);
-      
-      const errorMsg = error instanceof Error ? error.message : "Unknown error";
-      setError(errorMsg);
-      
-      const errorMessage: ChatMessage = {
-        role: "assistant",
-        content: "Sorry, I couldn't process your voice message. Please try again or type your message.",
-        timestamp: new Date().toISOString(),
-      };
-      setMessages((prev) => [...prev, errorMessage]);
-    } finally {
-      setIsProcessingVoice(false);
     }
   };
 
@@ -368,22 +326,25 @@ export function ChatInterface({
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={handleKeyDown}
-            placeholder={isProcessingVoice ? "Processing voice..." : "Ask anything..."}
-            disabled={isLoading || isProcessingVoice}
+            placeholder="Ask anything..."
+            disabled={isLoading}
             className="flex-1 bg-transparent text-white placeholder-neutral-500 focus:outline-none text-sm"
           />
 
-          <VoiceRecorder
-            onRecordingComplete={handleVoiceRecording}
-            isProcessing={isProcessingVoice || isLoading}
-          />
+          <Link
+            href={`/voice?agent_id=${encodeURIComponent(agentId)}`}
+            className="p-2 rounded-full text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors"
+            title="Open real-time voice mode (Moshi)"
+          >
+            <Mic size={18} />
+          </Link>
 
           <motion.button
             onClick={handleSend}
-            disabled={!input.trim() || isLoading || isProcessingVoice}
+            disabled={!input.trim() || isLoading}
             className={cn(
               "p-2 rounded-full transition-colors",
-              input.trim() && !isLoading && !isProcessingVoice
+              input.trim() && !isLoading
                 ? "bg-blue-600 text-white hover:bg-blue-500"
                 : "bg-neutral-800 text-neutral-500"
             )}

@@ -37,9 +37,6 @@ const buildURL = ({
     "repetition_penalty_context",
     params.repetitionPenaltyContext.toString()
   );
-  if (params.textPrompt) {
-    url.searchParams.set("text_prompt", params.textPrompt);
-  }
   if (params.voicePrompt) {
     url.searchParams.set("voice_prompt", params.voicePrompt);
   }

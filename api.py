@@ -6,6 +6,7 @@ import time
 import uuid
 import json
 import hmac
+import hashlib
 import asyncio
 import datetime
 import re
@@ -127,8 +128,9 @@ async def validate_dependencies():
         all_ok = False
 
     # Check LLM backend (vLLM/OpenAI-compatible endpoint)
-    expected_model = os.environ.get("VLLM_MODEL", "meta-llama/Llama-3.1-8B-Instruct")
-    vllm_base_url = os.environ.get("VLLM_BASE_URL", "http://localhost:8080/v1")
+    default_backend = MODEL_BACKENDS.get("default", {})
+    expected_model = default_backend.get("model", "meta-llama/Llama-3.1-8B-Instruct")
+    vllm_base_url = default_backend.get("base_url", "http://localhost:8080/v1")
 
     print(f"\n[2/2] Checking vLLM at {vllm_base_url}...")
     try:
@@ -183,10 +185,14 @@ app = FastAPI(
 # CORS Configuration - reads from CORS_ORIGINS env var for production flexibility
 _default_origins = "http://localhost:3000,http://127.0.0.1:3000,http://localhost:3001"
 _cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", _default_origins).split(",") if o.strip()]
+_default_origin_regex = r"^https://.*\.proxy\.runpod\.net$|^https://.*\.trycloudflare\.com$"
+_cors_origin_regex = (os.getenv("CORS_ORIGIN_REGEX", _default_origin_regex) or "").strip()
+_cors_origin_pattern = re.compile(_cors_origin_regex) if _cors_origin_regex else None
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_cors_origins,
+    allow_origin_regex=_cors_origin_regex or None,
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
     allow_headers=["*"],
@@ -210,7 +216,7 @@ class QueryRequest(BaseModel):
     session_id: Optional[str] = None # Resume existing session
     max_history: int = 5
     channel_name: Optional[str] = "TEXT"  # TEXT | VOICE
-    channel_type: Optional[str] = "UTILITY"  # UTILITY | MARKETING | AUTHENTICATION
+    channel_type: Optional[str] = "UTILITY"  # TEXT: UTILITY|MARKETING|AUTHENTICATION, VOICE: PROMOTIONAL|TRANSACTIONAL
     mock_mode: bool = False  # True = bypass LLM for load testing
 
 
@@ -385,7 +391,10 @@ async def cors_error_logging_middleware(request, call_next):
     
     # Log requests with Origin header
     if origin:
-        if origin not in _cors_origins:
+        origin_allowed = origin in _cors_origins or (
+            _cors_origin_pattern is not None and _cors_origin_pattern.match(origin) is not None
+        )
+        if not origin_allowed:
             logging.warning(f"CORS Blocked: Origin '{origin}' not in allowlist for {request.url.path}")
     
     response = await call_next(request)
@@ -490,8 +499,9 @@ async def health_check():
     # Check LLM backend (vLLM/OpenAI-compatible endpoint)
     try:
         import requests
-        vllm_base_url = os.environ.get("VLLM_BASE_URL", "http://localhost:8080/v1")
-        expected_model = os.environ.get("VLLM_MODEL", "meta-llama/Llama-3.1-8B-Instruct")
+        default_backend = MODEL_BACKENDS.get("default", {})
+        vllm_base_url = default_backend.get("base_url", "http://localhost:8080/v1")
+        expected_model = default_backend.get("model", "meta-llama/Llama-3.1-8B-Instruct")
 
         llm_start = time.time()
         base = vllm_base_url.rstrip("/")
@@ -702,9 +712,9 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
     request_id = str(uuid.uuid4())
     started = time.perf_counter()
     agent_id = _normalize_uuid(request.id, "id", required=True)
-    agent = get_agent(agent_id)
-    if not agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
+    # Enforce that only the owning API key can use this agent.
+    agent = _require_agent_access(agent_id, api_key)
+    legacy_auth_user_id = _legacy_user_id_from_api_key(api_key)
 
     resolved_question = _resolve_query_text(request)
     if not resolved_question:
@@ -712,14 +722,18 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
 
     resolved_model_selection = _normalize_model_selection(agent.get("model_selection"))
     normalized_channel_name = _normalize_channel_name(request.channel_name)
-    normalized_channel_type = _normalize_channel_type(request.channel_type)
+    normalized_channel_type = _normalize_channel_type(request.channel_type, normalized_channel_name)
+    product_id = _product_id_from_channel_name(normalized_channel_name)
     question_preview = resolved_question[:500].replace("\n", " ").strip()
-    auth_user_id = str((api_key or {}).get("x_user_id") or "").strip()
     request_user_id = str(request.user_id or "").strip()
     agent_user_id = str(agent.get("user_id") or "").strip()
+    request_user_id_clean = (
+        request_user_id if request_user_id and request_user_id.lower() != "anonymous" else None
+    )
     effective_user_id = request_user_id
     if not effective_user_id or effective_user_id.lower() == "anonymous":
-        effective_user_id = agent_user_id or auth_user_id or "anonymous"
+        effective_user_id = agent_user_id or legacy_auth_user_id or "anonymous"
+    analytics_user_id = agent_user_id or legacy_auth_user_id or request_user_id_clean
 
     # Privacy/Logging config
     PRIVACY_PSEUDONYMIZE = os.getenv("LOG_PSEUDONYMIZE", "true").lower() == "true"
@@ -757,6 +771,7 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
         "model_selection_source": "agent_config" if resolved_model_selection else "default_backend",
         "channel_name": normalized_channel_name,
         "channel_type": normalized_channel_type,
+        "product_id": product_id,
         "mock_mode": request.mock_mode,
         "question_preview": redact_question_preview(question_preview),
     }, ensure_ascii=False))
@@ -856,7 +871,7 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
             model_selection=resolved_model_selection,
             request_id=request_id,
             session_id=session_id,
-            user_id=effective_user_id,
+            user_id=analytics_user_id,
             channel_name=normalized_channel_name,
             channel_type=normalized_channel_type,
         )
@@ -889,16 +904,17 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
 
             log_usage_to_clickhouse(
                 agent_id=agent_id,
-                model=resolved_model_selection or os.getenv("VLLM_MODEL", "unknown"),
+                model=resolved_model_selection or MODEL_BACKENDS.get("default", {}).get("model", "unknown"),
                 prompt_tokens=0,
                 completion_tokens=0,
                 latency_ms=latency_ms,
                 cost=0.0,
                 request_id=request_id,
                 session_id=locals().get("session_id"),
-                user_id=effective_user_id,
+                user_id=analytics_user_id,
                 channel_name=normalized_channel_name,
                 channel_type=normalized_channel_type,
+                product_id=product_id,
                 status="error",
                 error="Upload documents first",
             )
@@ -919,16 +935,17 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
 
             log_usage_to_clickhouse(
                 agent_id=agent_id,
-                model=resolved_model_selection or os.getenv("VLLM_MODEL", "unknown"),
+                model=resolved_model_selection or MODEL_BACKENDS.get("default", {}).get("model", "unknown"),
                 prompt_tokens=0,
                 completion_tokens=0,
                 latency_ms=latency_ms,
                 cost=0.0,
                 request_id=request_id,
                 session_id=locals().get("session_id"),
-                user_id=effective_user_id,
+                user_id=analytics_user_id,
                 channel_name=normalized_channel_name,
                 channel_type=normalized_channel_type,
+                product_id=product_id,
                 status="error",
                 error=str(e),
             )
@@ -969,12 +986,14 @@ async def websocket_endpoint(websocket: WebSocket, agent_id: str):
                 # 2. Process with actual RAG pipeline (run in thread to avoid blocking)
                 try:
                     history = get_conversation_history(agent_id=agent_id, limit=10)
+                    resolved_model_selection = _resolve_model_selection_for_agent(agent_id)
                     answer = await asyncio.get_event_loop().run_in_executor(
                         None,
                         lambda: process_question(
                             question=question,
                             agent_id=agent_id,
                             conversation_history=history,
+                            model_selection=resolved_model_selection,
                             request_id=str(uuid.uuid4()),
                             user_id="websocket",
                             channel_name="websocket",
@@ -1057,7 +1076,13 @@ MAX_URLS = 25
 MAX_CONVERSATION_STARTERS = 25
 MAX_MEDIA_URLS = 25
 CHANNEL_NAMES = {"TEXT", "VOICE"}
-CHANNEL_TYPES = {"UTILITY", "MARKETING", "AUTHENTICATION"}
+TEXT_CHANNEL_TYPES = {"UTILITY", "MARKETING", "AUTHENTICATION"}
+VOICE_CHANNEL_TYPES = {"PROMOTIONAL", "TRANSACTIONAL"}
+CHANNEL_TYPES = TEXT_CHANNEL_TYPES | VOICE_CHANNEL_TYPES
+CHANNEL_PRODUCT_IDS = {
+    "TEXT": 6,   # WhatsApp product
+    "VOICE": 2,  # Voice product
+}
 
 AGENT_TYPE_ALIASES = {
     "blankagent": "BlankAgent",
@@ -1177,14 +1202,47 @@ def _normalize_channel_name(value: Optional[str]) -> str:
     return "VOICE" if text.lower() == "voice" else "TEXT"
 
 
-def _normalize_channel_type(value: Optional[str]) -> str:
+def _normalize_channel_type(value: Optional[str], channel_name: Optional[str] = None) -> str:
+    normalized_channel_name = _normalize_channel_name(channel_name)
+    default_type = "TRANSACTIONAL" if normalized_channel_name == "VOICE" else "UTILITY"
+
     text = str(value or "").strip()
     if not text:
-        return "UTILITY"
+        return default_type
+
     upper = text.upper()
-    if upper in CHANNEL_TYPES:
-        return upper
-    return "UTILITY"
+
+    if normalized_channel_name == "VOICE":
+        if upper in VOICE_CHANNEL_TYPES:
+            return upper
+        if upper == "MARKETING":
+            return "PROMOTIONAL"
+        if upper in {"UTILITY", "AUTHENTICATION"}:
+            return "TRANSACTIONAL"
+        if text in {"1", "3"}:
+            return "TRANSACTIONAL"
+        if text == "2":
+            return "PROMOTIONAL"
+    else:
+        if upper in TEXT_CHANNEL_TYPES:
+            return upper
+        if upper == "PROMOTIONAL":
+            return "MARKETING"
+        if upper == "TRANSACTIONAL":
+            return "UTILITY"
+        if text == "1":
+            return "UTILITY"
+        if text == "2":
+            return "MARKETING"
+        if text == "3":
+            return "AUTHENTICATION"
+
+    return default_type
+
+
+def _product_id_from_channel_name(value: Optional[str]) -> int:
+    normalized = _normalize_channel_name(value)
+    return int(CHANNEL_PRODUCT_IDS.get(normalized, CHANNEL_PRODUCT_IDS["TEXT"]))
 
 
 def _normalize_model_selection(value: Optional[str]) -> Optional[str]:
@@ -1203,7 +1261,22 @@ def _normalize_model_selection(value: Optional[str]) -> Optional[str]:
     for alias, canonical in MODEL_SELECTION_ALIASES.items():
         if lowered == alias.lower():
             return canonical
-    return text
+    return None
+
+
+def _normalize_model_selection_strict(value: Optional[str]) -> Optional[str]:
+    text = str(value or "").strip()
+    if not text:
+        return None
+
+    normalized = _normalize_model_selection(text)
+    if normalized is None:
+        allowed = ", ".join(sorted(MODEL_BACKENDS.keys()))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid model_selection '{text}'. Allowed values: {allowed}",
+        )
+    return normalized
 
 
 def _resolve_query_text(request_payload: QueryRequest) -> str:
@@ -1229,6 +1302,119 @@ def _resolve_model_selection_for_agent(id: Optional[str]) -> Optional[str]:
     if not agent:
         return None
     return _normalize_model_selection(agent.get("model_selection"))
+
+
+def _token_owner_id_from_api_key(api_key: Optional[Dict[str, Any]]) -> Optional[str]:
+    if not isinstance(api_key, dict):
+        return None
+    token = str(api_key.get("token") or "").strip()
+    if not token:
+        return None
+    digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+    return f"apikey:{digest}"
+
+
+def _legacy_user_id_from_api_key(api_key: Optional[Dict[str, Any]]) -> Optional[str]:
+    if not isinstance(api_key, dict):
+        return None
+
+    direct = str(api_key.get("x_user_id") or "").strip()
+    if direct:
+        return direct
+
+    profile = api_key.get("profile")
+    if isinstance(profile, dict):
+        for key in ("x_user_id", "user_id", "id", "sub", "uid"):
+            value = str(profile.get(key) or "").strip()
+            if value:
+                return value
+    return None
+
+
+def _auth_identity_candidates(api_key: Optional[Dict[str, Any]]) -> set[str]:
+    candidates: set[str] = set()
+
+    token_owner = _token_owner_id_from_api_key(api_key)
+    if token_owner:
+        candidates.add(token_owner)
+
+    legacy_user_id = _legacy_user_id_from_api_key(api_key)
+    if legacy_user_id:
+        candidates.add(legacy_user_id)
+        candidates.add(f"user:{legacy_user_id}")
+
+    return candidates
+
+
+def _auth_user_id_from_api_key(api_key: Optional[Dict[str, Any]]) -> Optional[str]:
+    # Ownership identity is API key based.
+    return _token_owner_id_from_api_key(api_key) or _legacy_user_id_from_api_key(api_key)
+
+
+def _require_auth_user_id(api_key: Optional[Dict[str, Any]]) -> str:
+    user_id = _auth_user_id_from_api_key(api_key)
+    if not user_id:
+        raise HTTPException(
+            status_code=403,
+            detail="Unable to use this agent. It was not created by this user.",
+        )
+    return user_id
+
+
+def _agent_owner_user_id(agent: Optional[Dict[str, Any]]) -> Optional[str]:
+    if not isinstance(agent, dict):
+        return None
+    owner = str(agent.get("user_id") or "").strip()
+    return owner or None
+
+
+def _agent_owner_token_id(agent: Optional[Dict[str, Any]]) -> Optional[str]:
+    if not isinstance(agent, dict):
+        return None
+    metadata = agent.get("metadata")
+    if not isinstance(metadata, dict):
+        return None
+    token_id = str(metadata.get("owner_token_id") or "").strip()
+    return token_id or None
+
+
+def _can_access_agent(agent: Optional[Dict[str, Any]], api_key: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(agent, dict):
+        return False
+
+    token_owner = _token_owner_id_from_api_key(api_key)
+    owner_token = _agent_owner_token_id(agent)
+    if owner_token:
+        return bool(token_owner and owner_token == token_owner)
+
+    owner_user_id = _agent_owner_user_id(agent)
+    candidates = _auth_identity_candidates(api_key)
+    return bool(owner_user_id and owner_user_id in candidates)
+
+
+def _require_agent_access(agent_id: str, api_key: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    agent = get_agent(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    _require_auth_user_id(api_key)
+    if not _can_access_agent(agent, api_key):
+        raise HTTPException(
+            status_code=403,
+            detail="Unable to use this agent. It was not created by this user.",
+        )
+    return agent
+
+
+def _get_document_agent_id(document_id: int) -> Optional[str]:
+    from core.database import Document, SessionLocal
+
+    db = SessionLocal()
+    try:
+        row = db.query(Document.agent_id).filter(Document.id == document_id).first()
+        return row[0] if row and row[0] else None
+    finally:
+        db.close()
 
 
 def _merge_unique_str_lists(*values: Optional[List[str]]) -> Optional[List[str]]:
@@ -1476,7 +1662,7 @@ def _normalize_agent_create_payload(agent_request: AgentCreate) -> Dict[str, Any
         "subagent_type": normalized_subagent_type,
         "role_type": normalized_role_type,
         "industry": normalized_industry,
-        "model_selection": _normalize_model_selection(agent_request.model_selection),
+        "model_selection": _normalize_model_selection_strict(agent_request.model_selection),
     }
 
 
@@ -1616,7 +1802,7 @@ def _normalize_agent_update_payload(agent_request: AgentUpdate) -> Dict[str, Any
         "subagent_type": normalized_subagent_type,
         "role_type": normalized_role_type,
         "industry": normalized_industry,
-        "model_selection": _normalize_model_selection(agent_request.model_selection),
+        "model_selection": _normalize_model_selection_strict(agent_request.model_selection),
     }
 
 
@@ -1858,7 +2044,12 @@ def agent_to_response(agent: dict, base_url: str = None) -> AgentResponse:
 @app.get("/agents", response_model=List[AgentListItem])
 async def list_agents(api_key: ApiKey = Depends(get_api_key)):
     """List all agents (minimal fields)."""
-    agents = get_all_agents()
+    _require_auth_user_id(api_key)
+    agents = [
+        a for a in get_all_agents()
+        if _can_access_agent(a, api_key)
+    ]
+
     return [
         AgentListItem(
             id=a["id"],
@@ -1872,9 +2063,7 @@ async def list_agents(api_key: ApiKey = Depends(get_api_key)):
 @app.get("/agents/{agent_id}", response_model=AgentResponse)
 async def get_agent_detail(agent_id: str, request: Request, api_key: ApiKey = Depends(get_api_key)):
     """Get agent details with webhook URL"""
-    agent = get_agent(agent_id)
-    if not agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
+    agent = _require_agent_access(agent_id, api_key)
     base_url = str(request.base_url).rstrip("/")
     return agent_to_response(agent, base_url)
 
@@ -1893,10 +2082,15 @@ async def create_new_agent(agent_request: AgentCreate, request: Request, backgro
             vector_chunks_total += int(result.get("vector_chunks") or 0)
             parent_chunks_total += int(result.get("parent_chunks") or 0)
 
-        raw_user_id = (api_key or {}).get("x_user_id")
-        effective_user_id = str(raw_user_id).strip() if raw_user_id is not None else None
-        if effective_user_id == "":
-            effective_user_id = None
+        owner_token_id = _token_owner_id_from_api_key(api_key)
+        if not owner_token_id:
+            _require_auth_user_id(api_key)
+            raise HTTPException(
+                status_code=403,
+                detail="Unable to use this agent. It was not created by this user.",
+            )
+        request_header_user_id = str(request.headers.get("x-user-id") or "").strip()
+        creator_user_id = request_header_user_id or _legacy_user_id_from_api_key(api_key)
 
         normalized = _normalize_agent_create_payload(agent_request)
         _validate_list_limits(
@@ -1940,7 +2134,8 @@ async def create_new_agent(agent_request: AgentCreate, request: Request, backgro
             agent_type=normalized["agent_type"],
             subagent_type=normalized["subagent_type"],
             model_selection=normalized["model_selection"],
-            user_id=effective_user_id,
+            user_id=creator_user_id,
+            owner_token_id=owner_token_id,
         )
         
         # Handle Local File Paths (for bulk creation/scripting)
@@ -1994,7 +2189,7 @@ async def create_new_agent(agent_request: AgentCreate, request: Request, backgro
                 agent_id=created_id,
                 status="Active",
                 agent_name=normalized["name"],
-                user_id=effective_user_id,
+                user_id=creator_user_id,
                 created_at=datetime.datetime.utcnow(),
                 deleted_at=None,
                 model_selection=normalized["model_selection"],
@@ -2047,9 +2242,7 @@ async def update_agent_endpoint(
     api_key: ApiKey = Depends(get_api_key),
 ):
     """Update an existing agent, including config and optional data ingestion."""
-    current = get_agent(agent_id)
-    if not current:
-        raise HTTPException(status_code=404, detail="Agent not found")
+    current = _require_agent_access(agent_id, api_key)
     vector_chunks_total = 0
     parent_chunks_total = 0
 
@@ -2060,10 +2253,8 @@ async def update_agent_endpoint(
         vector_chunks_total += int(result.get("vector_chunks") or 0)
         parent_chunks_total += int(result.get("parent_chunks") or 0)
 
-    raw_user_id = (api_key or {}).get("x_user_id")
-    effective_user_id = str(raw_user_id).strip() if raw_user_id is not None else None
-    if effective_user_id == "":
-        effective_user_id = None
+    _require_auth_user_id(api_key)
+    audit_user_id = _agent_owner_user_id(current)
 
     normalized = _normalize_agent_update_payload(agent_request)
     _validate_list_limits(
@@ -2116,7 +2307,7 @@ async def update_agent_endpoint(
         agent_type=normalized["agent_type"],
         subagent_type=normalized["subagent_type"],
         model_selection=normalized["model_selection"],
-        user_id=effective_user_id,
+        user_id=None,
     )
     if not success:
         raise HTTPException(status_code=404, detail="Agent not found")
@@ -2165,7 +2356,7 @@ async def update_agent_endpoint(
             agent_id=agent_id,
             status="Updated",
             agent_name=(normalized["name"] or current.get("name")),
-            user_id=effective_user_id,
+            user_id=audit_user_id,
             created_at=current.get("created_at"),
             deleted_at=None,
             model_selection=(normalized["model_selection"] or current.get("model_selection")),
@@ -2191,11 +2382,9 @@ async def update_agent_endpoint(
 @app.delete("/agents/{agent_id}", response_model=StatusResponse)
 async def delete_agent_endpoint(agent_id: str, api_key: ApiKey = Depends(get_api_key)):
     """Delete an agent"""
-    existing_agent = get_agent(agent_id)
-    raw_user_id = (api_key or {}).get("x_user_id")
-    effective_user_id = str(raw_user_id).strip() if raw_user_id is not None else None
-    if effective_user_id == "":
-        effective_user_id = None
+    existing_agent = _require_agent_access(agent_id, api_key)
+    _require_auth_user_id(api_key)
+    audit_user_id = _agent_owner_user_id(existing_agent)
 
     success = delete_agent(agent_id)
     if not success:
@@ -2206,10 +2395,10 @@ async def delete_agent_endpoint(agent_id: str, api_key: ApiKey = Depends(get_api
         from core.clickhouse import log_agent_event_to_clickhouse
 
         log_agent_event_to_clickhouse(
-            agent_id=agent_id,
-            status="Deleted",
-            agent_name=(existing_agent or {}).get("name"),
-            user_id=effective_user_id,
+                agent_id=agent_id,
+                status="Deleted",
+                agent_name=(existing_agent or {}).get("name"),
+                user_id=audit_user_id,
             created_at=(existing_agent or {}).get("created_at"),
             deleted_at=datetime.datetime.utcnow(),
             model_selection=(existing_agent or {}).get("model_selection"),
@@ -2230,9 +2419,7 @@ async def delete_agent_endpoint(agent_id: str, api_key: ApiKey = Depends(get_api
 @app.get("/agents/{agent_id}/documents")
 async def list_documents(agent_id: str, api_key: ApiKey = Depends(get_api_key)):
     """List documents for an agent"""
-    agent = get_agent(agent_id)
-    if not agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
+    _require_agent_access(agent_id, api_key)
     
     return get_agent_documents(agent_id)
 
@@ -2245,9 +2432,7 @@ async def upload_documents(
     api_key: ApiKey = Depends(get_api_key)
 ):
     """Upload documents to an agent"""
-    agent = get_agent(agent_id)
-    if not agent:
-        raise HTTPException(status_code=404, detail="Agent not found")
+    _require_agent_access(agent_id, api_key)
     
     if not files and not text:
         raise HTTPException(status_code=400, detail="Provide files or text")
@@ -2267,6 +2452,11 @@ async def upload_documents(
 @app.delete("/documents/{document_id}", response_model=StatusResponse)
 async def delete_document_endpoint(document_id: int, api_key: ApiKey = Depends(get_api_key)):
     """Delete a document"""
+    doc_agent_id = _get_document_agent_id(document_id)
+    if not doc_agent_id:
+        raise HTTPException(status_code=404, detail="Document not found")
+    _require_agent_access(doc_agent_id, api_key)
+
     success = delete_document(document_id)
     if not success:
         raise HTTPException(status_code=404, detail="Document not found")
@@ -2277,11 +2467,50 @@ async def delete_document_endpoint(document_id: int, api_key: ApiKey = Depends(g
 @app.get("/agents/{agent_id}/history")
 async def get_history(agent_id: str, limit: int = 20, api_key: ApiKey = Depends(get_api_key)):
     """Get conversation history for an agent"""
+    _require_agent_access(agent_id, api_key)
+    
+    return get_conversation_history(agent_id=agent_id, limit=limit)
+
+
+@app.get("/agents/{agent_id}/voice-context")
+async def get_voice_context(
+    agent_id: str,
+    query: str = "",
+    top_k: int = 3,
+    api_key: ApiKey = Depends(get_api_key),
+):
+    """
+    Retrieve compact vector context for voice sessions.
+    Used by direct PersonaPlex/Moshi integrations (no OmniCortex voice proxy).
+    """
+    _require_agent_access(agent_id, api_key)
     agent = get_agent(agent_id)
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
-    
-    return get_conversation_history(agent_id=agent_id, limit=limit)
+
+    safe_top_k = max(1, min(6, int(top_k or 3)))
+    retrieval_query = str(query or "").strip()
+    if not retrieval_query:
+        retrieval_query = str(agent.get("system_prompt") or "")[:500].strip()
+    if not retrieval_query:
+        return {"agent_id": agent_id, "query": "", "documents": 0, "context": ""}
+
+    try:
+        from core.rag.retrieval import hybrid_search
+        from core.chat_service import format_context
+
+        docs = hybrid_search(retrieval_query, agent_id=agent_id, top_k=safe_top_k, rerank=False)
+        context = format_context(docs)
+        if context == "No relevant documents found.":
+            context = ""
+        return {
+            "agent_id": agent_id,
+            "query": retrieval_query,
+            "documents": len(docs),
+            "context": context,
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Voice context retrieval failed: {e}")
 
 
 # --- Voice WebSocket Proxy (Moshi) ---
@@ -2291,11 +2520,18 @@ async def _authenticate_voice_websocket(websocket: WebSocket) -> Optional[str]:
     Returns None when authorized, otherwise an error string.
     """
     auth_header = (websocket.headers.get("authorization") or "").strip()
-    if not auth_header.lower().startswith("bearer "):
+    token = ""
+    if auth_header.lower().startswith("bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+    # Browser WebSocket clients cannot set arbitrary headers; allow token in query.
+    if not token:
+        token = (websocket.query_params.get("token") or "").strip()
+    if not token:
         return "Authorization Bearer token missing"
 
-    token = auth_header.split(" ", 1)[1].strip()
     x_user_id = (websocket.headers.get("x-user-id") or "").strip()
+    if not x_user_id:
+        x_user_id = (websocket.query_params.get("x_user_id") or "").strip()
     try:
         await asyncio.to_thread(verify_bearer_token, token, x_user_id or None)
         return None
@@ -2332,23 +2568,62 @@ async def voice_ws_proxy(websocket: WebSocket):
     # --- Build the text_prompt from agent context ---
     agent_id = websocket.query_params.get("agent_id")
     client_text_prompt = websocket.query_params.get("text_prompt", "")
+    context_query = websocket.query_params.get("context_query", "")
     voice_prompt = websocket.query_params.get("voice_prompt", "NATF0.pt")
     seed = websocket.query_params.get("seed", "-1")
 
-    text_prompt = client_text_prompt
+    text_prompt = str(client_text_prompt or "").strip()
+    append_client_prompt = os.getenv("VOICE_APPEND_CLIENT_PROMPT", "false").strip().lower() == "true"
+    agent_prompt = ""
     if agent_id:
         try:
             agent = get_agent(agent_id)
             if agent and agent.get("system_prompt"):
-                # Prepend agent's system prompt (RAG-enriched context)
-                agent_prompt = agent["system_prompt"]
-                if client_text_prompt:
-                    text_prompt = f"{agent_prompt}\n\n{client_text_prompt}"
-                else:
-                    text_prompt = agent_prompt
+                # Agent prompt is authoritative for voice when agent_id is provided.
+                agent_prompt = str(agent["system_prompt"])
+                text_prompt = agent_prompt
+                if append_client_prompt and client_text_prompt:
+                    text_prompt = (
+                        f"{agent_prompt}\n\n"
+                        f"Additional operator instruction:\n{str(client_text_prompt).strip()}"
+                    )
                 logging.info(f"🎤 Voice proxy: Using agent '{agent.get('name')}' system_prompt ({len(text_prompt)} chars)")
         except Exception as e:
             logging.warning(f"⚠️ Voice proxy: Could not load agent {agent_id}: {e}")
+
+    # Optional voice RAG: attach vector context to system prompt for /voice/ws sessions.
+    voice_rag_enabled = os.getenv("VOICE_RAG_ENABLED", "true").strip().lower() == "true"
+    if voice_rag_enabled and agent_id:
+        retrieval_query = str(context_query or "").strip()
+        if not retrieval_query and append_client_prompt:
+            retrieval_query = str(client_text_prompt or "").strip()
+        if not retrieval_query:
+            retrieval_query = str(agent_prompt[:500]).strip()
+        if retrieval_query:
+            try:
+                rag_top_k_raw = os.getenv("VOICE_RAG_TOP_K", "3").strip()
+                rag_top_k = max(1, min(6, int(rag_top_k_raw)))
+            except Exception:
+                rag_top_k = 3
+            try:
+                from core.rag.retrieval import hybrid_search
+                from core.chat_service import format_context
+
+                docs = hybrid_search(retrieval_query, agent_id=agent_id, top_k=rag_top_k, rerank=False)
+                rag_context = format_context(docs)
+                if rag_context and rag_context != "No relevant documents found.":
+                    prompt_prefix = text_prompt.strip()
+                    rag_block = (
+                        "Knowledge Base Context (vector retrieval):\n"
+                        f"{rag_context}\n\n"
+                        "Use this context when relevant. If the answer is not in context, say you are not certain."
+                    )
+                    text_prompt = f"{prompt_prefix}\n\n{rag_block}" if prompt_prefix else rag_block
+                    logging.info(f"🎤 Voice proxy: Injected {len(docs)} RAG docs into voice prompt for agent {agent_id}")
+                else:
+                    logging.info(f"🎤 Voice proxy: No RAG docs found for agent {agent_id}")
+            except Exception as e:
+                logging.warning(f"⚠️ Voice proxy: RAG context injection failed for agent {agent_id}: {e}")
 
     # --- Build target Moshi WebSocket URL ---
     moshi_base = PERSONAPLEX_URL.rstrip("/")

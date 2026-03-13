@@ -27,6 +27,7 @@
 import argparse
 import asyncio
 from dataclasses import dataclass
+import json
 import random
 import os
 from pathlib import Path
@@ -96,12 +97,20 @@ class ServerState:
 
     def __init__(self, mimi: MimiModel, other_mimi: MimiModel, text_tokenizer: sentencepiece.SentencePieceProcessor,
                  lm: LMModel, device: str | torch.device, voice_prompt_dir: str | None = None,
-                 save_voice_prompt_embeddings: bool = False):
+                 save_voice_prompt_embeddings: bool = False,
+                 omnicortex_base_url: str = "",
+                 omnicortex_api_key: str = "",
+                 omnicortex_user_id: str = "",
+                 omnicortex_context_top_k: int = 3):
         self.mimi = mimi
         self.other_mimi = other_mimi
         self.text_tokenizer = text_tokenizer
         self.device = device
         self.voice_prompt_dir = voice_prompt_dir
+        self.omnicortex_base_url = (omnicortex_base_url or "").rstrip("/")
+        self.omnicortex_api_key = (omnicortex_api_key or "").strip()
+        self.omnicortex_user_id = (omnicortex_user_id or "").strip()
+        self.omnicortex_context_top_k = max(1, min(6, int(omnicortex_context_top_k or 3)))
         self.frame_size = int(self.mimi.sample_rate / self.mimi.frame_rate)
         self.lm_gen = LMGen(lm,
                             audio_silence_frame_cnt=int(0.5 * self.mimi.frame_rate),
@@ -115,6 +124,112 @@ class ServerState:
         self.mimi.streaming_forever(1)
         self.other_mimi.streaming_forever(1)
         self.lm_gen.streaming_forever(1)
+
+    def _omnicortex_headers(
+        self,
+        api_key_override: str = "",
+        user_id_override: str = "",
+    ) -> dict[str, str]:
+        headers: dict[str, str] = {}
+        api_key = (api_key_override or self.omnicortex_api_key or "").strip()
+        user_id = (user_id_override or self.omnicortex_user_id or "").strip()
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        if user_id:
+            headers["x-user-id"] = user_id
+        return headers
+
+    async def _omnicortex_get_json(
+        self,
+        path: str,
+        params: Optional[dict] = None,
+        api_key_override: str = "",
+        user_id_override: str = "",
+    ):
+        if not self.omnicortex_base_url:
+            raise RuntimeError("OMNICORTEX_BASE_URL is not configured")
+        url = f"{self.omnicortex_base_url}{path}"
+        timeout = aiohttp.ClientTimeout(total=20)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(
+                url,
+                params=params or {},
+                headers=self._omnicortex_headers(
+                    api_key_override=api_key_override,
+                    user_id_override=user_id_override,
+                ),
+            ) as response:
+                body = await response.text()
+                if response.status >= 400:
+                    raise RuntimeError(f"{path} failed ({response.status}): {body[:400]}")
+                return json.loads(body) if body else {}
+
+    async def fetch_agents(
+        self,
+        api_key_override: str = "",
+        user_id_override: str = "",
+    ) -> list[dict]:
+        payload = await self._omnicortex_get_json(
+            "/agents",
+            api_key_override=api_key_override,
+            user_id_override=user_id_override,
+        )
+        if not isinstance(payload, list):
+            return []
+        agents: list[dict] = []
+        for item in payload:
+            if not isinstance(item, dict):
+                continue
+            agent_id = str(item.get("id") or "").strip()
+            if not agent_id:
+                continue
+            agents.append(
+                {
+                    "id": agent_id,
+                    "name": str(item.get("agent_name") or item.get("name") or agent_id),
+                    "type": str(item.get("agent_type") or item.get("role_type") or ""),
+                }
+            )
+        return agents
+
+    async def fetch_agent_prompt(
+        self,
+        agent_id: str,
+        context_query: str = "",
+        api_key_override: str = "",
+        user_id_override: str = "",
+    ) -> str:
+        detail = await self._omnicortex_get_json(
+            f"/agents/{agent_id}",
+            api_key_override=api_key_override,
+            user_id_override=user_id_override,
+        )
+        base_prompt = str((detail or {}).get("system_prompt") or "").strip()
+        if not base_prompt:
+            base_prompt = "You are a helpful assistant."
+
+        try:
+            ctx_payload = await self._omnicortex_get_json(
+                f"/agents/{agent_id}/voice-context",
+                params={
+                    "query": context_query,
+                    "top_k": self.omnicortex_context_top_k,
+                },
+                api_key_override=api_key_override,
+                user_id_override=user_id_override,
+            )
+            context_text = str((ctx_payload or {}).get("context") or "").strip()
+            if context_text:
+                base_prompt = (
+                    f"{base_prompt}\n\n"
+                    "Use the following retrieved context when relevant. "
+                    "If context does not answer the user, say you do not know.\n"
+                    f"{context_text}"
+                )
+        except Exception as context_error:
+            logger.warning("voice-context lookup failed for agent %s: %s", agent_id, context_error)
+
+        return base_prompt
     
     def warmup(self):
         for _ in range(4):
@@ -143,6 +258,26 @@ class ServerState:
             if auth_token != expected_token:
                 return web.Response(status=401, text="Unauthorized")
 
+        # Agent-first mode for PersonaPlex UI: ignore direct text_prompt when agent_id is provided.
+        agent_id = request.query.get("agent_id", "").strip()
+        context_query = request.query.get("context_query", "").strip()
+        omni_bearer = request.query.get("omni_bearer", "").strip()
+        omni_user_id = request.query.get("omni_user_id", "").strip()
+        text_prompt = request.query.get("text_prompt", "")
+        if agent_id:
+            try:
+                text_prompt = await self.fetch_agent_prompt(
+                    agent_id,
+                    context_query=context_query,
+                    api_key_override=omni_bearer,
+                    user_id_override=omni_user_id,
+                )
+            except Exception as error:
+                return web.Response(
+                    status=400,
+                    text=f"Unable to resolve agent prompt for '{agent_id}': {error}",
+                )
+
         ws = web.WebSocketResponse()
         await ws.prepare(request)
         clog = ColorizedLog.randomize()
@@ -159,7 +294,6 @@ class ServerState:
         requested_voice_prompt_path = None
         voice_prompt_path = None
         voice_prompt_filename = request.query.get("voice_prompt", "").strip()
-        text_prompt = request.query.get("text_prompt", "")
         if self.voice_prompt_dir is not None:
             if voice_prompt_filename:
                 requested_voice_prompt_path = os.path.join(self.voice_prompt_dir, voice_prompt_filename)
@@ -264,6 +398,8 @@ class ServerState:
                     await ws.send_bytes(b"\x01" + msg)
 
         clog.log("info", "accepted connection")
+        if agent_id:
+            clog.log("info", f"agent_id: {agent_id}")
         if len(text_prompt) > 0:
             clog.log("info", f"text prompt: {text_prompt}")
         if len(voice_prompt_filename) > 0:
@@ -344,6 +480,34 @@ class ServerState:
         clog.log("info", "done with connection")
         return ws
 
+    async def handle_agents(self, request):
+        expected_token = os.environ.get("MOSHI_API_TOKEN", "")
+        if expected_token:
+            auth_token = request.query.get("token")
+            if not auth_token:
+                auth_header = request.headers.get("Authorization", "")
+                if auth_header.startswith("Bearer "):
+                    auth_token = auth_header[len("Bearer "):].strip()
+            if auth_token != expected_token:
+                return web.Response(status=401, text="Unauthorized")
+
+        try:
+            omni_bearer = request.query.get("omni_bearer", "").strip()
+            omni_user_id = request.query.get("omni_user_id", "").strip()
+            agents = await self.fetch_agents(
+                api_key_override=omni_bearer,
+                user_id_override=omni_user_id,
+            )
+            return web.json_response({"agents": agents})
+        except Exception as error:
+            if "Authorization Bearer token missing" in str(error):
+                return web.json_response(
+                    {"agents": [], "error": "OmniCortex bearer token missing"},
+                    status=200,
+                )
+            logger.error("failed to fetch agents from OmniCortex: %s", error)
+            return web.json_response({"agents": [], "error": str(error)}, status=500)
+
 
 def _get_voice_prompt_dir(voice_prompt_dir: Optional[str], hf_repo: str) -> Optional[str]:
     """
@@ -390,6 +554,233 @@ def _get_static_path(static: Optional[str]) -> Optional[str]:
     return None
 
 
+def _customized_index_html(static_path: str, has_server_omnicortex_key: bool = False) -> str:
+    index_path = os.path.join(static_path, "index.html")
+    with open(index_path, "r", encoding="utf-8") as f:
+        content = f.read()
+
+    token = os.getenv("MOSHI_API_TOKEN", "").strip()
+    token_js_literal = json.dumps(token)
+    has_server_omni_key_js = "true" if has_server_omnicortex_key else "false"
+
+    # Inject UI patch:
+    # - hide text_prompt controls
+    # - hide sample preset cards (bank/doctor/assistant)
+    # - add agent selector loaded from /api/agents
+    # - ensure /api/chat websocket carries selected agent_id and no text_prompt
+    injection = f"""
+<script>
+(() => {{
+  const MOSHI_TOKEN = {token_js_literal};
+  const HAS_SERVER_OMNI_KEY = {has_server_omni_key_js};
+  const AGENT_KEY = "personaplex_agent_id";
+  const OMNI_BEARER_KEY = "omnicortex_bearer_token";
+  const OriginalWebSocket = window.WebSocket;
+
+  function withToken(url) {{
+    if (!MOSHI_TOKEN) return url;
+    try {{
+      const u = new URL(url, window.location.href);
+      u.searchParams.set("token", MOSHI_TOKEN);
+      return u.toString();
+    }} catch (_e) {{
+      return url;
+    }}
+  }}
+
+  function selectedAgentId() {{
+    const select = document.getElementById("omnicortex-agent-select");
+    const fromUi = select && select.value ? select.value : "";
+    if (fromUi) {{
+      localStorage.setItem(AGENT_KEY, fromUi);
+      return fromUi;
+    }}
+    return localStorage.getItem(AGENT_KEY) || "";
+  }}
+
+  function currentOmniBearer() {{
+    const input = document.getElementById("omnicortex-bearer-token");
+    const fromUi = input && input.value ? input.value.trim() : "";
+    if (fromUi) {{
+      localStorage.setItem(OMNI_BEARER_KEY, fromUi);
+      return fromUi;
+    }}
+    return localStorage.getItem(OMNI_BEARER_KEY) || "";
+  }}
+
+  window.WebSocket = function patchedWebSocket(url, protocols) {{
+    let nextUrl = url;
+    try {{
+      const u = new URL(url, window.location.href);
+      if (u.pathname === "/api/chat") {{
+        const aid = selectedAgentId();
+        if (aid) {{
+          u.searchParams.set("agent_id", aid);
+        }}
+        const omniBearer = currentOmniBearer();
+        if (omniBearer) {{
+          u.searchParams.set("omni_bearer", omniBearer);
+        }}
+        u.searchParams.delete("text_prompt");
+      }}
+      nextUrl = withToken(u.toString());
+    }} catch (_e) {{
+      nextUrl = withToken(url);
+    }}
+    return protocols === undefined
+      ? new OriginalWebSocket(nextUrl)
+      : new OriginalWebSocket(nextUrl, protocols);
+  }};
+  window.WebSocket.prototype = OriginalWebSocket.prototype;
+  window.__omni_ws_patched = true;
+
+  function hideLegacyPromptUi() {{
+    const presetLabels = new Set([
+      "assistant (default)",
+      "medical office (service)",
+      "bank (service)",
+      "astronaut (fun)",
+      "first neuron bank",
+      "dr. jones",
+      "assistant",
+      "doctor",
+      "bank",
+    ]);
+
+    // Hide prompt section using scoped selectors only.
+    const promptLabel = Array.from(document.querySelectorAll("label")).find((label) =>
+      (label.textContent || "").trim().toLowerCase().startsWith("text prompt"),
+    );
+    if (promptLabel) {{
+      const promptSection = promptLabel.closest(".w-full") || promptLabel.closest("div");
+      if (promptSection && promptSection.id !== "root" && promptSection !== document.body) {{
+        promptSection.style.display = "none";
+      }}
+    }}
+
+    // Hide preset example buttons by exact label match.
+    for (const btn of Array.from(document.querySelectorAll("button"))) {{
+      const txt = (btn.textContent || "").trim().toLowerCase();
+      if (presetLabels.has(txt)) {{
+        btn.style.display = "none";
+      }}
+    }}
+
+    // Hide the examples wrapper if present.
+    const examplesMarker = Array.from(
+      document.querySelectorAll("span,strong,div,p"),
+    ).find((node) => (node.textContent || "").trim().toLowerCase() === "examples:");
+    if (examplesMarker) {{
+      const examplesPanel = examplesMarker.closest("div");
+      if (examplesPanel && examplesPanel.id !== "root" && examplesPanel !== document.body) {{
+        examplesPanel.style.display = "none";
+      }}
+    }}
+  }}
+
+  async function loadAgents() {{
+    if (!HAS_SERVER_OMNI_KEY && !currentOmniBearer()) {{
+      return [];
+    }}
+    const endpoint = new URL("/api/agents", window.location.origin);
+    if (MOSHI_TOKEN) {{
+      endpoint.searchParams.set("token", MOSHI_TOKEN);
+    }}
+    const omniBearer = currentOmniBearer();
+    if (omniBearer) {{
+      endpoint.searchParams.set("omni_bearer", omniBearer);
+    }}
+    const res = await fetch(endpoint.toString(), {{ cache: "no-store" }});
+    const json = await res.json();
+    return Array.isArray(json.agents) ? json.agents : [];
+  }}
+
+  function mountAgentSelector() {{
+    if (document.getElementById("omnicortex-agent-panel")) return;
+    const panel = document.createElement("div");
+    panel.id = "omnicortex-agent-panel";
+    panel.style.cssText = "display:flex;gap:8px;align-items:center;margin:8px 0;padding:8px;border:1px solid #ddd;border-radius:8px;";
+    panel.innerHTML = `
+      <strong style="font-size:13px;">Agent</strong>
+      <input id="omnicortex-bearer-token" type="password" placeholder="Bearer token"
+             style="min-width:260px;padding:4px 8px;" />
+      <select id="omnicortex-agent-select" style="min-width:260px;padding:4px 8px;"></select>
+      <button id="omnicortex-agent-refresh" type="button" style="padding:4px 8px;">Refresh</button>
+    `;
+
+    const root = document.querySelector("main, .app, #root, body");
+    if (root) {{
+      root.insertBefore(panel, root.firstChild);
+    }}
+
+    const select = panel.querySelector("#omnicortex-agent-select");
+    const tokenInput = panel.querySelector("#omnicortex-bearer-token");
+    const refresh = panel.querySelector("#omnicortex-agent-refresh");
+    const savedToken = localStorage.getItem(OMNI_BEARER_KEY) || "";
+    if (savedToken) {{
+      tokenInput.value = savedToken;
+    }}
+
+    const fill = async () => {{
+      const saved = localStorage.getItem(AGENT_KEY) || "";
+      const agents = await loadAgents();
+      select.innerHTML = "";
+      if (!agents.length) {{
+        const opt = document.createElement("option");
+        opt.value = "";
+        opt.textContent = "No agents available";
+        select.appendChild(opt);
+        return;
+      }}
+      for (const a of agents) {{
+        const opt = document.createElement("option");
+        opt.value = a.id;
+        opt.textContent = a.type ? `${{a.name}} (${{a.type}})` : a.name;
+        if (saved && saved === a.id) opt.selected = true;
+        select.appendChild(opt);
+      }}
+      if (!select.value) {{
+        select.selectedIndex = 0;
+      }}
+      if (select.value) {{
+        localStorage.setItem(AGENT_KEY, select.value);
+      }}
+    }};
+
+    select.addEventListener("change", () => {{
+      if (select.value) localStorage.setItem(AGENT_KEY, select.value);
+    }});
+    tokenInput.addEventListener("change", () => {{
+      const value = tokenInput.value ? tokenInput.value.trim() : "";
+      if (value) {{
+        localStorage.setItem(OMNI_BEARER_KEY, value);
+      }} else {{
+        localStorage.removeItem(OMNI_BEARER_KEY);
+      }}
+      fill().catch(console.error);
+    }});
+    refresh.addEventListener("click", fill);
+    fill().catch(console.error);
+  }}
+
+  function applyUiPatch() {{
+    hideLegacyPromptUi();
+    mountAgentSelector();
+  }}
+
+  const observer = new MutationObserver(() => applyUiPatch());
+  observer.observe(document.documentElement, {{ childList: true, subtree: true }});
+  window.addEventListener("load", applyUiPatch);
+  setTimeout(applyUiPatch, 150);
+  setTimeout(applyUiPatch, 600);
+}})();
+</script>
+"""
+    if "</body>" in content:
+        return content.replace("</body>", f"{injection}</body>")
+    return content + injection
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--host", default="localhost", type=str)
@@ -425,6 +816,41 @@ def main():
             "use https instead of http, this flag should point to a directory "
             "that contains valid key.pem and cert.pem files"
         )
+    )
+    parser.add_argument(
+        "--omnicortex-base-url",
+        type=str,
+        default=os.getenv("OMNICORTEX_BASE_URL", "http://127.0.0.1:8000"),
+        help="OmniCortex API base URL (used for agent list and agent prompt lookup).",
+    )
+    parser.add_argument(
+        "--omnicortex-api-key",
+        type=str,
+        default=os.getenv("OMNICORTEX_API_KEY", os.getenv("MASTER_API_KEY", "")),
+        help="OmniCortex bearer API key for server-side requests.",
+    )
+    parser.add_argument(
+        "--omnicortex-user-id",
+        type=str,
+        default=os.getenv("OMNICORTEX_USER_ID", ""),
+        help="Optional x-user-id passed to OmniCortex agent APIs.",
+    )
+    parser.add_argument(
+        "--omnicortex-context-top-k",
+        type=int,
+        default=int(os.getenv("OMNICORTEX_CONTEXT_TOP_K", "3")),
+        help="Top-K chunks for /agents/{id}/voice-context when preparing voice prompts.",
+    )
+    parser.add_argument(
+        "--enable-omnicortex-ui-patch",
+        action="store_true",
+        default=os.getenv("MOSHI_ENABLE_OMNICORTEX_UI_PATCH", "0").strip().lower()
+        in ("1", "true", "yes", "on"),
+        help=(
+            "Inject custom OmniCortex UI patch into index.html "
+            "(agent selector + websocket query patch). Disabled by default "
+            "to preserve stock PersonaPlex UI."
+        ),
     )
 
     args = parser.parse_args()
@@ -489,14 +915,28 @@ def main():
         device=args.device,
         voice_prompt_dir=args.voice_prompt_dir,
         save_voice_prompt_embeddings=False,
+        omnicortex_base_url=args.omnicortex_base_url,
+        omnicortex_api_key=args.omnicortex_api_key,
+        omnicortex_user_id=args.omnicortex_user_id,
+        omnicortex_context_top_k=args.omnicortex_context_top_k,
     )
     logger.info("warming up the model")
     state.warmup()
     app = web.Application()
     app.router.add_get("/api/chat", state.handle_chat)
+    app.router.add_get("/api/agents", state.handle_agents)
     if static_path is not None:
-        async def handle_root(_):
-            return web.FileResponse(os.path.join(static_path, "index.html"))
+        if args.enable_omnicortex_ui_patch:
+            patched_index = _customized_index_html(
+                static_path,
+                has_server_omnicortex_key=bool((args.omnicortex_api_key or "").strip()),
+            )
+
+            async def handle_root(_):
+                return web.Response(text=patched_index, content_type="text/html")
+        else:
+            async def handle_root(_):
+                return web.FileResponse(os.path.join(static_path, "index.html"))
 
         logger.info(f"serving static content from {static_path}")
         app.router.add_get("/", handle_root)

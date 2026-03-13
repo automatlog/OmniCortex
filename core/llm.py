@@ -25,11 +25,14 @@ def get_llm(model_key: str = None):
     if model_key and model_key in MODEL_BACKENDS:
         base_url = MODEL_BACKENDS[model_key]["base_url"]
         model_name = MODEL_BACKENDS[model_key]["model"]
-        api_key = MODEL_BACKENDS[model_key].get("api_key", os.getenv("VLLM_API_KEY", "not-needed"))
+        api_key = MODEL_BACKENDS[model_key].get(
+            "api_key",
+            os.getenv("VLLM1_API_KEY", os.getenv("VLLM_API_KEY", "not-needed")),
+        )
     else:
         base_url = DEFAULT_BASE_URL
         model_name = DEFAULT_MODEL
-        api_key = os.getenv("VLLM_API_KEY", "not-needed")
+        api_key = os.getenv("VLLM1_API_KEY", os.getenv("VLLM_API_KEY", "not-needed"))
 
     return ChatOpenAI(
         base_url=base_url,

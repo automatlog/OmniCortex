@@ -66,8 +66,12 @@ export const useUserAudio = ({
       // The /2 is a bit optional, but won't hurt for recording the mic.
       // Note that bufferLength actually has 0 impact for mono audio, only
       // the frameSize and maxFramesPerPage seems to have any.
+      const audioTrackConstraints =
+        constraints.audio && typeof constraints.audio === "object"
+          ? (constraints.audio as MediaTrackConstraints)
+          : undefined;
       const recorderOptions = {
-        mediaTrackConstraints: constraints,
+        mediaTrackConstraints: audioTrackConstraints,
         encoderPath,
         bufferLength: Math.round(960 * audioContext.current.sampleRate / 24000),
         encoderFrameSize: 20,

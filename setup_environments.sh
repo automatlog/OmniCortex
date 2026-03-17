@@ -92,29 +92,6 @@ else
     deactivate
 fi
 
-# ==========================================
-# 3. Admin UI (Next.js)
-# ==========================================
-echo "--------------------------------------------------"
-echo "Setting up Admin Dashboard (admin/)..."
-echo "--------------------------------------------------"
-if [ -d "admin" ]; then
-    cd admin
-    if command -v npm &> /dev/null; then
-        echo "📦 Installing Node.js dependencies..."
-        npm install
-        echo "🏗️ Building Admin Dashboard..."
-        npm run build
-    else
-        echo "⚠️  npm not found. Skipping Admin setup."
-        echo "   Please install Node.js and run 'npm install && npm run build' in admin/ manually."
-    fi
-    cd ..
-else
-    echo "⚠️  admin/ directory not found. Skipping."
-fi
-
-
 echo "=================================================="
 echo "🎉 SETUP COMPLETE!"
 echo "=================================================="

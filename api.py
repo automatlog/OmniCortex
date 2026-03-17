@@ -10,6 +10,7 @@ import hashlib
 import asyncio
 import datetime
 import re
+import ssl
 from typing import Optional, List, Dict, Any, Union
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form, Request, BackgroundTasks, WebSocket, WebSocketDisconnect
@@ -57,6 +58,7 @@ from core.database import Channel, Tool, Session as DBSession, SessionLocal, Api
 from core.graph import create_rag_agent
 from core.processing.scraper import process_urls
 from core.config import MODEL_BACKENDS
+from core.agent_config import sync_agent_config
 
 # Import metrics from core.monitoring
 from core.monitoring import (
@@ -376,6 +378,27 @@ class ToolResponse(BaseModel):
 class ToolDispatchRequest(BaseModel):
     to_number: str
     dry_run: bool = True
+
+
+class VoiceProfileUpdate(BaseModel):
+    api_key: Optional[str] = None
+    selected_agent_id: Optional[str] = None
+    context_query: Optional[str] = None
+    voice_prompt: Optional[str] = None
+    extra: Optional[Dict[str, Any]] = None
+
+
+class VoiceProfileResponse(BaseModel):
+    status: str
+    profile: Dict[str, Any]
+
+
+class VertoCheckResponse(BaseModel):
+    status: str
+    url: str
+    ssl_verify: bool
+    timeout_sec: float
+    detail: Optional[str] = None
 
 
 # ============== MIDDLEWARE ==============
@@ -1406,6 +1429,77 @@ def _require_agent_access(agent_id: str, api_key: Optional[Dict[str, Any]]) -> D
     return agent
 
 
+VOICE_PROFILE_CHANNEL_PREFIX = "omnicortex_voice_profile"
+DEFAULT_FREESWITCH_VERTO_WS_URL = "wss://172.22.0.2:7443"
+
+
+def _voice_profile_channel_name(api_key: Optional[Dict[str, Any]]) -> str:
+    owner_id = _require_auth_user_id(api_key)
+    return f"{VOICE_PROFILE_CHANNEL_PREFIX}::{owner_id}"
+
+
+def _sanitize_voice_profile_payload(payload: Dict[str, Any], *, keep_existing_api_key: Optional[str] = None) -> Dict[str, Any]:
+    raw_api_key = str(payload.get("api_key") or "").strip()
+    selected_agent_id = _normalize_uuid(payload.get("selected_agent_id"), "selected_agent_id", required=False)
+    context_query = str(payload.get("context_query") or "").strip()
+    voice_prompt = str(payload.get("voice_prompt") or "").strip() or "NATF0.pt"
+    extra = payload.get("extra") if isinstance(payload.get("extra"), dict) else {}
+
+    if len(context_query) > 400:
+        context_query = context_query[:400].strip()
+    if len(voice_prompt) > 120:
+        voice_prompt = voice_prompt[:120].strip()
+
+    # Empty string means "keep existing" to avoid accidental token deletion from partial saves.
+    final_api_key = raw_api_key if raw_api_key else (keep_existing_api_key or "")
+
+    return {
+        "api_key": final_api_key,
+        "selected_agent_id": selected_agent_id,
+        "context_query": context_query,
+        "voice_prompt": voice_prompt,
+        "extra": extra,
+    }
+
+
+def _public_voice_profile(profile: Dict[str, Any]) -> Dict[str, Any]:
+    clean = dict(profile or {})
+    token = str(clean.get("api_key") or "")
+    clean["has_api_key"] = bool(token)
+    clean["api_key_preview"] = (token[:6] + "..." + token[-4:]) if len(token) > 10 else ("***" if token else "")
+    return clean
+
+
+def _env_bool(name: str, default: bool = False) -> bool:
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _resolve_verto_ws_url(override: Optional[str] = None) -> str:
+    url = str(override or "").strip()
+    if not url:
+        url = str(os.getenv("FREESWITCH_VERTO_WS_URL") or "").strip()
+    if not url:
+        url = DEFAULT_FREESWITCH_VERTO_WS_URL
+    if not (url.startswith("ws://") or url.startswith("wss://")):
+        raise HTTPException(status_code=400, detail="FREESWITCH_VERTO_WS_URL must start with ws:// or wss://")
+    return url
+
+
+def _verto_ssl_context(url: str) -> tuple[Optional[ssl.SSLContext], bool]:
+    ssl_verify = _env_bool("FREESWITCH_VERTO_SSL_VERIFY", default=False)
+    if not url.startswith("wss://"):
+        return None, ssl_verify
+    if ssl_verify:
+        return None, True
+    ctx = ssl.create_default_context()
+    ctx.check_hostname = False
+    ctx.verify_mode = ssl.CERT_NONE
+    return ctx, False
+
+
 def _get_document_agent_id(document_id: int) -> Optional[str]:
     from core.database import Document, SessionLocal
 
@@ -2225,6 +2319,14 @@ async def create_new_agent(agent_request: AgentCreate, request: Request, backgro
         agent = get_agent(created_id)
         if not agent:
             raise HTTPException(status_code=500, detail="Failed to load created agent")
+        try:
+            sync_agent_config(
+                created_id,
+                event_type="create",
+                event_payload=normalized,
+            )
+        except Exception as cfg_exc:
+            logging.warning(f"Agent config sync failed on create for {created_id}: {cfg_exc}")
         return AgentCreateResponse(
             status="created",
             id=agent["id"],
@@ -2376,6 +2478,14 @@ async def update_agent_endpoint(
 
     agent = get_agent(agent_id)
     base_url = str(request.base_url).rstrip("/")
+    try:
+        sync_agent_config(
+            agent_id,
+            event_type="update",
+            event_payload=normalized,
+        )
+    except Exception as cfg_exc:
+        logging.warning(f"Agent config sync failed on update for {agent_id}: {cfg_exc}")
     return agent_to_response(agent, base_url)
 
 
@@ -2513,6 +2623,114 @@ async def get_voice_context(
         raise HTTPException(status_code=500, detail=f"Voice context retrieval failed: {e}")
 
 
+@app.get("/voice/profile", response_model=VoiceProfileResponse)
+async def get_voice_profile(api_key: ApiKey = Depends(get_api_key)):
+    """
+    Get persisted voice UI profile from PostgreSQL (omni_channels.config),
+    scoped to authenticated token/user identity.
+    """
+    channel_name = _voice_profile_channel_name(api_key)
+    db = SessionLocal()
+    try:
+        row = (
+            db.query(Channel)
+            .filter(
+                Channel.name == channel_name,
+                Channel.type == "voice",
+                Channel.provider == "personaplex",
+            )
+            .first()
+        )
+        profile = dict((row.config or {}) if row else {})
+        return {"status": "ok", "profile": _public_voice_profile(profile)}
+    finally:
+        db.close()
+
+
+@app.post("/voice/profile", response_model=VoiceProfileResponse)
+async def save_voice_profile(payload: VoiceProfileUpdate, api_key: ApiKey = Depends(get_api_key)):
+    """
+    Upsert persisted voice UI profile into PostgreSQL (omni_channels.config),
+    scoped to authenticated token/user identity.
+    """
+    channel_name = _voice_profile_channel_name(api_key)
+    db = SessionLocal()
+    try:
+        row = (
+            db.query(Channel)
+            .filter(
+                Channel.name == channel_name,
+                Channel.type == "voice",
+                Channel.provider == "personaplex",
+            )
+            .first()
+        )
+
+        existing_config = dict((row.config or {}) if row else {})
+        normalized = _sanitize_voice_profile_payload(
+            payload.model_dump(exclude_none=True),
+            keep_existing_api_key=str(existing_config.get("api_key") or "").strip(),
+        )
+        normalized["updated_at"] = datetime.datetime.utcnow().isoformat() + "Z"
+
+        if row is None:
+            row = Channel(
+                id=str(uuid.uuid4()),
+                name=channel_name,
+                type="voice",
+                provider="personaplex",
+                config=normalized,
+                agent_id=normalized.get("selected_agent_id"),
+            )
+            db.add(row)
+        else:
+            row.config = normalized
+            row.agent_id = normalized.get("selected_agent_id")
+
+        db.commit()
+        return {"status": "saved", "profile": _public_voice_profile(normalized)}
+    finally:
+        db.close()
+
+
+@app.get("/freeswitch/verto/check", response_model=VertoCheckResponse)
+async def check_freeswitch_verto(
+    url: Optional[str] = None,
+    timeout_sec: float = 8.0,
+):
+    """
+    Attempt a WebSocket handshake to FreeSWITCH Verto (typically /verto on 7443 or via 443 proxy).
+    Useful to validate that OmniCortex can reach the Verto listener.
+    """
+    target_url = _resolve_verto_ws_url(url)
+    safe_timeout = max(2.0, min(30.0, float(timeout_sec or 8.0)))
+    ssl_ctx, ssl_verify = _verto_ssl_context(target_url)
+
+    import aiohttp
+
+    try:
+        timeout = aiohttp.ClientTimeout(total=safe_timeout)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.ws_connect(target_url, ssl=ssl_ctx, heartbeat=10):
+                pass
+        return {
+            "status": "connected",
+            "url": target_url,
+            "ssl_verify": ssl_verify,
+            "timeout_sec": safe_timeout,
+            "detail": "WebSocket handshake succeeded",
+        }
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail=f"Timed out connecting to {target_url}")
+    except aiohttp.WSServerHandshakeError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"Verto handshake failed (HTTP {exc.status}) for {target_url}: {exc.message}",
+        )
+    except aiohttp.ClientError as exc:
+        raise HTTPException(status_code=502, detail=f"Verto connect failed for {target_url}: {exc}")
+
+
 # --- Voice WebSocket Proxy (Moshi) ---
 async def _authenticate_voice_websocket(websocket: WebSocket) -> Optional[str]:
     """
@@ -2541,6 +2759,98 @@ async def _authenticate_voice_websocket(websocket: WebSocket) -> Optional[str]:
     except Exception as exc:
         logging.error(f"Voice WS auth verification failed: {exc}")
         return "Auth verification unavailable"
+
+
+@app.websocket("/freeswitch/verto/ws")
+async def freeswitch_verto_ws_proxy(websocket: WebSocket):
+    """
+    Authenticated WebSocket proxy that relays frames between client and FreeSWITCH Verto.
+    Query params:
+      - token: bearer token (required if Authorization header not set)
+      - url / target_url: optional override for upstream verto URL
+      - timeout_sec: optional client timeout (2..180)
+    """
+    auth_error = await _authenticate_voice_websocket(websocket)
+    if auth_error:
+        await websocket.close(code=1008, reason=auth_error)
+        return
+
+    override = websocket.query_params.get("target_url") or websocket.query_params.get("url")
+    timeout_raw = websocket.query_params.get("timeout_sec", "60")
+    try:
+        safe_timeout = max(2.0, min(180.0, float(timeout_raw)))
+    except Exception:
+        safe_timeout = 60.0
+
+    try:
+        target_url = _resolve_verto_ws_url(override)
+    except HTTPException as exc:
+        await websocket.close(code=1008, reason=str(exc.detail))
+        return
+
+    ssl_ctx, _ = _verto_ssl_context(target_url)
+    await websocket.accept()
+
+    import aiohttp
+
+    try:
+        timeout = aiohttp.ClientTimeout(total=safe_timeout)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.ws_connect(target_url, ssl=ssl_ctx, heartbeat=15) as verto_ws:
+                logging.info(f"Verto WS proxy connected: upstream={target_url}")
+
+                async def client_to_verto():
+                    while True:
+                        msg = await websocket.receive()
+                        msg_type = msg.get("type")
+                        if msg_type == "websocket.disconnect":
+                            break
+                        if msg_type != "websocket.receive":
+                            continue
+                        text_data = msg.get("text")
+                        bytes_data = msg.get("bytes")
+                        if text_data is not None:
+                            await verto_ws.send_str(text_data)
+                        elif bytes_data is not None:
+                            await verto_ws.send_bytes(bytes_data)
+
+                async def verto_to_client():
+                    async for msg in verto_ws:
+                        if msg.type == aiohttp.WSMsgType.TEXT:
+                            await websocket.send_text(msg.data)
+                        elif msg.type == aiohttp.WSMsgType.BINARY:
+                            await websocket.send_bytes(msg.data)
+                        elif msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
+                            break
+
+                tasks = [
+                    asyncio.create_task(client_to_verto()),
+                    asyncio.create_task(verto_to_client()),
+                ]
+                _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                for task in pending:
+                    task.cancel()
+
+    except aiohttp.WSServerHandshakeError as exc:
+        logging.error(f"Verto WS proxy handshake failed: status={exc.status} url={target_url} msg={exc.message}")
+        try:
+            await websocket.close(code=1011, reason=f"Verto handshake failed HTTP {exc.status}")
+        except Exception:
+            pass
+    except aiohttp.ClientError as exc:
+        logging.error(f"Verto WS proxy connect failed: url={target_url} err={exc}")
+        try:
+            await websocket.close(code=1011, reason="Verto upstream unavailable")
+        except Exception:
+            pass
+    except WebSocketDisconnect:
+        logging.info("Verto WS proxy: client disconnected")
+    except Exception as exc:
+        logging.error(f"Verto WS proxy error: {exc}")
+        try:
+            await websocket.close(code=1011, reason="Verto proxy error")
+        except Exception:
+            pass
 
 
 @app.websocket("/voice/ws")

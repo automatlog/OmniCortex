@@ -4,7 +4,6 @@
 
 PROJECT_DIR="/workspace"
 VENV_DIR="${PROJECT_DIR}/.venv"
-NODE_BIN=$(which node 2>/dev/null || echo "/root/.nvm/versions/node/v22/bin/node")
 
 echo "🔧 Configuring OmniCortex Services in ${PROJECT_DIR}..."
 
@@ -60,30 +59,9 @@ StandardError=append:${PROJECT_DIR}/storage/logs/api_server.log
 WantedBy=multi-user.target
 EOF
 
-# 3. Admin Service
-echo " -> Creating omni-admin.service..."
-cat > /etc/systemd/system/omni-admin.service << EOF
-[Unit]
-Description=OmniCortex Admin Service
-After=network.target
-
-[Service]
-Type=simple
-WorkingDirectory=${PROJECT_DIR}/admin
-ExecStart=${NODE_BIN} node_modules/.bin/next dev -H 0.0.0.0 -p 3000
-Restart=on-failure
-RestartSec=10
-StandardOutput=append:${PROJECT_DIR}/storage/logs/admin_ui.log
-StandardError=append:${PROJECT_DIR}/storage/logs/admin_ui.log
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-# 4. Nginx Configuration
+# 3. Nginx Configuration
 echo " -> Configuring Nginx..."
 cat > /etc/nginx/sites-available/omnicortex << 'NGINX_CONF'
-upstream admin_upstream { server 127.0.0.1:3000; }
 upstream api_upstream   { server 127.0.0.1:8000; }
 upstream vllm_upstream  { server 127.0.0.1:8080; }
 
@@ -137,9 +115,9 @@ server {
         proxy_pass http://vllm_upstream/;
     }
 
-    # Admin Dashboard
+    # Default route to API backend
     location / {
-        proxy_pass http://admin_upstream;
+        proxy_pass http://api_upstream;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
@@ -161,6 +139,5 @@ mkdir -p ${PROJECT_DIR}/storage/logs
 systemctl daemon-reload
 systemctl enable --now omni-vllm
 systemctl enable --now omni-api
-systemctl enable --now omni-admin
 
 echo "✅ Deployment Complete!"

@@ -82,18 +82,6 @@ SERVICES = {
         "max_restarts": 10,
         "log_file": "api_server.log",
         "enabled": True
-    },
-    "admin": {
-        "cmd": ["npm", "run", "start"],  # Requires 'npm run build' first
-        "venv": None,
-        "cwd": "admin",  # Special handling needed in ServiceProcess for cwd?
-        "env": None,
-        "health_url": "http://localhost:3000",
-        "health_interval": 60,
-        "restart_delay": 10,
-        "max_restarts": 5,
-        "log_file": "admin_ui.log",
-        "enabled": True
     }
 }
 

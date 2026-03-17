@@ -4,6 +4,7 @@ Chat Service - Orchestrates the RAG workflow
 import os
 import json
 import time
+import re
 from typing import Dict, List, Optional
 from urllib.parse import unquote
 
@@ -18,6 +19,56 @@ from .processing.pii import mask_pii
 from .rag.retrieval import hybrid_search
 from .rag.vector_store import create_vector_store
 from .database import Document, SessionLocal, save_message
+
+
+def _extract_first_prompt(items) -> Optional[str]:
+    if not items:
+        return None
+    for item in items:
+        if isinstance(item, str):
+            text = item.strip()
+            if text:
+                return text
+            continue
+        if isinstance(item, dict):
+            text = str(item.get("prompt") or "").strip()
+            if text:
+                return text
+    return None
+
+
+def _rule_based_agent_reply(question: str, agent_id: Optional[str]) -> Optional[str]:
+    text = str(question or "").strip().lower()
+    if not text:
+        return None
+
+    is_greeting = bool(
+        re.search(r"\b(hello|hi|hey|hola|good morning|good afternoon|good evening)\b", text)
+    )
+    is_conversation_end = bool(
+        re.search(r"\b(thank you|thanks|thx|bye|goodbye|see you)\b", text)
+    )
+
+    if not is_greeting and not is_conversation_end:
+        return None
+
+    starter_prompt = None
+    end_prompt = None
+    if agent_id:
+        try:
+            agent = get_agent(agent_id) or {}
+            starter_prompt = _extract_first_prompt(agent.get("conversation_starters"))
+            end_prompt = _extract_first_prompt(agent.get("conversation_end"))
+        except Exception:
+            pass
+
+    # Strict per-agent behavior:
+    # no global fallback when prompts are missing.
+    if is_conversation_end:
+        return end_prompt
+    if is_greeting:
+        return starter_prompt
+    return None
 
 
 def format_history(messages: List[Dict], max_messages: int = 10) -> str:
@@ -121,6 +172,50 @@ def process_question(
     safe_question = mask_pii(question)
     query_tokens = estimate_tokens(question)
     rag_query_tokens = estimate_tokens(safe_question)
+
+    # Fast-path for salutations and sign-offs (agent-configurable).
+    scripted_reply = _rule_based_agent_reply(question, agent_id)
+    if scripted_reply:
+        scripted_reply = enforce_canonical_media_tags(scripted_reply)
+        save_message("user", safe_question, agent_id=agent_id)
+        save_message("assistant", scripted_reply, agent_id=agent_id)
+        try:
+            from .clickhouse import log_chat_to_clickhouse
+
+            log_chat_to_clickhouse(
+                agent_id=agent_id,
+                user_message=question,
+                assistant_message=scripted_reply,
+                request_id=request_id,
+                session_id=session_id,
+                user_id=user_id,
+                status="rule_based",
+            )
+        except Exception:
+            pass
+        try:
+            from .clickhouse import log_usage_to_clickhouse
+
+            log_usage_to_clickhouse(
+                agent_id=agent_id,
+                model="conversation_rule",
+                query_tokens=query_tokens,
+                rag_query_tokens=rag_query_tokens,
+                prompt_tokens=0,
+                completion_tokens=0,
+                latency_ms=(time.perf_counter() - started_at) * 1000.0,
+                cost=0.0,
+                request_id=request_id,
+                session_id=session_id,
+                user_id=user_id,
+                channel_name=channel_name,
+                channel_type=channel_type,
+                status="rule_based",
+            )
+        except Exception:
+            pass
+        return scripted_reply
+
     cached = check_cache(safe_question, agent_id)
     if cached:
         cached = enforce_canonical_media_tags(cached)

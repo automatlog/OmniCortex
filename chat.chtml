@@ -3,331 +3,319 @@
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>OmniCortex Chat Tester</title>
+    <title>OmniCortex Chat</title>
     <style>
+        :root {
+            --color-background-primary: #ffffff;
+            --color-background-secondary: #f8fafc;
+            --color-background-tertiary: #f3f6fb;
+            --color-border-secondary: #cfd8e3;
+            --color-border-tertiary: #e2e8f0;
+            --color-text-primary: #0f172a;
+            --color-text-secondary: #64748b;
+            --border-radius-md: 8px;
+            --border-radius-lg: 14px;
+        }
+
         body {
             margin: 0;
+            padding: 0;
             font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
-            background: #f5f7fb;
-            color: #0f172a;
+            background: var(--color-background-tertiary);
+            color: var(--color-text-primary);
+        }
+
+        .chat-host {
             min-height: 100vh;
-        }
-
-        .page-shell {
             padding: 24px;
+            position: relative;
+            box-sizing: border-box;
         }
 
-        .page-title {
-            margin: 0 0 8px 0;
-            font-size: 28px;
-            font-weight: 700;
-        }
-
-        .page-subtitle {
-            margin: 0;
-            color: #475569;
-            font-size: 14px;
-        }
-
-        .conversation-fab {
+        #demo-launcher {
             position: fixed;
             right: 24px;
             bottom: 24px;
-            z-index: 2000;
-            border: 0;
+            border: none;
             border-radius: 999px;
-            padding: 12px 18px;
-            font-weight: 700;
+            padding: 11px 18px;
+            font-weight: 600;
+            font-size: 13px;
             background: #0d6efd;
             color: #fff;
-            box-shadow: 0 10px 24px rgba(13, 110, 253, 0.35);
             cursor: pointer;
+            box-shadow: 0 4px 14px rgba(13,110,253,0.35);
+            z-index: 1000;
         }
 
-        .conversation-popup {
+        #demo-popup {
+            display: none;
             position: fixed;
             right: 24px;
-            bottom: 82px;
-            width: 380px;
-            max-width: calc(100vw - 28px);
-            height: 560px;
-            max-height: calc(100vh - 100px);
-            background: #fff;
-            border: 1px solid #dbe3ee;
-            border-radius: 14px;
-            box-shadow: 0 16px 42px rgba(15, 23, 42, 0.22);
-            z-index: 2001;
-            display: none;
+            bottom: 76px;
+            width: 360px;
+            max-width: calc(100% - 48px);
+            height: 460px;
+            background: var(--color-background-primary);
+            border: 0.5px solid var(--color-border-secondary);
+            border-radius: var(--border-radius-lg);
             overflow: hidden;
-        }
-
-        .conversation-popup.open {
-            display: flex;
             flex-direction: column;
+            box-shadow: 0 8px 30px rgba(15,23,42,0.15);
+            z-index: 1001;
         }
 
-        .conversation-header {
+        .demo-header {
             display: flex;
             align-items: center;
             justify-content: space-between;
             padding: 12px 14px;
-            border-bottom: 1px solid #edf1f7;
-            background: #f8fbff;
+            border-bottom: 0.5px solid var(--color-border-tertiary);
+            background: var(--color-background-secondary);
         }
 
-        .conversation-title {
+        .demo-title {
             margin: 0;
-            font-size: 14px;
-            font-weight: 700;
+            font-size: 13px;
+            font-weight: 500;
+            color: var(--color-text-primary);
         }
 
-        .conversation-meta {
-            margin-top: 2px;
+        #demo-meta {
             font-size: 11px;
-            color: #64748b;
+            color: var(--color-text-secondary);
+            margin-top: 2px;
         }
 
-        .conversation-close {
-            border: 0;
+        #demo-close {
+            border: none;
             background: transparent;
-            color: #64748b;
-            font-size: 20px;
-            line-height: 1;
+            color: var(--color-text-secondary);
+            font-size: 18px;
             cursor: pointer;
+            line-height: 1;
+            padding: 2px 6px;
         }
 
-        .conversation-config {
-            padding: 10px;
-            border-bottom: 1px solid #edf1f7;
+        #demo-config {
             display: grid;
             grid-template-columns: 1fr;
-            gap: 8px;
-            background: #fff;
+            gap: 6px;
+            padding: 8px 10px;
+            border-bottom: 0.5px solid var(--color-border-tertiary);
+            background: var(--color-background-primary);
         }
 
-        .conversation-config input,
-        .conversation-inputbar textarea {
+        #demo-config input {
             width: 100%;
             box-sizing: border-box;
-            border: 1px solid #cbd5e1;
-            border-radius: 8px;
-            padding: 8px 10px;
+            border: 0.5px solid var(--color-border-secondary);
+            border-radius: var(--border-radius-md);
+            padding: 7px 9px;
             font-size: 12px;
+            font-family: inherit;
+            background: var(--color-background-primary);
+            color: var(--color-text-primary);
             outline: none;
         }
 
-        .conversation-config input:focus,
-        .conversation-inputbar textarea:focus {
-            border-color: #60a5fa;
-            box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.2);
+        #demo-config input:focus {
+            border-color: #3b82f6;
+            box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.16);
         }
 
-        .conversation-messages {
+        #demo-messages {
             flex: 1 1 auto;
             overflow-y: auto;
             padding: 12px;
-            background: #f8fafc;
+            background: var(--color-background-tertiary);
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            min-height: 0;
         }
 
-        .conversation-msg {
+        .msg {
             max-width: 86%;
-            margin-bottom: 10px;
             padding: 9px 11px;
             border-radius: 10px;
             font-size: 13px;
-            line-height: 1.45;
+            line-height: 1.5;
             white-space: pre-wrap;
             word-break: break-word;
         }
 
-        .conversation-msg.user {
-            margin-left: auto;
+        .msg-user {
+            align-self: flex-end;
             background: #dbeafe;
-            color: #0f172a;
+            color: #1e3a5f;
         }
 
-        .conversation-msg.agent {
-            margin-right: auto;
-            background: #fff;
-            color: #111827;
-            border: 1px solid #e2e8f0;
+        .msg-agent {
+            align-self: flex-start;
+            background: var(--color-background-primary);
+            border: 0.5px solid var(--color-border-tertiary);
+            color: var(--color-text-primary);
         }
 
-        .conversation-msg.error {
-            margin-right: auto;
+        .msg-error {
+            align-self: flex-start;
             background: #fef2f2;
+            border: 0.5px solid #fecaca;
             color: #991b1b;
-            border: 1px solid #fecaca;
         }
 
-        .conversation-inputbar {
+        .demo-inputbar {
             display: flex;
             gap: 8px;
             padding: 10px;
-            border-top: 1px solid #edf1f7;
-            background: #fff;
+            border-top: 0.5px solid var(--color-border-tertiary);
+            background: var(--color-background-primary);
         }
 
-        .conversation-inputbar textarea {
+        #demo-input {
+            flex: 1;
             resize: none;
-            min-height: 40px;
-            max-height: 100px;
+            box-sizing: border-box;
+            border: 0.5px solid var(--color-border-secondary);
+            border-radius: var(--border-radius-md);
+            padding: 8px 10px;
+            font-size: 13px;
+            font-family: inherit;
+            background: var(--color-background-primary);
+            color: var(--color-text-primary);
+            outline: none;
         }
 
-        .conversation-actions {
-            display: flex;
-            flex-direction: column;
-            gap: 6px;
-        }
-
-        .btn {
-            border: 0;
-            border-radius: 8px;
-            padding: 8px 12px;
+        #demo-send {
+            align-self: flex-end;
+            border: none;
+            border-radius: var(--border-radius-md);
+            padding: 8px 14px;
             font-size: 12px;
-            font-weight: 600;
-            cursor: pointer;
-        }
-
-        .btn-primary {
+            font-weight: 500;
             background: #0d6efd;
             color: #fff;
-        }
-
-        .btn-secondary {
-            background: #e2e8f0;
-            color: #0f172a;
+            cursor: pointer;
         }
     </style>
 </head>
 <body>
-    <div class="page-shell">
-        <h1 class="page-title">Chat Tester</h1>
-        <p class="page-subtitle">Use the Conversation button to test <code>/query</code> with a selected agent.</p>
-    </div>
+    <div class="chat-host">
+        <button id="demo-launcher">Conversation</button>
 
-    <button type="button" id="conversation-launcher" class="conversation-fab">Conversation</button>
-
-    <div id="conversation-popup" class="conversation-popup" aria-hidden="true">
-        <div class="conversation-header">
-            <div>
-                <p class="conversation-title">Agent Conversation</p>
-                <div id="conversation-meta" class="conversation-meta">Session: not started</div>
+        <div id="demo-popup">
+            <div class="demo-header">
+                <div>
+                    <p class="demo-title">Agent conversation</p>
+                    <div id="demo-meta">Session: not started</div>
+                </div>
+                <button id="demo-close">x</button>
             </div>
-            <button type="button" id="conversation-close" class="conversation-close" aria-label="Close">x</button>
-        </div>
 
-        <div class="conversation-config">
-            <input id="conv-api-base" type="text" placeholder="API Base URL (e.g., http://localhost:8000)" />
-            <input id="conv-agent-id" type="text" placeholder="Agent ID (UUID)" />
-            <input id="conv-token" type="text" placeholder="Bearer Token" />
-            <input id="conv-user-id" type="text" placeholder="X-User-Id (optional)" />
-        </div>
+            <div id="demo-config">
+                <input id="demo-api-base" placeholder="API base URL (e.g., http://localhost:8000)" />
+                <input id="demo-agent-id" placeholder="Agent ID (UUID)" />
+                <input id="demo-token" placeholder="Bearer token" />
+                <input id="demo-user-id" placeholder="X-User-Id (optional)" />
+            </div>
 
-        <div id="conversation-messages" class="conversation-messages">
-            <div class="conversation-msg agent">Ready. Enter message and click Send.</div>
-        </div>
+            <div id="demo-messages">
+                <div class="msg msg-agent">Ready. Enter a message and click Send.</div>
+            </div>
 
-        <div class="conversation-inputbar">
-            <textarea id="conversation-input" placeholder="Enter message..."></textarea>
-            <div class="conversation-actions">
-                <button type="button" id="conversation-send" class="btn btn-primary">Send</button>
-                <button type="button" id="conversation-clear" class="btn btn-secondary">Clear</button>
+            <div class="demo-inputbar">
+                <textarea id="demo-input" placeholder="Enter message..." rows="2"></textarea>
+                <button id="demo-send">Send</button>
             </div>
         </div>
     </div>
 
     <script>
         (function () {
-            const launcher = document.getElementById("conversation-launcher");
-            const popup = document.getElementById("conversation-popup");
-            const closeBtn = document.getElementById("conversation-close");
-            const sendBtn = document.getElementById("conversation-send");
-            const clearBtn = document.getElementById("conversation-clear");
-            const messageBox = document.getElementById("conversation-messages");
-            const input = document.getElementById("conversation-input");
-            const meta = document.getElementById("conversation-meta");
-            const apiBaseInput = document.getElementById("conv-api-base");
-            const agentIdInput = document.getElementById("conv-agent-id");
-            const tokenInput = document.getElementById("conv-token");
-            const userIdInput = document.getElementById("conv-user-id");
+            const launcher = document.getElementById("demo-launcher");
+            const popup = document.getElementById("demo-popup");
+            const closeBtn = document.getElementById("demo-close");
+            const sendBtn = document.getElementById("demo-send");
+            const messages = document.getElementById("demo-messages");
+            const input = document.getElementById("demo-input");
+            const meta = document.getElementById("demo-meta");
+
+            const apiBaseInput = document.getElementById("demo-api-base");
+            const agentIdInput = document.getElementById("demo-agent-id");
+            const tokenInput = document.getElementById("demo-token");
+            const userIdInput = document.getElementById("demo-user-id");
 
             let sessionId = "";
 
-            const savedBase = localStorage.getItem("chat_api_base") || window.location.origin;
-            const savedToken = localStorage.getItem("chat_api_token") || "";
-            const savedUserId = localStorage.getItem("chat_api_user_id") || "";
-            const savedAgentId = localStorage.getItem("chat_agent_id") || "";
-
-            apiBaseInput.value = savedBase;
-            tokenInput.value = savedToken;
-            userIdInput.value = savedUserId;
-            agentIdInput.value = savedAgentId;
-
-            function appendMessage(type, text) {
-                const div = document.createElement("div");
-                div.className = "conversation-msg " + type;
-                div.textContent = text;
-                messageBox.appendChild(div);
-                messageBox.scrollTop = messageBox.scrollHeight;
-            }
-
-            function setSessionMeta(value) {
-                sessionId = value || "";
-                meta.textContent = sessionId ? ("Session: " + sessionId) : "Session: not started";
-            }
+            apiBaseInput.value = localStorage.getItem("chat_api_base") || window.location.origin;
+            agentIdInput.value = localStorage.getItem("chat_agent_id") || "";
+            tokenInput.value = localStorage.getItem("chat_api_token") || "";
+            userIdInput.value = localStorage.getItem("chat_api_user_id") || "";
 
             function openPopup() {
-                popup.classList.add("open");
-                popup.setAttribute("aria-hidden", "false");
+                popup.style.display = "flex";
                 input.focus();
             }
 
             function closePopup() {
-                popup.classList.remove("open");
-                popup.setAttribute("aria-hidden", "true");
+                popup.style.display = "none";
+            }
+
+            function addMsg(type, text) {
+                const div = document.createElement("div");
+                div.className = "msg " + (
+                    type === "user" ? "msg-user" :
+                    type === "error" ? "msg-error" : "msg-agent"
+                );
+                div.textContent = text;
+                messages.appendChild(div);
+                messages.scrollTop = messages.scrollHeight;
             }
 
             launcher.addEventListener("click", function () {
-                if (popup.classList.contains("open")) closePopup();
+                if (popup.style.display === "flex") closePopup();
                 else openPopup();
             });
             closeBtn.addEventListener("click", closePopup);
 
-            clearBtn.addEventListener("click", function () {
-                messageBox.innerHTML = '<div class="conversation-msg agent">Cleared. Continue testing.</div>';
-                setSessionMeta("");
+            sendBtn.addEventListener("click", handleSend);
+            input.addEventListener("keydown", function (e) {
+                if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSend();
+                }
             });
 
-            async function sendQuery() {
+            async function handleSend() {
                 const text = (input.value || "").trim();
-                const base = (apiBaseInput.value || "").trim().replace(/\/+$/, "");
-                const agentId = (agentIdInput.value || "").trim();
-                const token = (tokenInput.value || "").trim();
-                const userId = (userIdInput.value || "").trim();
+                const API_BASE = (apiBaseInput.value || "").trim().replace(/\/+$/, "");
+                const AGENT_ID = (agentIdInput.value || "").trim();
+                const TOKEN = (tokenInput.value || "").trim();
+                const USER_ID = (userIdInput.value || "").trim();
 
                 if (!text) return;
-                if (!base) return appendMessage("error", "API Base URL is required.");
-                if (!agentId) return appendMessage("error", "Agent ID is required.");
-                if (!token) return appendMessage("error", "Bearer Token is required.");
+                if (!API_BASE) return addMsg("error", "API base URL is required.");
+                if (!AGENT_ID) return addMsg("error", "Agent ID is required.");
+                if (!TOKEN) return addMsg("error", "Bearer token is required.");
 
-                localStorage.setItem("chat_api_base", base);
-                localStorage.setItem("chat_api_token", token);
-                localStorage.setItem("chat_api_user_id", userId);
-                localStorage.setItem("chat_agent_id", agentId);
+                localStorage.setItem("chat_api_base", API_BASE);
+                localStorage.setItem("chat_agent_id", AGENT_ID);
+                localStorage.setItem("chat_api_token", TOKEN);
+                localStorage.setItem("chat_api_user_id", USER_ID);
 
-                appendMessage("user", text);
+                addMsg("user", text);
                 input.value = "";
                 sendBtn.disabled = true;
 
                 const headers = {
                     "Content-Type": "application/json",
-                    "Authorization": "Bearer " + token
+                    "Authorization": "Bearer " + TOKEN
                 };
-                if (userId) headers["X-User-Id"] = userId;
+                if (USER_ID) headers["X-User-Id"] = USER_ID;
 
                 const payload = {
-                    id: agentId,
+                    id: AGENT_ID,
                     channel_name: "TEXT",
                     channel_type: "MARKETING",
                     query: text
@@ -335,35 +323,30 @@
                 if (sessionId) payload.session_id = sessionId;
 
                 try {
-                    const response = await fetch(base + "/query", {
+                    const res = await fetch(API_BASE + "/query", {
                         method: "POST",
                         headers: headers,
                         body: JSON.stringify(payload)
                     });
+                    const data = await res.json().catch(function () { return {}; });
 
-                    const data = await response.json().catch(function () { return {}; });
-                    if (!response.ok) {
-                        appendMessage("error", String((data && data.detail) || ("HTTP " + response.status)));
+                    if (!res.ok) {
+                        addMsg("error", String((data && data.detail) || ("HTTP " + res.status)));
                         return;
                     }
 
-                    appendMessage("agent", data.answer || "(No answer)");
-                    if (data.session_id) setSessionMeta(data.session_id);
+                    addMsg("agent", data.answer || "(No answer)");
+                    if (data.session_id) {
+                        sessionId = data.session_id;
+                        meta.textContent = "Session: " + sessionId;
+                    }
                 } catch (err) {
-                    appendMessage("error", "Request failed: " + (err && err.message ? err.message : "Unknown error"));
+                    addMsg("error", "Request failed: " + (err && err.message ? err.message : "Unknown error"));
                 } finally {
                     sendBtn.disabled = false;
                     input.focus();
                 }
             }
-
-            sendBtn.addEventListener("click", sendQuery);
-            input.addEventListener("keydown", function (e) {
-                if (e.key === "Enter" && !e.shiftKey) {
-                    e.preventDefault();
-                    sendQuery();
-                }
-            });
         })();
     </script>
 </body>

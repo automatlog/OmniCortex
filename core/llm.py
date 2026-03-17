@@ -13,6 +13,7 @@ from langchain_openai import ChatOpenAI
 
 from .config import MODEL_BACKENDS, VLLM_BASE_URL as DEFAULT_BASE_URL, VLLM_MODEL as DEFAULT_MODEL
 from .database import log_usage
+from .agent_config import sync_agent_config
 from .monitoring import CACHE_HITS, CACHE_MISSES, ConfigLoader, LLM_LATENCY, TOKEN_USAGE
 
 # Load config
@@ -182,6 +183,11 @@ def invoke_chain(
                 query_tokens=query_tokens,
                 rag_query_tokens=rag_query_tokens,
             )
+            try:
+                if agent_id:
+                    sync_agent_config(str(agent_id))
+            except Exception as cfg_exc:
+                print(f"Agent config usage sync failed: {cfg_exc}")
 
             # ClickHouse usage log (always write a row, even when token metadata is missing)
             try:

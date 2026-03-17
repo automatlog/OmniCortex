@@ -1,233 +1,365 @@
-﻿# OmniCortex - Multi-Agent RAG Platform
+# OmniCortex Project Flow
 
-**Version**: 2.0 | **Last Updated**: February 10, 2026
+Last updated: 2026-03-16
 
----
+## 1. Runtime Topology
 
-## Overview
+| Component | Purpose | Default Port |
+|---|---|---|
+| FastAPI (`api.py`) | Main API, RAG, auth, voice proxy | `8000` |
+| vLLM1 | Primary text LLM backend (`MODEL_BACKENDS.default`) | `8080` |
+| vLLM2 (optional) | Secondary LLM backend/profile | `8082` |
+| Moshi / PersonaPlex (`moshi.server`) | Full-duplex voice engine + web UI | `8998` |
+| Voice Gateway (`scripts/voice_gateway.py`) | FreeSWITCH media bridge (`/calls`) | `8099` (or `443` TLS) |
+| PostgreSQL + pgvector | Primary data store and vectors | `5432` |
+| ClickHouse (optional) | Usage/chat/agent-event analytics sink | `8123` |
 
-OmniCortex is a **multi-tenant, multi-agent AI platform** that enables businesses to create intelligent chatbots with domain-specific knowledge. Each agent can be trained on custom documents and deployed across multiple channels (Web, WhatsApp, Voice).
-
----
-
-## Core Features
-
-| Feature | Description |
-|---------|-------------|
-| **Multi-Agent** | Create unlimited isolated AI agents |
-| **RAG Pipeline** | Upload PDFs/docs for agent-specific knowledge |
-| **Local LLM** | vLLM or Ollama (OpenAI-compatible APIs) |
-| **Voice Chat** | LiquidAI for real-time audio (optional) |
-| **WhatsApp** | Business API integration |
-| **Persistent Memory** | Conversation history per user |
-| **Analytics** | ClickHouse integration for detailed logs |
-
----
-
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────┐
-│                      CLIENT LAYER                           │
-│   [Next.js Admin]  [WhatsApp API]  [Voice/LiquidAI]         │
-└───────────────────────────┬─────────────────────────────────┘
-                            │
-┌───────────────────────────▼─────────────────────────────────┐
-│                   APPLICATION LAYER                         │
-│   [FastAPI :8000]  ←→  [vLLM/Ollama :8080/11434]            │
-└───────────────────────────┬─────────────────────────────────┘
-                            │
-┌───────────────────────────▼─────────────────────────────────┐
-│                     CORE SERVICES                           │
-│   [Agent Manager]  [Chat Service]  [RAG Pipeline]           │
-│   [Document Processor]                                      │
-└───────────────────────────┬─────────────────────────────────┘
-                            │
-┌───────────────────────────▼─────────────────────────────────┐
-│                       DATA LAYER                            │
-│   [PostgreSQL + pgvector]  [ClickHouse]  [File Storage]     │
-└─────────────────────────────────────────────────────────────┘
+```mermaid
+flowchart LR
+  A[Admin UI / Clients] --> B[FastAPI api.py :8000]
+  B --> C[vLLM1 :8080]
+  B --> D[vLLM2 :8082 optional]
+  B --> E[(PostgreSQL + pgvector :5432)]
+  B --> F[(ClickHouse :8123 optional)]
+  A --> G[Moshi UI/WS :8998]
+  G --> B
+  H[FreeSWITCH / Dialer] --> I[Voice Gateway /calls]
+  I --> B
 ```
 
----
+## 2. Core Backend Responsibilities
 
-## Data Flow
+- `api.py`: REST and WS endpoints, startup validation, auth/ownership enforcement, orchestration.
+- `core/agent_manager.py`: agent CRUD and vector store delete on agent removal.
+- `core/chat_service.py`: chat pipeline (guardrails, PII masking, cache, retrieval, LLM invoke, persistence).
+- `core/rag/*`: embeddings, vector store ops, hybrid retrieval (vector + keyword + RRF, optional rerank).
+- `core/llm.py`: OpenAI-compatible LLM invocation via LangChain (`MODEL_BACKENDS` driven).
+- `core/database.py`: SQLAlchemy models, schema/index setup, message/document/usage storage.
+- `core/clickhouse.py`: buffered async analytics writing (usage/chat/agent events).
+- `scripts/voice_gateway.py`: `/calls` WS bridge between telephony media and OmniCortex `/voice/ws`.
+- `moshi/moshi/server.py`: PersonaPlex runtime, OmniCortex-aware agent/prompt fetch, UI patching.
 
-### Document Ingestion
-```
-PDF Upload → Text Extraction → Chunking (700 tokens)
-    → Embedding (HuggingFace) → pgvector Storage
-```
+## 3. End-to-End Flows
 
-### Chat Query
-```
-User Question → Vector Search (agent-filtered)
-    → Context Retrieval → LLM Generation (vLLM/Ollama)
-    → Response → Postgres (History) + ClickHouse (Analytics)
-```
+### 3.0 Consolidated Project Flow
 
----
+```mermaid
+flowchart TB
+    A[Client / Admin UI / Voice Client] --> B[FastAPI api.py]
 
-## Backend Architecture & Data Flow (Concise)
+    B --> C[Bearer Auth<br/>core/auth.py]
+    C --> D{Authorized?}
+    D -->|No| E[403]
+    D -->|Yes| F{Route Type}
 
-### Summary
-OmniCortex's backend is a FastAPI service (`api.py`) orchestrating a multi-agent RAG pipeline with Postgres + pgvector as the primary data store. Core flows include agent CRUD, document ingestion into vector stores, and chat queries that run hybrid retrieval plus LLM generation with guardrails, caching, and metrics. External integrations include WhatsApp, voice (PersonaPlex/LiquidAI), vLLM or Ollama for inference, and optional ClickHouse analytics.
+    F -->|POST /agents| G[Normalize + Validate Payload]
+    G --> H[create_agent<br/>core/agent_manager.py]
+    H --> I[(PostgreSQL<br/>omni_agents)]
+    G --> J[process_documents / process_urls]
+    J --> K[parent_child_split]
+    K --> L[(pgvector collection<br/>omni_agent_<id>)]
+    H --> M[log_agent_event_to_clickhouse]
+    M --> N[(ClickHouse AgentLogs)]
+    H --> O[Optional Agent Ready Webhook]
 
-### Component Overview
-- API layer: `api.py` endpoints, CORS and metrics middleware, startup dependency validation.
-- Core services: `core/chat_service.py` (RAG orchestration), `core/agent_manager.py` (agent CRUD), `core/graph.py` (LangGraph agent flow), `core/llm.py` (LLM wrapper with retry and metrics).
-- RAG pipeline: `core/processing/*` and `core/rag/*` for extraction, chunking, embeddings, vector store, and retrieval.
-- Data layer: `core/database.py` models, indexes, and connection pooling for Postgres + pgvector.
-- External dependencies: vLLM or Ollama, ClickHouse (optional), WhatsApp webhook, voice engines.
+    F -->|POST /query| P[_require_agent_access]
+    P --> Q[Session Resolve/Create]
+    Q --> R[process_question<br/>core/chat_service.py]
+    R --> S{Semantic Cache Hit?}
+    S -->|Yes| T[Return Cached Answer]
+    S -->|No| U[hybrid_search<br/>core/rag/retrieval.py]
+    U --> V[invoke_chain<br/>core/llm.py -> vLLM backend]
+    V --> W[enforce media tags + output guardrails]
+    T --> X[Save messages/history]
+    W --> X
+    X --> Y[(PostgreSQL<br/>messages/usage)]
+    X --> Z[log_usage_to_clickhouse + log_chat_to_clickhouse]
+    Z --> AA[(ClickHouse UsageLogs + ChatArchive)]
+    W --> AB[QueryResponse<br/>answer + session_id + request_id]
 
-### Primary Data Flows
-- `/query` chat: request → guardrails → cache check → hybrid retrieval → context/history formatting → LLM call → output guardrails → cache save → DB save → analytics.
-- `/agents/{id}/documents` ingestion: upload → text extraction → parent-child chunking → parent chunks saved to Postgres → child chunks embedded to pgvector → metadata saved → agent counts updated.
-- Agent CRUD: create agent plus optional bulk file ingest; delete agent removes vector store and cascades DB deletes.
-- WhatsApp webhook: receive message or audio → optional media download and transcription → process question → persist history → reply to user.
-- Voice endpoints: transcribe, speak, or voice-to-voice chat when voice engine is configured.
-
-### Operational Notes and Risks
-- Startup validation exits if Postgres or Ollama is unavailable, which can be fragile in slow-start environments.
-- LLM backend assumptions are mixed: `llm.py` supports multiple backends but `api.py` checks Ollama specifically.
-- Optional reranker can add latency and memory pressure if enabled without proper resources.
-- Keyword search depends on parent chunk to document linkage; missing `source_doc_id` can weaken agent isolation.
-- Cache hit metrics are tied to context presence, not true cache hits.
-
-### Quick Wins
-- Align startup dependency checks with configured LLM backend (vLLM vs Ollama).
-- Validate parent chunk linkage to source documents to preserve agent isolation in keyword search.
-- Correct cache hit/miss metrics to reflect actual cache usage.
-- Add a vector store health check per agent to avoid runtime errors.
-
-### Scope
-This section focuses on backend core only. The admin UI and deployment scripts are out of scope.
-
----
-
-## Project Structure
-
-```
-OmniCortex/
-├── core/
-│   ├── inference/      # vLLM client (Deprecated, uses llm.py)
-│   ├── processing/     # Chunking, document loading
-│   ├── rag/            # Vector store, embeddings
-│   └── voice/          # LiquidAI integration
-├── docs/               # Documentation (you are here)
-├── scripts/            # Deployment scripts
-├── tests/              # Test suite
-├── config/             # Configuration files
-├── api.py              # FastAPI backend
-├── admin/              # Next.js Admin Panel
-└── pyproject.toml      # Dependencies
+    F -->|WS /voice/ws| AC[Voice Proxy]
+    AC --> AD[Load agent prompt + optional voice context]
+    AD --> AE[Moshi/PersonaPlex upstream WS]
+    AE --> AF[Bidirectional audio/text relay]
 ```
 
----
+### 3.1 Agent create and ingest flow
 
-## Key Design Decisions
+1. Client calls `POST /agents` with Bearer token.
+2. API validates owner identity and normalizes payload (`agent_type`, `subagent_type`, prompts, model selection).
+3. Agent row is created in `omni_agents`.
+4. Optional ingestion runs from:
+   - `file_paths` / uploaded files
+   - `documents_text`
+   - `scraped_data`
+5. URL list triggers background `process_urls(...)`.
+6. `process_documents(...)` performs:
+   - extraction and text combine
+   - parent-child split
+   - parent chunk save in Postgres
+   - child embedding + vector upsert in pgvector collection `omni_agent_<agent_id>`
+7. Agent event is logged to ClickHouse (if enabled).
+8. Optional outbound webhook `AGENT_READY_WEBHOOK_URL` is called.
 
-### Agent Isolation
-Each agent has its own vector collection with metadata filtering. No cross-contamination.
-
-### TPM-Safe Chunking
-700-token chunks with 17% overlap prevents rate limit explosions.
-
-### Simple Retry Logic
-Basic exponential backoff handles temporary vLLM/Ollama unavailability.
-
----
-
-## Challenges Solved
-
-| Challenge | Solution |
-|-----------|----------|
-| Rate limits (429) | Retry with backoff |
-| Cross-agent contamination | Metadata-filtered retrieval |
-| High API costs | Local LLM inference |
-| Context window limits | Smart chunking (700 tokens) |
-| Concurrent agents | Connection pooling + async |
-
----
-
-## Performance Targets
-
-| Metric | Target | Achieved |
-|--------|--------|----------|
-| Concurrent agents | 50+ | ✅ 80 (on 2x A10) |
-| Response latency | <3s | ✅ 1-2s |
-| API cost | $0 | ✅ Local LLM |
-| Uptime | 99.9% | ✅ Auto-restart |
-
----
-
-## Tech Stack
-
-| Layer | Technology |
-|-------|------------|
-| **Backend** | Python 3.12, FastAPI, SQLAlchemy |
-| **UI** | Next.js + TypeScript + Tailwind CSS |
-| **LLM Inference** | vLLM / Ollama |
-| **Embeddings** | HuggingFace all-MiniLM-L6-v2 |
-| **Database** | PostgreSQL 16 + pgvector |
-| **Analytics** | ClickHouse (Optional) |
-| **Voice** | LiquidAI LFM2.5-Audio-1.5B |
-| **Package Manager** | uv (Astral) |
-| **Orchestration** | LangChain LCEL, LangGraph, CrewAI |
-
----
-
-## Core Module Structure
-
-```
-core/
-├── __init__.py              # Public API exports
-├── config.py                # Environment variables and settings
-├── database.py              # SQLAlchemy models, connection pooling
-├── agent_manager.py         # Agent CRUD operations
-├── chat_service.py          # RAG workflow orchestration
-├── llm.py                   # Unified LLM integration
-├── clickhouse.py            # Analytics Logger
-├── prompts.py               # Prompt templates
-├── crew.py                  # CrewAI Orchestration
-├── graph.py                 # LangGraph state machine
-├── whatsapp.py              # WhatsApp API client
-├── whatsapp_history.py      # WhatsApp conversation storage
-├── rate_limit_manager.py    # Rate limiting
-│
-├── processing/              # Document Processing
-│   ├── __init__.py
-│   ├── chunking.py          # Text splitting (700 tokens)
-│   └── document_loader.py   # PDF/TXT extraction
-│
-├── rag/                     # Retrieval-Augmented Generation
-│   ├── __init__.py
-│   ├── vector_store.py      # pgvector operations
-│   ├── embeddings.py        # HuggingFace embedding model
-│   └── ingestion_fixed.py   # Agent-aware document ingestion
-│
-└── voice/                   # Voice Processing
-    ├── __init__.py
-    ├── liquid_voice.py      # LiquidAI integration
-    └── voice_engine.py      # Audio processing utilities
+```mermaid
+flowchart LR
+  A[Client POST /agents] --> B[api.py validate auth + owner]
+  B --> C[Normalize payload]
+  C --> D[create_agent in omni_agents]
+  D --> E{Any ingest input?}
+  E -->|files/text/scraped_data| F[process_documents]
+  F --> G[parent_child_split]
+  G --> H[Save parent chunks to Postgres]
+  G --> I[Embed child chunks]
+  I --> J[Upsert pgvector collection omni_agent_AGENT_ID]
+  E -->|urls| K[background process_urls]
+  J --> L[ClickHouse agent event]
+  L --> M[Optional AGENT_READY_WEBHOOK_URL]
 ```
 
-### Module Responsibilities
+### 3.2 Text query flow (`POST /query`)
 
-| Module | Purpose |
-|--------|---------|
-| `llm.py` | Unified LLM interface (vLLM/Ollama via LangChain) |
-| `processing/` | Text chunking and document extraction |
-| `rag/` | Vector storage, embeddings, retrieval |
-| `voice/` | Real-time audio chat with LiquidAI |
+1. Request is authenticated and agent ownership is checked.
+2. Session is resolved/created (daily policy per `agent + user + channel` when absent).
+3. `process_question(...)` pipeline:
+   - input guardrails
+   - PII masking
+   - rule-based greeting/end response from agent-specific `conversation_starters` / `conversation_end`
+   - semantic cache lookup
+   - hybrid retrieval (`hybrid_search`)
+   - context/history formatting
+   - LLM call (`invoke_chain`) to selected backend/model
+   - output guardrails
+   - cache save + message persistence
+4. Response tags are normalized and rendered for frontend (`[image]`, `[video]`, `[document]`, `[buttons]`, etc).
+5. Usage/chat analytics are written to Postgres and optionally ClickHouse.
 
-### Key Files
+```mermaid
+flowchart TB
+  A[User sends query] --> B[POST /query]
+  B --> C[Auth + agent ownership + session resolve]
+  C --> D[process_question]
+  D --> E[Input guardrails + PII mask]
+  E --> F{Cache hit?}
+  F -->|Yes| G[Return cached answer]
+  G --> H[Save messages in Postgres]
+  H --> I[Write chat/usage analytics]
+  F -->|No| J[Hybrid retrieval vector + keyword + RRF]
+  J --> K[Build context + history]
+  K --> L[Invoke vLLM backend]
+  L --> M[Output guardrails]
+  M --> N[Save cache + messages]
+  N --> I
+  I --> O[QueryResponse to user]
+```
 
-| File | Description |
-|------|-------------|
-| `chat_service.py` | Orchestrates RAG: retrieval → context → LLM → response |
-| `agent_manager.py` | Create, read, update, delete agents |
-| `database.py` | PostgreSQL models with connection pooling |
-| `clickhouse.py` | Usage and chat analytics logger |
-| `deploy_runpod.sh`| RunPod deployment automation script |
-| `ingestion_fixed.py` | Agent-isolated document ingestion |
+### 3.3 Voice flow through OmniCortex proxy (`/voice/ws`)
+
+1. Voice client connects to `ws://<api>:8000/voice/ws` with token (query/header), `agent_id`, `voice_prompt`.
+2. API authenticates token via external auth callback.
+3. If `agent_id` is present, API loads agent system prompt.
+4. If `VOICE_RAG_ENABLED=true`, API retrieves top-k vector context and appends it into voice prompt.
+5. API opens upstream WS to Moshi `/api/chat` and relays binary frames bidirectionally.
+6. Client receives AI audio frames and text/control frames as streamed by Moshi.
+
+```mermaid
+flowchart TB
+  A[Voice client] --> B[WS connect /voice/ws]
+  B --> C[Bearer auth verify]
+  C --> D[Load agent system prompt]
+  D --> E{VOICE_RAG_ENABLED?}
+  E -->|Yes| F[Retrieve top-k voice context]
+  F --> G[Append context to text_prompt]
+  E -->|No| G
+  G --> H[Open upstream WS to Moshi /api/chat]
+  H --> I[Forward client audio frames]
+  H --> J[Forward Moshi audio/text/control frames]
+  I --> K[Bi-directional streaming loop]
+  J --> K
+```
+
+### 3.4 Telephony flow via Voice Gateway (`/calls`)
+
+1. FreeSWITCH/dialer connects to Voice Gateway endpoint (`/calls`).
+2. Gateway opens upstream WS to OmniCortex `/voice/ws` with agent/token/voice params.
+3. Audio bridge behavior:
+   - inbound FS PCM16 -> resample -> Opus -> Moshi audio frame `0x01`
+   - upstream audio frame `0x01` -> Opus decode -> resample -> PCM16 back to FS
+   - text/control frames are forwarded or logged based on config
+4. This keeps telephony media adaptation outside `api.py`.
+
+```mermaid
+flowchart TB
+  A[FreeSWITCH / Dialer] --> B[Voice Gateway /calls]
+  B --> C[Open upstream /voice/ws]
+  C --> D[FastAPI voice proxy]
+  D --> E[Moshi /api/chat]
+  A --> F[Inbound PCM16 or Moshi frame]
+  F --> G[Gateway transcode PCM16 to Opus frame 0x01]
+  G --> E
+  E --> H[Audio frame 0x01 returned]
+  H --> I[Gateway Opus decode + resample]
+  I --> J[Outbound PCM16 to FreeSWITCH]
+  E --> K[Text/control frames]
+  K --> L[Forward or log]
+```
+
+### 3.5 Moshi UI agent mode flow
+
+1. Browser opens Moshi UI (`:8998`).
+2. UI patch (enabled by default) replaces stock examples with OmniCortex agents.
+3. UI calls:
+   - `/api/agents` (Moshi server -> OmniCortex `/agents`)
+   - `/api/agent-prompt` (Moshi server -> OmniCortex `/agents/{id}` + `/agents/{id}/voice-context`)
+4. Voice websocket `/api/chat` carries selected `agent_id` and optional `omni_bearer`.
+
+```mermaid
+flowchart LR
+  A[Browser opens Moshi UI :8998] --> B[Injected UI patch]
+  B --> C[Examples label becomes Agents]
+  C --> D[/api/agents]
+  D --> E[Moshi server fetch_agents]
+  E --> F[OmniCortex /agents]
+  C --> G[Agent chip selected]
+  G --> H[/api/agent-prompt]
+  H --> I[Moshi fetch_agent_prompt]
+  I --> J[OmniCortex /agents/id + /voice-context]
+  J --> K[Text prompt textarea populated]
+  K --> L[WS /api/chat with agent_id]
+```
+
+### 3.6 Voice Diagrams (Separated)
+
+#### 3.6.1 Voice WS sequence (`/voice/ws`)
+
+```mermaid
+sequenceDiagram
+    participant VC as Voice Client
+    participant API as OmniCortex API (/voice/ws)
+    participant AUTH as Auth Verify URL
+    participant PG as PostgreSQL/pgvector
+    participant MOSHI as Moshi (/api/chat)
+
+    VC->>API: WS connect + bearer + agent_id + voice_prompt
+    API->>AUTH: verify_bearer_token(...)
+    AUTH-->>API: OK / 403
+    API->>PG: Load agent prompt (+ optional voice context)
+    API->>MOSHI: Open upstream WS /api/chat (text_prompt)
+    VC->>API: audio frames
+    API->>MOSHI: forward audio frames
+    MOSHI-->>API: audio/text/control frames
+    API-->>VC: relay frames (bi-directional stream)
+```
+
+#### 3.6.2 Telephony bridge sequence (`/calls` via Voice Gateway)
+
+```mermaid
+sequenceDiagram
+    participant FS as FreeSWITCH/Dialer
+    participant GW as Voice Gateway (/calls)
+    participant API as OmniCortex (/voice/ws)
+    participant MOSHI as Moshi (/api/chat)
+
+    FS->>GW: media WS connect
+    GW->>API: WS connect /voice/ws (agent/token params)
+    API->>MOSHI: Open /api/chat
+    FS->>GW: inbound PCM16
+    GW->>GW: resample + opus encode (frame 0x01)
+    GW->>API: send audio frame
+    API->>MOSHI: forward frame
+    MOSHI-->>API: response audio frame
+    API-->>GW: forward frame
+    GW->>GW: opus decode + resample to PCM16
+    GW-->>FS: outbound PCM16
+```
+
+#### 3.6.3 Moshi UI agent mode sequence
+
+```mermaid
+sequenceDiagram
+    participant UI as Browser (Moshi UI)
+    participant MS as Moshi Server
+    participant API as OmniCortex API
+
+    UI->>MS: Open UI (:8998)
+    MS-->>UI: Patched agent-mode UI
+    UI->>MS: GET /api/agents
+    MS->>API: GET /agents
+    API-->>MS: Agent list
+    MS-->>UI: Render agent chips
+    UI->>MS: GET /api/agent-prompt?agent_id=...
+    MS->>API: GET /agents/{id} + /agents/{id}/voice-context
+    API-->>MS: prompt + context
+    MS-->>UI: Fill prompt textarea
+    UI->>MS: WS /api/chat (agent_id)
+```
+
+## 4. Data and Isolation Model
+
+- Agent ownership isolation is enforced at API level per Bearer identity.
+- Vector collection isolation is per-agent: `omni_agent_<agent_id>`.
+- Core tables:
+  - `omni_agents`
+  - `omni_documents`
+  - `omni_messages`
+  - `omni_usage`
+  - `omni_parent_chunks`
+  - `omni_semantic_cache`
+
+### 4.1 Agent YAML snapshots
+
+- Path: `storage/agents/<agent_name>/config.yaml`
+- Written/updated on:
+  - `POST /agents` (event `create`)
+  - `PUT /agents/{id}` (event `update`)
+  - successful LLM usage logging (usage totals sync)
+- Contains:
+  - current agent configuration snapshot
+  - lifecycle event history (`create`/`update`)
+  - cumulative token totals:
+    - `total_input_tokens` (prompt tokens)
+    - `total_output_tokens` (completion tokens)
+    - `total_query_tokens`
+    - `total_rag_query_tokens`
+
+## 5. Auth and Security Boundaries
+
+- Main API auth: external bearer verification (`AUTH_VERIFY_URL`).
+- `/voice/ws` also requires bearer token.
+- Moshi auth is separate (`MOSHI_API_TOKEN`) for its own endpoints.
+- Moshi -> OmniCortex calls can use server-side key (`OMNICORTEX_API_KEY`) or per-user `omni_bearer`.
+
+## 6. Observability and Health
+
+- `/health` reports database, LLM backend, and Moshi status with short cache TTL.
+- Query traces written to `storage/logs/query_trace.log`.
+- WhatsApp logs written to `storage/logs/whatsapp.log`.
+- ClickHouse writer uses in-memory buffers with periodic flush and drop-on-unavailable behavior.
+
+```mermaid
+flowchart LR
+  A[Runtime Events] --> B[Postgres logs/messages]
+  A --> C[In-memory ClickHouse buffers]
+  C --> D{ClickHouse reachable?}
+  D -->|Yes| E[Insert UsageLogs, ChatArchive, Agent events]
+  D -->|No| F[Drop batch + warning log]
+  A --> G[storage/logs/query_trace.log]
+  A --> H[storage/logs/whatsapp.log]
+```
+
+## 7. Recommended Startup Order
+
+1. Start PostgreSQL (+ pgvector) and optional ClickHouse.
+2. Start vLLM1 on `8080`.
+3. Start FastAPI on `8000`.
+4. Start Moshi on `8998` (if voice needed).
+5. Start Voice Gateway on `8099` or `443` (if FreeSWITCH integration is needed).
+
+```mermaid
+flowchart TD
+  A[Start PostgreSQL/pgvector] --> B[Start ClickHouse optional]
+  B --> C[Start vLLM1 :8080]
+  C --> D[Start FastAPI :8000]
+  D --> E[Start Moshi :8998 optional]
+  E --> F[Start Voice Gateway :8099 or :443 optional]
+```

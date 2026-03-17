@@ -5,7 +5,6 @@ OmniCortex is a multi-agent RAG backend with:
 - PostgreSQL + pgvector as source-of-truth runtime storage.
 - vLLM/OpenAI-compatible inference backends.
 - Optional ClickHouse analytics for usage and chat archive reporting.
-- Next.js admin UI in `admin/`.
 - Moshi/PersonaPlex voice WebSocket proxy.
 
 This README reflects the current implementation in this repo.
@@ -35,16 +34,15 @@ This README reflects the current implementation in this repo.
 - Prompts:
   - personal: `prompts/personal/*.json`
   - business: `prompts/business/*.json`
-- Admin UI: `admin/`
 
 ## Requirements
 
 - Python 3.10+ (3.12 recommended)
 - PostgreSQL with pgvector extension
 - vLLM/OpenAI-compatible inference endpoint
-- Node.js (for admin UI)
 - Optional: ClickHouse
 - Optional: Moshi/PersonaPlex server for voice proxy
+- Optional: Voice Gateway (`scripts/voice_gateway.py`) for FreeSWITCH/media WS bridging
 
 ## Quick Start
 
@@ -62,7 +60,15 @@ uv pip install -e .
 
 ### 2) Configure environment
 
-Create `.env` in repo root (minimum):
+Create `.env` in repo root from template:
+
+```bash
+cp .env.example .env
+```
+
+Then update required values (`DATABASE_URL`, auth token settings, model endpoints, CORS).
+
+Minimum required keys:
 
 ```ini
 DATABASE_URL=postgresql://<db_user>:<db_password>@<db_host>:<db_port>/<db_name>
@@ -77,7 +83,7 @@ VLLM2_API_KEY=not-needed
 AUTH_VERIFY_URL=https://<auth_host>/api/v1/omnicortex/me
 AUTH_VERIFY_TIMEOUT=8
 
-CORS_ORIGINS=https://<admin_origin_1>,https://<admin_origin_2>
+CORS_ORIGINS=https://<app_origin_1>,https://<app_origin_2>
 ```
 
 Legacy aliases (optional, backward compatibility only):
@@ -105,6 +111,10 @@ Optional voice:
 ```ini
 PERSONAPLEX_URL=http://<moshi_host>:<moshi_port>
 MOSHI_ENABLED=true
+MOSHI_API_TOKEN=<optional_moshi_ws_token>
+MOSHI_ENABLE_OMNICORTEX_UI_PATCH=1
+VOICE_RAG_ENABLED=true
+VOICE_RAG_TOP_K=3
 ```
 
 ### 3) Run backend
@@ -126,13 +136,6 @@ You can also pass a custom run command:
 
 ```bash
 bash scripts/run_api_pretty.sh uv run python api.py
-```
-
-### 4) Run admin
-
-```bash
-npm --prefix admin install
-npm --prefix admin run dev
 ```
 
 ## Auth Model
@@ -384,7 +387,7 @@ LLM is instructed to use canonical tags:
 Pipeline:
 - `core.chat_service.process_question` enforces canonical media tags.
 - `core.response_parser` converts tags to:
-  - frontend markdown (admin)
+  - frontend markdown
   - structured parts for WhatsApp dispatch
 
 ## URL Scraping and File Ingestion
@@ -447,6 +450,62 @@ Moshi-only mode is active:
 - Legacy Liquid endpoint returns 410:
   - `POST /api/v1/voice/liquid`
 
+### Moshi Server (with OmniCortex UI patch)
+
+```bash
+cd /workspace/OmniCortex
+source .moshi-venv/bin/activate
+
+export OMNICORTEX_BASE_URL=http://127.0.0.1:8000
+export OMNICORTEX_API_KEY=<bearer_token_for_agents_api>
+export MOSHI_ENABLE_OMNICORTEX_UI_PATCH=1
+
+python -m moshi.server \
+  --host 0.0.0.0 \
+  --port 8998 \
+  --device cuda
+```
+
+### Voice Gateway (FreeSWITCH/media WS -> OmniCortex `/voice/ws`)
+
+`scripts/voice_gateway.py` exposes a WS endpoint (default `/calls`) and bridges audio to OmniCortex voice proxy.
+
+Run:
+
+```bash
+cd /workspace/OmniCortex
+source .moshi-venv/bin/activate
+
+python scripts/voice_gateway.py \
+  --host 0.0.0.0 \
+  --port 8099 \
+  --endpoint /calls \
+  --omnicortex-voice-ws ws://127.0.0.1:8000/voice/ws \
+  --default-agent-id <agent_uuid> \
+  --default-token <bearer_token> \
+  --default-voice-prompt NATF0.pt \
+  --inbound-mode pcm16 \
+  --outbound-mode pcm16 \
+  --fs-sample-rate 8000 \
+  --moshi-sample-rate 24000
+```
+
+For direct WSS on gateway process:
+
+```bash
+python scripts/voice_gateway.py \
+  --host 0.0.0.0 \
+  --port 443 \
+  --endpoint /calls \
+  --ssl-cert /path/to/fullchain.pem \
+  --ssl-key /path/to/privkey.pem \
+  --omnicortex-voice-ws ws://127.0.0.1:8000/voice/ws
+```
+
+If TLS is terminated by nginx, run gateway on `8099` and proxy `/calls` with websocket upgrade headers.
+
+Detailed guide: `docs/VOICE_GATEWAY.md`.
+
 ## Stress Testing
 
 ### Quick stress
@@ -484,6 +543,10 @@ Modes available in script:
   - Check vLLM endpoint (`VLLM1_BASE_URL`) and loaded model.
 - Voice REST returns `501` / `410`
   - Expected in Moshi-only mode; use `/voice/ws`.
+- Moshi UI still shows stock `Examples`
+  - Ensure `MOSHI_ENABLE_OMNICORTEX_UI_PATCH=1` and set `OMNICORTEX_API_KEY` or provide bearer token in UI.
+- `FileNotFoundError` for TLS cert on Voice Gateway
+  - Cert path is wrong/missing in container; use mounted certs or terminate TLS at nginx.
 
 ## Repo Notes
 

@@ -89,7 +89,7 @@ CREATE TABLE omnicortex.AgentLogs
     EventId String DEFAULT '',
     Id UUID,                                        -- Agent UUID
     UserId Int32,
-    Status LowCardinality(String) DEFAULT 'Active', -- Active | Updated | Deleted
+    Status LowCardinality(String) DEFAULT 'Active', -- Active | Inactive | Updated | Deleted
     CreatedAt DateTime64(3) DEFAULT now64(3),
     DeletedAt Nullable(DateTime64(3)),
     AgentName String DEFAULT '',

@@ -1,96 +1,98 @@
 # ============================================================
 # OmniCortex RunPod Deployment Configuration
 # ============================================================
-# Edit this file before running deploy_runpod.sh
+# This file documents recommended runtime topology only.
+# Keep secrets in environment variables, not in this file.
 
-# RunPod Configuration
 runpod:
-  template: "pytorch"  # PyTorch Ubuntu template
-  gpu_type: "RTX 6000 Ada"  # RTX 4090, RTX 6000 Ada, A40, A100
+  template: "pytorch"
+  gpu_type: "RTX PRO 6000"
   gpu_count: 1
-  region: "auto"  # or specific: US-CA-1, EU-RO-1, etc.
-  cloud_type: "SECURE"  # SECURE or COMMUNITY (70% cheaper)
+  region: "auto"
+  cloud_type: "SECURE"  # SECURE or COMMUNITY
 
-# Storage Configuration
 storage:
-  container_disk_gb: 50  # Ephemeral storage
-  volume_disk_gb: 100    # Persistent storage (/workspace)
+  container_disk_gb: 50
+  volume_disk_gb: 120
 
-# GPU Configuration
 gpu:
-  type: "RTX 6000 PRO"
-  vram_gb: 48
+  type: "RTX PRO 6000"
+  vram_gb: 96
   count: 1
 
-# vLLM Server Configuration
+# ------------------------------------------------------------
+# Inference backends
+# ------------------------------------------------------------
 vllm:
-  enabled: true
-  model: "meta-llama/Meta-Llama-3.1-8B-Instruct"
-  port: 8080  # vLLM server port
-  tensor_parallel_size: 1  # Set to GPU count for multi-GPU
-  gpu_memory_utilization: 0.90
-  max_model_len: 8192
-  max_num_seqs: 100  # Max concurrent requests
+  primary:
+    enabled: true
+    model: "meta-llama/Llama-3.1-8B-Instruct"
+    port: 8080
+    tensor_parallel_size: 1
+    gpu_memory_utilization: 0.25
+    max_model_len: 4096
+  secondary:
+    enabled: false
+    model: "meta-llama/Llama-4-Maverick-17B-128E-Instruct"
+    port: 8081
+    tensor_parallel_size: 1
+    gpu_memory_utilization: 0.20
+    max_model_len: 8192
 
-# Voice Engine Configuration (LiquidAI)
-voice:
+# ------------------------------------------------------------
+# Voice stack
+# ------------------------------------------------------------
+moshi:
   enabled: true
-  model: "nvidia/personaplex-7b-v1"  # NVIDIA Personaplex 7B (requires Hugging Face token)
-  max_instances: 8
+  model: "nvidia/personaplex-7b-v1"
+  port: 8998
+  ui_patch_enabled: true
+  omnicortex_base_url: "http://127.0.0.1:8000"
 
-# OmniCortex Application
+voice_gateway:
+  enabled: true
+  host: "0.0.0.0"
+  port: 8099
+  endpoint: "/calls"
+  upstream_ws: "ws://127.0.0.1:8000/voice/ws"
+  inbound_mode: "pcm16"
+  outbound_mode: "pcm16"
+  fs_sample_rate: 8000
+  moshi_sample_rate: 24000
+  tls_terminated_by_nginx: true
+
+# ------------------------------------------------------------
+# OmniCortex app
+# ------------------------------------------------------------
 app:
-  streamlit_port: 8501
-  api_port: 8000  # FastAPI backend port
+  api_port: 8000
   base_dir: "/workspace/OmniCortex"
 
-# Database (PostgreSQL)
 database:
   host: "localhost"
   port: 5432
   name: "omnicortex"
   user: "postgres"
-  password: "postgres"  # CHANGE THIS IN PRODUCTION
 
-# LLM Settings
-llm:
-  provider: "vllm"
-  model: "meta-llama/Meta-Llama-3.1-8B-Instruct"
-  temperature: 0.6
+clickhouse:
+  enabled: false
+  host: "localhost"
+  port: 8123
+  db: "omnicortex"
 
-# API Keys (leave empty if not using)
-api_keys:
-  whatsapp_access_token: ""
-  whatsapp_phone_id: ""
-  huggingface_token: ""  # Required for downloading Llama models
-
-# Exposed Ports
 ports:
-  - 8000   # API
-  - 8080   # vLLM (internal)
-  - 8501   # Streamlit UI
-  - 5432   # PostgreSQL (optional, for external access)
+  - 8000  # FastAPI
+  - 8080  # vLLM primary
+  - 8081  # vLLM secondary (optional)
+  - 8998  # Moshi
+  - 8099  # Voice Gateway
+  - 5432  # PostgreSQL
 
-# Cost Estimation (Secure Cloud - On-Demand Pricing)
+# Cost estimation (example values, update per region/provider)
 cost:
-  rtx_6000_ada:
-    hourly_rate_usd: 0.77
-    vram_gb: 48
-    ram_gb: 62
-    vcpu: 16
-    spot_rate_usd: 0.39
-  
   rtx_pro_6000:
     hourly_rate_usd: 1.84
     vram_gb: 96
     ram_gb: 188
     vcpu: 16
     spot_rate_usd: 1.19
-
-# Recommended Models by GPU
-recommended_models:
-  rtx_6000_ada_48gb:
-    - "meta-llama/Meta-Llama-3.1-8B-Instruct"  # Recommended
-  
-  rtx_pro_6000_96gb:
-    - "meta-llama/Meta-Llama-3.1-8B-Instruct"  # Recommended

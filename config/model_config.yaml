@@ -5,12 +5,30 @@ llm:
   max_tokens: 2048
   timeout: 30
 
+# Backward-compatible single-backend block.
 vllm:
   base_url: "http://localhost:8080/v1"
   api_key: "not-needed"
 
+# Explicit primary/secondary backend mapping used by env-driven runtime.
+backends:
+  primary:
+    base_url: "http://localhost:8080/v1"
+    model: "meta-llama/Llama-3.1-8B-Instruct"
+    api_key: "not-needed"
+  secondary:
+    base_url: "http://localhost:8081/v1"
+    model: "meta-llama/Llama-4-Maverick-17B-128E-Instruct"
+    api_key: "not-needed"
+
+voice:
+  provider: "moshi"
+  personaplex_url: "http://localhost:8998"
+  ui_patch_enabled: true
+
 rag:
   embedding_model: "BAAI/bge-large-en-v1.5"
+  embedding_dim: 1024
   reranker_model: "BAAI/bge-reranker-large"
   chunk_size: 700
   chunk_overlap: 120
@@ -21,5 +39,5 @@ memory:
 
 cache:
   backend: "disk"  # memory, disk, redis
-  ttl: 3600  # seconds
+  ttl: 3600        # seconds
   path: "storage/cache"

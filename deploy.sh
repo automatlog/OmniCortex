@@ -36,37 +36,12 @@ if [ -n "${HUGGING_FACE_HUB_TOKEN}" ] && [ -z "${HF_TOKEN}" ]; then
 fi
 
 # ==========================================
-# 3. Node.js (if not installed)
-# ==========================================
-if ! command -v node &>/dev/null; then
-    echo "🟢 Installing Node.js..."
-    curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.40.3/install.sh | bash
-    export NVM_DIR="$HOME/.nvm"
-    [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-    nvm install 22
-    nvm use 22
-fi
-
-# Build Admin if needed
-if [ -d "${PROJECT_DIR}/admin" ] && [ ! -d "${PROJECT_DIR}/admin/.next" ]; then
-    echo "🏗️ Building Admin Dashboard..."
-    cd "${PROJECT_DIR}/admin"
-    npm install
-    npm run build
-    cd "${PROJECT_DIR}"
-fi
-
-# ==========================================
 # 4. Install & Configure Nginx
 # ==========================================
 echo "🌐 Setting up Nginx..."
 apt-get install -y nginx 2>/dev/null || true
 
-# Detect node binary path
-NODE_BIN=$(which node 2>/dev/null || echo "/root/.nvm/versions/node/v22/bin/node")
-
 cat > /etc/nginx/sites-available/omnicortex << 'NGINX_CONF'
-upstream admin_upstream { server 127.0.0.1:3000; }
 upstream api_upstream   { server 127.0.0.1:8000; }
 upstream moshi_upstream { server 127.0.0.1:8998; }
 upstream vllm_upstream  { server 127.0.0.1:8080; }
@@ -133,16 +108,13 @@ server {
         proxy_pass http://vllm_upstream/;
     }
 
-    # Admin Dashboard (catch-all)
+    # API docs / fallback
     location / {
-        proxy_pass http://admin_upstream;
+        proxy_pass http://api_upstream;
         proxy_set_header Host $host;
         proxy_set_header X-Real-IP $remote_addr;
         proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto $scheme;
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade $http_upgrade;
-        proxy_set_header Connection "upgrade";
     }
 }
 NGINX_CONF
@@ -228,25 +200,6 @@ StandardError=append:${PROJECT_DIR}/storage/logs/api_server.log
 WantedBy=multi-user.target
 EOF
 
-# --- Admin (Next.js) ---
-cat > /etc/systemd/system/omni-admin.service << EOF
-[Unit]
-Description=OmniCortex Admin Dashboard
-After=network.target
-
-[Service]
-Type=simple
-WorkingDirectory=${PROJECT_DIR}/admin
-ExecStart=${NODE_BIN} node_modules/.bin/next start -H 0.0.0.0 -p 3000
-Restart=on-failure
-RestartSec=10
-StandardOutput=append:${PROJECT_DIR}/storage/logs/admin_ui.log
-StandardError=append:${PROJECT_DIR}/storage/logs/admin_ui.log
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
 # ==========================================
 # 6. Start All Services
 # ==========================================
@@ -263,9 +216,6 @@ sleep 10
 systemctl enable --now omni-api
 sleep 5
 
-systemctl enable --now omni-admin
-sleep 3
-
 systemctl enable --now nginx
 systemctl restart nginx
 
@@ -275,11 +225,10 @@ echo "🎉 DEPLOYMENT ACTIVE"
 echo "=================================================="
 echo "Services:"
 echo " - Nginx:     http://localhost (reverse proxy)"
-echo " - Frontend:  http://localhost:3000"
 echo " - Backend:   http://localhost:8000"
 echo " - Voice AI:  http://localhost:8998"
 echo " - vLLM:      http://localhost:8080"
 echo ""
-echo "Status:  systemctl status omni-vllm omni-moshi omni-api omni-admin nginx"
+echo "Status:  systemctl status omni-vllm omni-moshi omni-api nginx"
 echo "Logs:    tail -f ${PROJECT_DIR}/storage/logs/*.log"
 echo "=================================================="

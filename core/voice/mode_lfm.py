@@ -198,4 +198,4 @@ async def handle_lfm(websocket: WebSocket, session: VoiceSession):
         logger.info("LFM session %s disconnected", session.session_id)
     except Exception as exc:
         logger.error("LFM session %s error: %s", session.session_id, exc)
-        await _send_json(websocket, {"type": MSG_ERROR, "message": str(exc)})
+        await _send_json(websocket, {"type": MSG_ERROR, "message": "An internal error occurred"})

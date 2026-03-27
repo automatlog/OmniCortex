@@ -15,10 +15,23 @@ _http_client: httpx.AsyncClient | None = None
 
 
 def _get_http_client() -> httpx.AsyncClient:
+    client = _http_client
+    if client is None or client.is_closed:
+        raise RuntimeError("Auth HTTP client is not initialized")
+    return client
+
+
+async def init_http_client() -> None:
     global _http_client
     if _http_client is None or _http_client.is_closed:
         _http_client = httpx.AsyncClient(timeout=httpx.Timeout(_auth_verify_timeout()))
-    return _http_client
+
+
+async def close_http_client() -> None:
+    global _http_client
+    if _http_client is not None and not _http_client.is_closed:
+        await _http_client.aclose()
+    _http_client = None
 
 
 def _auth_verify_url() -> str:
@@ -58,6 +71,12 @@ async def verify_bearer_token(token: str, x_user_id: str | None = None) -> Dict[
         response = await client.get(
             verify_url,
             headers=verify_headers,
+        )
+    except RuntimeError as exc:
+        logging.error("Auth HTTP client unavailable: %s", exc)
+        raise HTTPException(
+            status_code=HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Auth verification unavailable",
         )
     except httpx.HTTPError as exc:
         logging.error(f"Auth verification request failed: {exc}")

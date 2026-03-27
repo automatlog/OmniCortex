@@ -51,15 +51,16 @@ def get_embeddings():
 
         candidates = _embedding_candidates()
         errors: list[str] = []
+        primary_model = str(EMBEDDING_MODEL or "").strip()
 
         for model_name in candidates:
             try:
                 instance = HuggingFaceEmbeddings(model_name=model_name)
                 _EMBEDDINGS_INSTANCE = instance
-                if model_name != EMBEDDING_MODEL:
+                if model_name != primary_model:
                     logger.warning(
                         "Embedding model fallback active: '%s' -> '%s'",
-                        EMBEDDING_MODEL,
+                        primary_model,
                         model_name,
                     )
                 else:

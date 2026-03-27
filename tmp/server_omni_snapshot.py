@@ -27,15 +27,18 @@
 import argparse
 import asyncio
 from dataclasses import dataclass
+import ipaddress
 import json
 import random
 import os
 from pathlib import Path
+import socket
 import tarfile
 import time
 import secrets
 import sys
 from typing import Literal, Optional
+from urllib.parse import urlparse
 
 import aiohttp
 from aiohttp import web
@@ -59,10 +62,109 @@ def _safe_extract_tar(tar: tarfile.TarFile, target_dir: Path) -> None:
     """Safely extract a tar archive, blocking path traversal entries."""
     base = target_dir.resolve()
     for member in tar.getmembers():
+        if Path(member.name).is_absolute() or member.name.startswith(("/", "\\")):
+            raise RuntimeError(f"Refusing to extract absolute archive member: {member.name}")
+        if member.issym() or member.islnk():
+            raise RuntimeError(f"Refusing to extract link entry from archive: {member.name}")
         member_path = (target_dir / member.name).resolve()
-        if not str(member_path).startswith(str(base)):
+        try:
+            member_path.relative_to(base)
+        except ValueError:
             raise RuntimeError(f"Refusing to extract unsafe archive member: {member.name}")
     tar.extractall(path=target_dir)
+
+
+_BLOCKED_TRIGGER_CIDRS = [
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+    ipaddress.ip_network("169.254.0.0/16"),
+    ipaddress.ip_network("169.254.169.254/32"),
+    ipaddress.ip_network("100.64.0.0/10"),
+    ipaddress.ip_network("100.100.100.200/32"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("fc00::/7"),
+    ipaddress.ip_network("fe80::/10"),
+]
+
+
+def _parse_allowlist_hosts() -> list[str]:
+    raw = os.getenv("MOSHI_CALL_TRIGGER_ALLOWLIST", "")
+    return [item.strip().lower() for item in raw.split(",") if item.strip()]
+
+
+def _parse_allowlist_cidrs() -> list[ipaddress._BaseNetwork]:
+    raw = os.getenv("MOSHI_CALL_TRIGGER_ALLOW_CIDRS", "")
+    cidrs = []
+    for item in raw.split(","):
+        candidate = item.strip()
+        if not candidate:
+            continue
+        try:
+            cidrs.append(ipaddress.ip_network(candidate, strict=False))
+        except ValueError:
+            logger.warning("Ignoring invalid call-trigger CIDR allowlist entry: %s", candidate)
+    return cidrs
+
+
+def _host_matches_allowlist(host: str, allow_hosts: list[str]) -> bool:
+    host_l = host.lower()
+    for allowed in allow_hosts:
+        if host_l == allowed or host_l.endswith(f".{allowed}"):
+            return True
+    return False
+
+
+def _is_call_trigger_target_allowed(target_url: str) -> tuple[bool, str]:
+    parsed = urlparse(target_url)
+    if parsed.scheme not in {"http", "https"}:
+        return False, "Only http/https URLs are allowed"
+
+    host = (parsed.hostname or "").strip().lower()
+    if not host:
+        return False, "Target URL host is missing"
+    if host in {"localhost", "localhost.localdomain"}:
+        return False, "Localhost targets are not allowed"
+
+    allow_hosts = _parse_allowlist_hosts()
+    allow_cidrs = _parse_allowlist_cidrs()
+    if not allow_hosts and not allow_cidrs:
+        return False, "Call trigger allowlist is not configured"
+
+    try:
+        resolved = {
+            info[4][0]
+            for info in socket.getaddrinfo(host, parsed.port or 443, proto=socket.IPPROTO_TCP)
+            if info and info[4]
+        }
+    except socket.gaierror:
+        return False, "Unable to resolve target host"
+
+    if not resolved:
+        return False, "Unable to resolve target host"
+
+    allow_by_host = _host_matches_allowlist(host, allow_hosts)
+    allow_by_ip = False
+    for ip_text in resolved:
+        ip_obj = ipaddress.ip_address(ip_text)
+        if (
+            ip_obj.is_loopback
+            or ip_obj.is_private
+            or ip_obj.is_link_local
+            or ip_obj.is_reserved
+            or ip_obj.is_multicast
+            or ip_obj.is_unspecified
+            or any(ip_obj in blocked for blocked in _BLOCKED_TRIGGER_CIDRS)
+        ):
+            return False, f"Target host resolves to a blocked address ({ip_obj})"
+        if any(ip_obj in cidr for cidr in allow_cidrs):
+            allow_by_ip = True
+
+    if not (allow_by_host or allow_by_ip):
+        return False, "Target host/IP is not in the allowlist"
+
+    return True, "ok"
 
 def torch_auto_device(requested: Optional[DeviceString] = None) -> torch.device:
     """Return a torch.device based on the requested string or availability."""
@@ -437,7 +539,8 @@ class ServerState:
         await ws.prepare(request)
         clog = ColorizedLog.randomize()
         peer = request.remote  # IP
-        peer_port = request.transport.get_extra_info("peername")[1]  # Port
+        peername = request.transport.get_extra_info("peername") if request.transport else None
+        peer_port = peername[1] if isinstance(peername, (list, tuple)) and len(peername) > 1 else "unknown"
         clog.log("info", f"Incoming connection from {peer}:{peer_port}")
 
         # self.lm_gen.temp = float(request.query["audio_temperature"])
@@ -454,9 +557,13 @@ class ServerState:
                 requested_voice_prompt_path = os.path.join(self.voice_prompt_dir, voice_prompt_filename)
                 # If the voice prompt file does not exist, fail fast.
                 if not os.path.exists(requested_voice_prompt_path):
-                    raise FileNotFoundError(
+                    missing_msg = (
                         f"Requested voice prompt '{voice_prompt_filename}' not found in '{self.voice_prompt_dir}'"
                     )
+                    logger.warning(missing_msg)
+                    await ws.send_json({"type": "error", "message": missing_msg})
+                    await ws.close(code=1008, message=b"voice prompt not found")
+                    return ws
                 voice_prompt_path = requested_voice_prompt_path
 
         seed = None
@@ -560,6 +667,19 @@ class ServerState:
         if len(voice_prompt_filename) > 0:
             clog.log("info", f"voice prompt: {voice_prompt_path} (requested: {requested_voice_prompt_path})")
         close = False
+
+        opus_writer = sphn.OpusStreamWriter(self.mimi.sample_rate)
+        opus_reader = sphn.OpusStreamReader(self.mimi.sample_rate)
+
+        async def is_alive():
+            if close or ws.closed:
+                return False
+            try:
+                await ws.ping()
+                return not ws.closed
+            except (aiohttp.ClientConnectionError, ConnectionResetError, RuntimeError):
+                return False
+
         async with self.lock:
             if self.lm_gen.voice_prompt != voice_prompt_path:
                 if voice_prompt_path is None:
@@ -581,57 +701,40 @@ class ServerState:
             if seed is not None and seed != -1:
                 seed_all(seed)
 
-            opus_writer = sphn.OpusStreamWriter(self.mimi.sample_rate)
-            opus_reader = sphn.OpusStreamReader(self.mimi.sample_rate)
             self.mimi.reset_streaming()
             self.other_mimi.reset_streaming()
             self.lm_gen.reset_streaming()
-            async def is_alive():
-                if close or ws.closed:
-                    return False
-                try:
-                    # Check for disconnect without waiting too long
-                    msg = await asyncio.wait_for(ws.receive(), timeout=0.01)
-                    if msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED, aiohttp.WSMsgType.ERROR):
-                        return False
-                except asyncio.TimeoutError:
-                    # No messages → client probably still alive
-                    return True
-                except aiohttp.ClientConnectionError:
-                    return False
-                return True
+
             # Reuse mimi for encoding voice prompt and then reset it before conversation starts
             await self.lm_gen.step_system_prompts_async(self.mimi, is_alive=is_alive)
             self.mimi.reset_streaming()
             clog.log("info", "done with system prompts")
-            # Send the handshake.
-            if await is_alive():
-                await ws.send_bytes(b"\x00")
-                clog.log("info", "sent handshake bytes")
-                # Clean cancellation manager
-                tasks = [
-                    asyncio.create_task(recv_loop()),
-                    asyncio.create_task(opus_loop()),
-                    asyncio.create_task(send_loop()),
-                ]
 
-                done, pending = await asyncio.wait(
-                    tasks,
-                    return_when=asyncio.FIRST_COMPLETED,
-                    timeout=3600.0,
-                )
-                if not done:
-                    clog.log("warning", "session timeout reached, terminating tasks")
-                # Force-kill remaining tasks
-                for task in pending:
-                    task.cancel()
-                    try:
-                        await task
-                    except asyncio.CancelledError:
-                        pass
-                await ws.close()
-                clog.log("info", "session closed")
-                # await asyncio.gather(opus_loop(), recv_loop(), send_loop())
+        # Send the handshake and run per-session loops outside the shared lock.
+        if await is_alive():
+            await ws.send_bytes(b"\x00")
+            clog.log("info", "sent handshake bytes")
+            tasks = [
+                asyncio.create_task(recv_loop()),
+                asyncio.create_task(opus_loop()),
+                asyncio.create_task(send_loop()),
+            ]
+
+            done, pending = await asyncio.wait(
+                tasks,
+                return_when=asyncio.FIRST_COMPLETED,
+                timeout=3600.0,
+            )
+            if not done:
+                clog.log("warning", "session timeout reached, terminating tasks")
+            for task in pending:
+                task.cancel()
+                try:
+                    await task
+                except asyncio.CancelledError:
+                    pass
+            await ws.close()
+            clog.log("info", "session closed")
         clog.log("info", "done with connection")
         return ws
 
@@ -762,6 +865,13 @@ class ServerState:
             return web.json_response(
                 {"status": "error", "message": "Call trigger URL is not configured"},
                 status=400,
+            )
+
+        allowed, reason = _is_call_trigger_target_allowed(target_url)
+        if not allowed:
+            return web.json_response(
+                {"status": "error", "message": reason},
+                status=403,
             )
 
         timeout = aiohttp.ClientTimeout(total=20)
@@ -1919,13 +2029,13 @@ def main():
         args.hf_repo,
     )
     if args.voice_prompt_dir is not None:
-        assert os.path.exists(args.voice_prompt_dir), \
-            f"Directory missing: {args.voice_prompt_dir}"
+        if not os.path.exists(args.voice_prompt_dir):
+            raise FileNotFoundError(f"Directory missing: {args.voice_prompt_dir}")
     logger.info(f"voice_prompt_dir = {args.voice_prompt_dir}")
 
     static_path: None | str = _get_static_path(args.static)
-    assert static_path is None or os.path.exists(static_path), \
-        f"Static path does not exist: {static_path}."
+    if static_path is not None and not os.path.exists(static_path):
+        raise FileNotFoundError(f"Static path does not exist: {static_path}.")
     logger.info(f"static_path = {static_path}")
     args.device = torch_auto_device(args.device)
 
@@ -2008,7 +2118,7 @@ def main():
         logger.info(f"serving static content from {static_path}")
         app.router.add_get("/", handle_root)
         app.router.add_static(
-            "/", path=static_path, follow_symlinks=True, name="static"
+            "/", path=static_path, follow_symlinks=False, name="static"
         )
     protocol = "http"
     ssl_context = None

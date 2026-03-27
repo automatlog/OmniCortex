@@ -48,7 +48,7 @@ def _ensure_writable_dir(path: Path) -> bool:
         return False
 
 
-def _config_path_for_agent(agent: Dict[str, Any]) -> Path:
+def _config_path_for_agent(agent: Dict[str, Any]) -> Optional[Path]:
     agent_id = str(agent.get("id") or "unknown_agent")
     agent_name = str(agent.get("name") or agent_id)
     folder = _safe_agent_dir_name(agent_name, agent_id)
@@ -64,8 +64,9 @@ def _config_path_for_agent(agent: Dict[str, Any]) -> Path:
             return base / "config.yaml"
 
     fallback = tmp_root / "by_id" / agent_id
-    fallback.mkdir(parents=True, exist_ok=True)
-    return fallback / "config.yaml"
+    if _ensure_writable_dir(fallback):
+        return fallback / "config.yaml"
+    return None
 
 
 def _agent_snapshot(agent: Dict[str, Any]) -> Dict[str, Any]:
@@ -171,6 +172,8 @@ def sync_agent_config(
         return
 
     path = _config_path_for_agent(agent)
+    if path is None:
+        return
     cfg = _load_yaml(path)
 
     now = _now_iso()

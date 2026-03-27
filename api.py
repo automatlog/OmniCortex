@@ -68,6 +68,7 @@ from core.monitoring import (
 )
 from core.manager.connection_manager import ConnectionManager
 from core.auth import get_api_key, verify_bearer_token
+import core.auth as auth
 from fastapi import Depends
 
 # Initialize Connection Manager
@@ -75,9 +76,6 @@ manager = ConnectionManager()
 
 # ============== APP SETUP ==============
 from core.database import init_db
-
-# Initialize Database
-init_db()
 
 
 # ============== STARTUP VALIDATION ==============
@@ -172,8 +170,16 @@ async def validate_dependencies():
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Modern lifespan handler (replaces deprecated on_event)"""
-    await validate_dependencies()
-    yield
+    db_init_error = init_db()
+    if db_init_error:
+        raise RuntimeError(f"Database initialization failed: {db_init_error}")
+
+    await auth.init_http_client()
+    try:
+        await validate_dependencies()
+        yield
+    finally:
+        await auth.close_http_client()
 
 
 app = FastAPI(
@@ -3107,7 +3113,23 @@ async def voice_pipeline_ws(websocket: WebSocket, agent_id: str):
     # --- Parse params ---
     mode_str = (websocket.query_params.get("mode") or VOICE_DEFAULT_MODE).strip().lower()
     voice_prompt = websocket.query_params.get("voice_prompt", "NATF0.pt")
-    sample_rate = int(websocket.query_params.get("sample_rate", "8000"))
+    raw_sample_rate = websocket.query_params.get("sample_rate")
+    sample_rate = 8000
+    if raw_sample_rate is not None:
+        try:
+            parsed_sample_rate = int(raw_sample_rate)
+            if parsed_sample_rate > 0:
+                sample_rate = parsed_sample_rate
+            else:
+                logging.warning(
+                    "Invalid non-positive sample_rate '%s' for voice session; using default 8000",
+                    raw_sample_rate,
+                )
+        except (TypeError, ValueError):
+            logging.warning(
+                "Invalid sample_rate '%s' for voice session; using default 8000",
+                raw_sample_rate,
+            )
     x_user_id = (websocket.headers.get("x-user-id") or websocket.query_params.get("x_user_id") or "").strip() or None
 
     try:
@@ -3141,8 +3163,7 @@ async def voice_pipeline_ws(websocket: WebSocket, agent_id: str):
 
     # Send session info
     try:
-        import json as _json
-        await websocket.send_text(_json.dumps({
+        await websocket.send_text(json.dumps({
             "type": MSG_SESSION,
             "session_id": session.session_id,
             "mode": session.mode.value,
@@ -3164,7 +3185,7 @@ async def voice_pipeline_ws(websocket: WebSocket, agent_id: str):
                 if VOICE_PERSONAPLEX_FALLBACK:
                     logging.warning("PersonaPlex unavailable, falling back to cascade: %s", ce)
                     try:
-                        await websocket.send_text(_json.dumps({
+                        await websocket.send_text(json.dumps({
                             "type": MSG_STATUS,
                             "status": "fallback",
                             "message": "PersonaPlex unavailable — using cascade mode",
@@ -3175,7 +3196,7 @@ async def voice_pipeline_ws(websocket: WebSocket, agent_id: str):
                     from core.voice.mode_cascade import handle_cascade
                     await handle_cascade(websocket, session)
                 else:
-                    await websocket.send_text(_json.dumps({
+                    await websocket.send_text(json.dumps({
                         "type": MSG_ERROR,
                         "message": f"PersonaPlex unavailable: {ce}",
                     }))
@@ -3193,7 +3214,7 @@ async def voice_pipeline_ws(websocket: WebSocket, agent_id: str):
     except Exception as exc:
         logging.error("Voice pipeline session %s error: %s", session.session_id, exc)
         try:
-            await websocket.send_text(_json.dumps({"type": MSG_ERROR, "message": str(exc)}))
+            await websocket.send_text(json.dumps({"type": MSG_ERROR, "message": str(exc)}))
         except Exception:
             pass
     finally:

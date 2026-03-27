@@ -4,6 +4,7 @@ Falls back to LFM2.5 text_to_speech() when mel spectrogram TTS is not available.
 """
 import asyncio
 import logging
+import threading
 from typing import Optional
 
 import numpy as np
@@ -24,24 +25,36 @@ class VocoderEngine:
     def __init__(self, device: str = VOICE_VOCODER_DEVICE):
         self.device = device
         self._model = None
+        self._load_lock = threading.Lock()
+        self._load_failed = False
 
     def _load(self):
         if self._model is not None:
             return
-        try:
-            import torch
-            from bigvgan import BigVGAN as BigVGANModel
+        if self._load_failed:
+            raise RuntimeError("BigVGAN model unavailable from previous load failure")
+        with self._load_lock:
+            if self._model is not None:
+                return
+            if self._load_failed:
+                raise RuntimeError("BigVGAN model unavailable from previous load failure")
+            try:
+                import torch
+                from bigvgan import BigVGAN as BigVGANModel
 
-            logger.info("Loading BigVGAN v2 on %s", self.device)
-            self._model = BigVGANModel.from_pretrained(
-                "nvidia/bigvgan_v2_22khz_80band_256x",
-                use_cuda_kernel=False,
-            )
-            self._model = self._model.to(self.device).eval()
-            logger.info("BigVGAN v2 loaded")
-        except Exception as exc:
-            logger.warning("BigVGAN v2 unavailable (%s) — will use LFM2.5 TTS fallback", exc)
-            self._model = None
+                logger.info("Loading BigVGAN v2 on %s", self.device)
+                self._model = BigVGANModel.from_pretrained(
+                    "nvidia/bigvgan_v2_22khz_80band_256x",
+                    use_cuda_kernel=False,
+                )
+                self._model = self._model.to(self.device).eval()
+                self._load_failed = False
+                logger.info("BigVGAN v2 loaded")
+            except Exception as exc:
+                self._model = None
+                self._load_failed = True
+                logger.warning("BigVGAN v2 unavailable (%s) — will use LFM2.5 TTS fallback", exc)
+                raise RuntimeError("BigVGAN model unavailable") from exc
 
     def _synthesize_sync(self, mel: "torch.Tensor") -> np.ndarray:
         """Blocking mel-to-waveform — call via run_in_executor."""

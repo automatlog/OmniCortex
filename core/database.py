@@ -57,6 +57,7 @@ class Agent(Base):
     subagent_type = Column(String, nullable=True) # Legacy/postman compatibility
     model_selection = Column(String, nullable=True) # Requested model profile
     user_id = Column(String, nullable=True) # Owner/user from X-User-Id header
+    deleted = Column(Boolean, default=False, nullable=False) # Soft-delete marker
     
     # Relationships
     messages = relationship("Message", back_populates="agent", cascade="all, delete-orphan")
@@ -183,6 +184,13 @@ def ensure_schema_updates(engine):
                 conn.execute(text("ALTER TABLE omni_agents ADD COLUMN IF NOT EXISTS user_id VARCHAR"))
             except Exception as e:
                 print(f"Schema update (agent.user_id) skipped/failed: {e}")
+
+            # soft delete marker
+            try:
+                conn.execute(text("ALTER TABLE omni_agents ADD COLUMN IF NOT EXISTS deleted BOOLEAN DEFAULT FALSE"))
+                conn.execute(text("UPDATE omni_agents SET deleted = FALSE WHERE deleted IS NULL"))
+            except Exception as e:
+                print(f"Schema update (agent.deleted) skipped/failed: {e}")
 
             # usage.query_tokens
             try:
@@ -424,12 +432,21 @@ class SemanticCache(Base):
 # ============== DATABASE OPERATIONS ==============
 
 
-def init_db():
-    """Initialize database tables and performance indexes"""
-    Base.metadata.create_all(bind=engine)
-    ensure_schema_updates(engine) # Run manual schema updates (ALTER TABLE)
-    print("[OK] OmniCortex database tables created")
-    
+def init_db() -> Optional[str]:
+    """Initialize database tables and performance indexes.
+
+    Returns:
+        None on success, otherwise an error string describing the failure.
+    """
+    try:
+        Base.metadata.create_all(bind=engine)
+        ensure_schema_updates(engine)  # Run manual schema updates (ALTER TABLE)
+        print("[OK] OmniCortex database tables created")
+    except Exception as exc:
+        msg = f"{type(exc).__name__}: {exc}"
+        print(f"[ERROR] Database initialization failed: {msg}")
+        return msg
+
     # Create performance indexes (idempotent)
     db = SessionLocal()
     try:
@@ -440,14 +457,14 @@ def init_db():
             USING hnsw(embedding vector_cosine_ops)
             WITH (m = 16, ef_construction = 64);
         """))
-        
+
         # GIN Index for Full-Text Search on Parent Chunks
         db.execute(text("""
             CREATE INDEX IF NOT EXISTS idx_parent_fts 
             ON omni_parent_chunks 
             USING GIN(to_tsvector('english', content));
         """))
-        
+
         db.commit()
         print("[OK] Performance indexes created (HNSW + GIN)")
     except Exception as e:
@@ -455,6 +472,8 @@ def init_db():
         db.rollback()
     finally:
         db.close()
+
+    return None
 
 
 def get_session():

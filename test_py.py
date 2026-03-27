@@ -17,8 +17,8 @@ async def handler(websocket):
 async def main():
     # 0.0.0.0 listen for RunPod
     async with websockets.serve(handler, "0.0.0.0", 14496):
-        print("🚀 AI AGENT RUNNING ON PORT 14496")
-        print("📡 Waiting for Gateway on External Port 10934...")
+        print("🚀 AI AGENT LISTENING ON INTERNAL PORT 14496")
+        print("📡 Waiting for Gateway (external port 10934 -> internal 14496)...")
         await asyncio.Future()
 
 

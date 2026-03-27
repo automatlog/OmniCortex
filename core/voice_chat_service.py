@@ -30,8 +30,8 @@ logger = logging.getLogger(__name__)
 
 # Regex to strip media tags that are unspeakable
 _MEDIA_TAG_RE = re.compile(
-    r"\[(?:IMAGE|VIDEO|DOCUMENT|AUDIO|MEDIA)(?::|\|)[^\]]*\]",
-    re.IGNORECASE,
+    r"\[(?:IMAGE|VIDEO|DOCUMENT|AUDIO|MEDIA)(?::|\|)(.*?)\]",
+    re.IGNORECASE | re.DOTALL,
 )
 
 
@@ -77,9 +77,9 @@ def process_question_voice(
         try:
             agent = get_agent(agent_id)
             if agent:
-                agent_name = agent.get("name", "unknown")
-        except Exception:
-            pass
+                agent_name = agent.get("name") or "default"
+        except Exception as e:
+            logger.warning("Voice agent lookup failed (agent_id=%s): %s", agent_id, e)
 
     # LLM invocation
     answer = invoke_chain(
@@ -107,20 +107,23 @@ def process_question_voice(
     save_message("assistant", answer, agent_id=agent_id)
 
     # ClickHouse chat log
+    safe_agent_id = str(agent_id).strip() if agent_id is not None else None
+    safe_session_id = str(session_id).strip()[:128] if session_id else None
+    safe_user_id = str(user_id).strip()[:128] if user_id else None
     try:
         from .clickhouse import log_chat_to_clickhouse
 
         log_chat_to_clickhouse(
-            agent_id=agent_id,
-            user_message=question,
+            agent_id=safe_agent_id,
+            user_message=safe_question,
             assistant_message=answer,
             request_id=request_id,
-            session_id=session_id,
-            user_id=user_id,
+            session_id=safe_session_id,
+            user_id=safe_user_id,
             status="success",
         )
-    except Exception:
-        pass
+    except Exception as e:
+        logger.warning("Voice ClickHouse logging failed: %s", e)
 
     latency_ms = (time.perf_counter() - started_at) * 1000.0
     logger.info(

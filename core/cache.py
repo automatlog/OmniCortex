@@ -56,11 +56,11 @@ def check_cache(question: str, agent_id: str = None) -> Optional[str]:
             db.close()
 
 
-def invalidate_agent_cache(agent_id: str):
+def invalidate_agent_cache(agent_id: Optional[str]):
     """Remove all cached answers for an agent so new documents are reflected immediately."""
     try:
         db = get_session()
-        if agent_id:
+        if agent_id is not None:
             db.execute(
                 text("DELETE FROM omni_semantic_cache WHERE agent_id = :agent_id"),
                 {"agent_id": agent_id},

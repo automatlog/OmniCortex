@@ -118,12 +118,16 @@ class LFMServer:
 #  Optional RAG grounding via OmniCortex /query
 # ---------------------------------------------------------------------------
 _rag_session = None
+_rag_session_lock = asyncio.Lock()
 
 async def _get_rag_session():
     global _rag_session
-    if _rag_session is None:
-        import aiohttp
-        _rag_session = aiohttp.ClientSession()
+    if _rag_session is not None:
+        return _rag_session
+    async with _rag_session_lock:
+        if _rag_session is None:
+            import aiohttp
+            _rag_session = aiohttp.ClientSession()
     return _rag_session
 
 async def rag_query(question: str, agent_id: str = "") -> str | None:
@@ -175,7 +179,7 @@ async def handle_session(ws, path=None):
     logger.info("New session from %s", peer)
 
     loop = asyncio.get_running_loop()
-    lfm.ensure_loaded()
+    await asyncio.to_thread(lfm.ensure_loaded)
     engine = lfm.engine
 
     audio_buffer: list[np.ndarray] = []

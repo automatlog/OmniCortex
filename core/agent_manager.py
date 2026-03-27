@@ -1,10 +1,59 @@
 """
 Agent Management - CRUD operations for agents
 """
+import os
+import threading
+import time
 from typing import List, Dict, Optional, Any
 
 from .database import SessionLocal, Agent
 from .rag.vector_store import delete_vector_store
+
+
+_DELETE_RETRY_ATTEMPTS = max(1, int(os.getenv("AGENT_DELETE_VECTOR_RETRIES", "5")))
+_DELETE_RETRY_DELAY_SECONDS = max(0.1, float(os.getenv("AGENT_DELETE_VECTOR_RETRY_DELAY", "2")))
+
+
+def _finalize_deleted_agent(agent_id: str) -> None:
+    """Delete vectors first, then hard-delete an already soft-deleted agent row."""
+    for attempt in range(1, _DELETE_RETRY_ATTEMPTS + 1):
+        db = SessionLocal()
+        try:
+            agent = db.query(Agent).filter(Agent.id == agent_id).first()
+            if not agent:
+                return
+            if not bool(agent.deleted):
+                return
+        finally:
+            db.close()
+
+        if delete_vector_store(agent_id):
+            db = SessionLocal()
+            try:
+                agent = db.query(Agent).filter(Agent.id == agent_id, Agent.deleted.is_(True)).first()
+                if agent:
+                    db.delete(agent)
+                    db.commit()
+                    print(f"[OK] Finalized agent deletion: {agent_id}")
+            except Exception as exc:
+                db.rollback()
+                print(f"[WARN] Failed to finalize deleted agent {agent_id}: {exc}")
+            finally:
+                db.close()
+            return
+
+        if attempt < _DELETE_RETRY_ATTEMPTS:
+            time.sleep(_DELETE_RETRY_DELAY_SECONDS * attempt)
+
+    print(
+        f"[WARN] Vector cleanup retries exhausted for agent {agent_id}; "
+        "agent remains soft-deleted"
+    )
+
+
+def _schedule_deleted_agent_cleanup(agent_id: str) -> None:
+    worker = threading.Thread(target=_finalize_deleted_agent, args=(agent_id,), daemon=True)
+    worker.start()
 
 
 def create_agent(
@@ -31,14 +80,14 @@ def create_agent(
     """Create a new agent"""
     db = SessionLocal()
     try:
-        existing = db.query(Agent).filter(Agent.name == name).first()
+        existing = db.query(Agent).filter(Agent.name == name, Agent.deleted.is_(False)).first()
         if existing:
             raise ValueError(f"Agent '{name}' already exists")
 
         agent_id = str(id).strip() if id is not None else ""
         if not agent_id:
             raise ValueError("id is required")
-        id_exists = db.query(Agent).filter(Agent.id == agent_id).first()
+        id_exists = db.query(Agent).filter(Agent.id == agent_id, Agent.deleted.is_(False)).first()
         if id_exists:
             raise ValueError(f"Agent id '{agent_id}' already exists")
 
@@ -81,7 +130,7 @@ def get_agent(agent_id: str) -> Optional[Dict]:
     """Get agent by ID"""
     db = SessionLocal()
     try:
-        agent = db.query(Agent).filter(Agent.id == agent_id).first()
+        agent = db.query(Agent).filter(Agent.id == agent_id, Agent.deleted.is_(False)).first()
         if not agent:
             return None
         metadata = agent.extra_data or {}
@@ -118,7 +167,7 @@ def get_all_agents() -> List[Dict]:
     """Get all agents"""
     db = SessionLocal()
     try:
-        agents = db.query(Agent).order_by(Agent.created_at.desc()).all()
+        agents = db.query(Agent).filter(Agent.deleted.is_(False)).order_by(Agent.created_at.desc()).all()
         return [
             {
                 "metadata": a.extra_data or {},
@@ -173,7 +222,7 @@ def update_agent(
     """Update agent details"""
     db = SessionLocal()
     try:
-        agent = db.query(Agent).filter(Agent.id == agent_id).first()
+        agent = db.query(Agent).filter(Agent.id == agent_id, Agent.deleted.is_(False)).first()
         if not agent:
             return False
 
@@ -222,7 +271,7 @@ def update_agent_metadata(agent_id: str, document_count: int = None, message_cou
     """Update agent counts"""
     db = SessionLocal()
     try:
-        agent = db.query(Agent).filter(Agent.id == agent_id).first()
+        agent = db.query(Agent).filter(Agent.id == agent_id, Agent.deleted.is_(False)).first()
         if agent:
             if document_count is not None:
                 agent.document_count = (agent.document_count or 0) + document_count
@@ -234,17 +283,16 @@ def update_agent_metadata(agent_id: str, document_count: int = None, message_cou
 
 
 def delete_agent(agent_id: str) -> bool:
-    """Delete agent and all associated data.
-
-    Order: DB rows first (semantic cache, then agent cascade), then vector store.
-    If the vector store deletion fails the DB changes are already committed,
-    but the agent row is gone so no stale references remain.
-    """
+    """Soft-delete first, then finalize deletion in a retriable background worker."""
     db = SessionLocal()
     try:
         agent = db.query(Agent).filter(Agent.id == agent_id).first()
         if not agent:
             return False
+
+        if bool(agent.deleted):
+            _schedule_deleted_agent_cleanup(agent_id)
+            return True
 
         agent_name = agent.name
 
@@ -255,18 +303,14 @@ def delete_agent(agent_id: str) -> bool:
             {"agent_id": agent_id},
         )
 
-        db.delete(agent)
+        agent.deleted = True
         db.commit()
 
-        # Vector store cleanup outside the transaction — best effort.
-        # The agent row is already gone, so even if this fails no stale
-        # foreign-key references exist.
-        try:
-            delete_vector_store(agent_id)
-        except Exception as exc:
-            print(f"[WARN] Vector store cleanup failed for agent {agent_id}: {exc}")
-
-        print(f"[OK] Deleted agent: {agent_name}")
+        _schedule_deleted_agent_cleanup(agent_id)
+        print(f"[OK] Marked agent deleted: {agent_name}")
         return True
+    except Exception:
+        db.rollback()
+        raise
     finally:
         db.close()

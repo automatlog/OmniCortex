@@ -16,6 +16,8 @@ CHANGE LOG:
 import asyncio
 import json
 import os
+import re
+import shlex
 import struct
 import time
 import wave
@@ -108,7 +110,7 @@ def _bar(value, width=20, max_val=0.15):
 
 # ── Config ──────────────────────────────────────────────────────────
 FS_PORT            = 8001
-API_KEY            = "b6f3b11e-64a5-49c7-9a90-54dd5a4cd482"
+API_KEY            = (os.getenv("MOSHI_API_KEY") or "").strip()
 _BASE_URL          = "wss://qxpksbv6g9k06w-8998.proxy.runpod.net/api/chat"
 _TEXT_PROMPT       = "You are a helpful voice assistant. Be concise and friendly."
 MOSHI_URL          = f"{_BASE_URL}?text_prompt={quote(_TEXT_PROMPT)}"
@@ -140,6 +142,32 @@ TTS_ENABLED = True
 TTS_VOICE   = "en-US-AriaNeural"
 TTS_DIR     = "/tmp/bridge_tts"
 FS_CLI      = "/usr/local/freeswitch/bin/fs_cli"
+DEBUG_DUMP_PCM = os.getenv("DEBUG_DUMP_PCM", "false").strip().lower() == "true" or os.getenv("DEBUG_WAV", "false").strip().lower() == "true"
+MAX_DEBUG_PCM_BYTES = max(0, int(os.getenv("MAX_DEBUG_PCM_BYTES", str(16 * 1024 * 1024))))
+_UUID_SAFE_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+
+if not API_KEY:
+    raise RuntimeError("MOSHI_API_KEY is required. Set it via environment variables.")
+
+
+def sanitize_uuid(raw: str) -> str:
+    candidate = (raw or "").strip()
+    if not _UUID_SAFE_RE.fullmatch(candidate):
+        raise ValueError(f"Invalid UUID value: {raw!r}")
+    return candidate
+
+
+def append_debug_pcm(debug_buffer: bytearray | None, chunk: bytes) -> None:
+    if debug_buffer is None or not chunk or MAX_DEBUG_PCM_BYTES <= 0:
+        return
+    if len(chunk) >= MAX_DEBUG_PCM_BYTES:
+        debug_buffer.clear()
+        debug_buffer.extend(chunk[-MAX_DEBUG_PCM_BYTES:])
+        return
+    overflow = len(debug_buffer) + len(chunk) - MAX_DEBUG_PCM_BYTES
+    if overflow > 0:
+        del debug_buffer[:overflow]
+    debug_buffer.extend(chunk)
 
 
 # ── Ogg CRC-32 ──────────────────────────────────────────────────────
@@ -278,7 +306,7 @@ def make_fifo(uuid: str) -> str:
 
 
 async def start_displace(uuid: str, pipe_path: str) -> bool:
-    cmd  = f"uuid_displace {uuid} start {pipe_path} 0 mux"
+    cmd  = f"uuid_displace {uuid} start {shlex.quote(pipe_path)} 0 mux"
     proc = await asyncio.create_subprocess_exec(
         FS_CLI, "-x", cmd,
         stdout=asyncio.subprocess.PIPE,
@@ -296,7 +324,7 @@ async def start_displace(uuid: str, pipe_path: str) -> bool:
 
 async def stop_displace(uuid: str, pipe_path: str) -> None:
     try:
-        cmd  = f"uuid_displace {uuid} stop {pipe_path}"
+        cmd  = f"uuid_displace {uuid} stop {shlex.quote(pipe_path)}"
         proc = await asyncio.create_subprocess_exec(
             FS_CLI, "-x", cmd,
             stdout=asyncio.subprocess.DEVNULL,
@@ -317,7 +345,14 @@ async def stop_displace(uuid: str, pipe_path: str) -> None:
 
 async def bridge_connection(fs_ws):
     path       = getattr(fs_ws.request, "path", "/")
-    uuid       = path.split("/")[-1] or "unknown"
+    raw_uuid   = path.split("/")[-1] or "unknown"
+    try:
+        uuid = sanitize_uuid(raw_uuid)
+    except ValueError as exc:
+        log_error(raw_uuid, str(exc))
+        with suppress(Exception):
+            await fs_ws.close()
+        return
     call_start = time.monotonic()
 
     print()
@@ -332,7 +367,7 @@ async def bridge_connection(fs_ws):
     hs_event   = asyncio.Event()
     last_fs_send = [0.0]           # monotonic time of last fs_to_moshi send
     frame_cnt  = [0, 0]
-    debug_pcm  = bytearray()
+    debug_pcm  = bytearray() if DEBUG_DUMP_PCM else None
 
     tts_queue      = asyncio.Queue()
     sentence_buf   = [""]
@@ -485,7 +520,7 @@ async def bridge_connection(fs_ws):
                         dur      = wav_size / (8000 * 2)
                         log_tts(uuid, f"Play #{seq}: {wav_size}B ({dur:.1f}s)")
 
-                        cmd  = f"uuid_broadcast {uuid} {wav_path} aleg"
+                        cmd  = f"uuid_broadcast {uuid} {shlex.quote(wav_path)} aleg"
                         proc = await asyncio.create_subprocess_exec(
                             FS_CLI, "-x", cmd,
                             stdout=asyncio.subprocess.PIPE,
@@ -568,7 +603,7 @@ async def bridge_connection(fs_ws):
                                 resampled   = resample(pcm_f32, MOSHI_RATE, FS_RETURN_RATE)
                                 rms = float(np.sqrt(np.mean(resampled ** 2))) if len(resampled) > 0 else 0.0
                                 out_pcm = f32_to_pcm16(resampled, big_endian=FS_BIG_ENDIAN)
-                                debug_pcm.extend(f32_to_pcm16(resampled))
+                                append_debug_pcm(debug_pcm, f32_to_pcm16(resampled))
 
                                 frame_cnt[1] += 1
                                 if frame_cnt[1] <= 10 or frame_cnt[1] % 250 == 0:
@@ -627,7 +662,7 @@ async def bridge_connection(fs_ws):
                 extra_tasks.append(asyncio.create_task(text_flusher(), name="text_flusher"))
                 log_info(uuid, f"{C_YELLOW}TTS playback enabled{C_RESET}  voice={TTS_VOICE}")
 
-            core_tasks    = [t_moshi, t_pump]
+            core_tasks    = [t_fs, t_moshi, t_pump]
             done, pending = await asyncio.wait(
                 core_tasks, return_when=asyncio.FIRST_COMPLETED
             )
@@ -659,7 +694,7 @@ async def bridge_connection(fs_ws):
         if pipe_path is not None:
             await stop_displace(uuid, pipe_path)
 
-        if len(debug_pcm) > 0:
+        if debug_pcm is not None and len(debug_pcm) > 0:
             wav_path = f"/tmp/moshi_debug_{uuid}.wav"
             with wave.open(wav_path, "wb") as wf:
                 wf.setnchannels(1)

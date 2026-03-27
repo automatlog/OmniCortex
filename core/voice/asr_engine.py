@@ -4,6 +4,8 @@ Blocking transcription runs in a thread executor.
 """
 import asyncio
 import logging
+import math
+import threading
 from typing import Optional, Tuple
 
 import numpy as np
@@ -23,22 +25,54 @@ class ASREngine:
         self.model_size = model_size
         self.device = device
         self._model = None
+        self._load_lock = threading.Lock()
 
     def _load(self):
         if self._model is not None:
             return
-        from faster_whisper import WhisperModel
+        with self._load_lock:
+            if self._model is not None:
+                return
+            from faster_whisper import WhisperModel
 
-        compute_type = "float16" if self.device == "cuda" else "int8"
-        logger.info("Loading faster-whisper model=%s device=%s compute=%s", self.model_size, self.device, compute_type)
-        self._model = WhisperModel(self.model_size, device=self.device, compute_type=compute_type)
-        logger.info("faster-whisper loaded")
+            compute_type = "float16" if self.device == "cuda" else "int8"
+            logger.info("Loading faster-whisper model=%s device=%s compute=%s", self.model_size, self.device, compute_type)
+            self._model = WhisperModel(self.model_size, device=self.device, compute_type=compute_type)
+            logger.info("faster-whisper loaded")
+
+    @staticmethod
+    def _resample_to_16k(pcm_float32: np.ndarray, sample_rate: int) -> np.ndarray:
+        if sample_rate == 16000 or pcm_float32.size == 0:
+            return pcm_float32.astype(np.float32, copy=False)
+        if sample_rate <= 0:
+            return pcm_float32.astype(np.float32, copy=False)
+
+        try:
+            from scipy.signal import resample_poly  # type: ignore
+
+            ratio = math.gcd(sample_rate, 16000)
+            up = 16000 // ratio
+            down = sample_rate // ratio
+            return resample_poly(pcm_float32, up, down).astype(np.float32, copy=False)
+        except Exception:
+            n_out = int(len(pcm_float32) * 16000 / sample_rate)
+            if n_out <= 0:
+                return np.array([], dtype=np.float32)
+            idx = np.linspace(0, len(pcm_float32) - 1, n_out)
+            left = np.floor(idx).astype(int)
+            right = np.clip(left + 1, 0, len(pcm_float32) - 1)
+            frac = (idx - left).astype(np.float32)
+            return (pcm_float32[left] * (1.0 - frac) + pcm_float32[right] * frac).astype(np.float32)
 
     def _transcribe_sync(self, pcm_float32: np.ndarray, sample_rate: int) -> Tuple[str, float]:
-        """Blocking transcription — must be called via run_in_executor."""
+        """Blocking transcription — must be called via run_in_executor.
+
+        Returns confidence as average log probability. If no segments are produced,
+        confidence is NaN to indicate "not available".
+        """
         self._load()
-        # faster-whisper expects float32 numpy at any sample rate (internally resamples to 16kHz)
-        segments, info = self._model.transcribe(pcm_float32, beam_size=3, language="en")
+        audio_input = self._resample_to_16k(pcm_float32, sample_rate)
+        segments, info = self._model.transcribe(audio_input, beam_size=3, language="en")
         text_parts = []
         total_prob = 0.0
         count = 0
@@ -47,7 +81,7 @@ class ASREngine:
             total_prob += seg.avg_log_prob
             count += 1
         text = " ".join(text_parts).strip()
-        confidence = (total_prob / count) if count > 0 else 0.0
+        confidence = (total_prob / count) if count > 0 else math.nan
         return text, confidence
 
     async def transcribe(self, pcm_float32: np.ndarray, sample_rate: int = 16000) -> Tuple[str, float]:

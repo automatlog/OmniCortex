@@ -14,7 +14,15 @@ from langchain_openai import ChatOpenAI
 from .config import MODEL_BACKENDS, VLLM_BASE_URL as DEFAULT_BASE_URL, VLLM_MODEL as DEFAULT_MODEL
 from .database import log_usage
 from .agent_config import sync_agent_config
-from .monitoring import RAG_CONTEXT_HIT, RAG_CONTEXT_MISS, ConfigLoader, LLM_LATENCY, TOKEN_USAGE
+from .monitoring import (
+    RAG_CONTEXT_HIT,
+    RAG_CONTEXT_MISS,
+    RAG_CACHE_HITS_DEPRECATED,
+    RAG_CACHE_MISSES_DEPRECATED,
+    ConfigLoader,
+    LLM_LATENCY,
+    TOKEN_USAGE,
+)
 
 # Load config
 CONFIG = ConfigLoader.load_model_config()
@@ -134,8 +142,10 @@ def invoke_chain(
 
         if context:
             RAG_CONTEXT_HIT.labels(agent_id=str(agent_id)).inc()
+            RAG_CACHE_HITS_DEPRECATED.labels(agent_id=str(agent_id)).inc()
         else:
             RAG_CONTEXT_MISS.labels(agent_id=str(agent_id)).inc()
+            RAG_CACHE_MISSES_DEPRECATED.labels(agent_id=str(agent_id)).inc()
 
         response_msg = retry_with_backoff(
             lambda: chain.invoke(

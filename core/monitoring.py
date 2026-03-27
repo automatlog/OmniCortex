@@ -33,14 +33,27 @@ TOKEN_USAGE = Counter(
 )
 
 RAG_CONTEXT_HIT = Counter(
-    'omnicortex_rag_context_hit_total',
+    'omnicortex_rag_context_hits_total',
     'LLM invocations where RAG context was available',
     ['agent_id']
 )
 
 RAG_CONTEXT_MISS = Counter(
-    'omnicortex_rag_context_miss_total',
+    'omnicortex_rag_context_misses_total',
     'LLM invocations where no RAG context was available',
+    ['agent_id']
+)
+
+# Deprecated compatibility counters for existing dashboards/alerts.
+RAG_CACHE_HITS_DEPRECATED = Counter(
+    'omnicortex_rag_cache_hits_total',
+    'DEPRECATED: use omnicortex_rag_context_hits_total',
+    ['agent_id']
+)
+
+RAG_CACHE_MISSES_DEPRECATED = Counter(
+    'omnicortex_rag_cache_misses_total',
+    'DEPRECATED: use omnicortex_rag_context_misses_total',
     ['agent_id']
 )
 

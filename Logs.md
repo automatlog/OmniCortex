@@ -635,3 +635,83 @@ Added PersonaPlex 4-Phase voice flow diagram showing:
 - FreeSWITCH telephony bridge flow (bridge.py)
 
 ---
+
+## 2026-03-27 — Session 4: Runtime Safety and Security Hardening
+
+### Startup/Lifecycle
+- Moved DB initialization out of import-time execution in `api.py` and into `lifespan()`.
+- Updated `core.database.init_db()` to return an error string on failure instead of raising from import-time paths.
+- Added auth HTTP client lifecycle management (`init_http_client()`/`close_http_client()`) and wired it to FastAPI lifespan startup/shutdown.
+
+### Agent Deletion Atomicity
+- Implemented soft-delete flow for agents (`Agent.deleted`), with reads/updates filtering out soft-deleted rows.
+- Replaced direct hard-delete path with:
+    1. mark `deleted=True` + commit
+    2. background retriable vector cleanup
+    3. hard-delete only after vector cleanup succeeds
+- This prevents DB/vector ordering races and avoids immediate orphan-vector risk.
+
+### API/Voice WebSocket Robustness
+- Fixed `sample_rate` parsing to handle invalid values safely with fallback to 8000.
+- Removed `_json` alias risk by using module-scope `json` in all websocket send/error paths.
+- Replaced client-facing exception leaks in cascade/LFM handlers with generic error text.
+
+### Bridge Security and Stability
+- Removed hardcoded bridge API keys from source; now read from `MOSHI_API_KEY` and fail fast if missing.
+- Added UUID validation/sanitization before command usage.
+- Added quoting for FS CLI command arguments that include filesystem paths.
+- Added `t_fs` to `core_tasks` so disconnects from `fs_to_moshi` terminate session waits correctly.
+- Made PCM debug capture opt-in (`DEBUG_DUMP_PCM`/`DEBUG_WAV`) and bounded (`MAX_DEBUG_PCM_BYTES`) to prevent unbounded growth.
+
+### Core Reliability
+- `core/agent_config.py`: hardened fallback path creation, now returns `None` when no writable dir exists and caller handles that safely.
+- `core/cache.py`: `invalidate_agent_cache` now accepts `Optional[str]` and uses explicit `None` branching.
+- `core/rag/embeddings.py`: fixed false fallback warning by comparing normalized primary model names.
+- `core/rag/retrieval.py`: replaced racy global failure reason with lock-protected, time-throttled failure logging and reset-on-success.
+
+### Metrics Compatibility
+- Renamed RAG context counters to Prometheus plural forms:
+    - `omnicortex_rag_context_hits_total`
+    - `omnicortex_rag_context_misses_total`
+- Added deprecated compatibility counters:
+    - `omnicortex_rag_cache_hits_total`
+    - `omnicortex_rag_cache_misses_total`
+- Both new and deprecated counters are emitted in parallel for migration safety.
+
+### Voice Engine Fixes
+- `core/voice/asr_engine.py`:
+    - Added per-instance thread lock for model loading (double-checked pattern)
+    - Resamples non-16kHz input before transcription
+    - Returns `NaN` confidence sentinel when no segments are produced
+- `core/voice/mode_personaplex.py`:
+    - `_send_json` now logs failures instead of swallowing silently
+    - conversation history trimming now mutates list in place
+- `core/voice/vocoder_engine.py`:
+    - Added per-instance load lock and load-failure flag to prevent concurrent retries/retry storms
+
+### Voice Chat Privacy
+- `core/voice_chat_service.py` now sends masked `safe_question` (not raw question) to ClickHouse logging.
+- Agent lookup exceptions are logged and fallback naming is consistent (`"default"`).
+- Media-tag stripping regex updated to support multi-line/inner-bracket tag payloads.
+
+### Standalone LFM Server
+- `start_lfm.py` now runs `lfm.ensure_loaded()` via `asyncio.to_thread()` to avoid blocking the event loop.
+- Added `_rag_session_lock` to prevent concurrent `aiohttp.ClientSession` creation races.
+
+### Snapshot Server Hardening (`tmp/server_omni_snapshot.py`)
+- Replaced fragile tar extraction checks with `Path.relative_to()` containment checks.
+- Rejected absolute archive members and symlink/hardlink entries in tar extraction.
+- Added robust peer-port extraction with safe fallback when `peername` is missing.
+- Replaced missing voice prompt exception crash path with websocket error response + graceful close.
+- Narrowed `self.lock` scope to shared model setup/reset only; handshake/task loops now run outside lock.
+- Reworked liveness check to use ping-based checks instead of consuming `ws.receive()` messages.
+- Added SSRF protections for call-trigger proxy:
+    - scheme validation
+    - DNS resolution checks
+    - blocked local/private/metadata ranges
+    - enforced host/CIDR allowlist requirement
+- Replaced assert-based path validation with explicit `FileNotFoundError` checks.
+- Set static serving to `follow_symlinks=False`.
+
+### Misc
+- Clarified internal/external port logging in `test_py.py` startup output.

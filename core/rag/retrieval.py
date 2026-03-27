@@ -5,6 +5,8 @@ Advanced Retrieval Module
 - Cross-Encoder Reranking
 """
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
+import threading
+import time
 from typing import List, Dict, Any, Optional
 from sqlalchemy import text
 from ..database import get_session, ParentChunk
@@ -13,7 +15,12 @@ import os
 
 # Lazy load reranker model to save startup time/memory if not used
 _RERANKER_MODEL = None
-_VECTOR_FAILURE_REASON = None
+_VECTOR_FAILURE_LOCK = threading.Lock()
+_LAST_VECTOR_FAILURE_AT: Optional[float] = None
+_VECTOR_FAILURE_THROTTLE_SECONDS = max(
+    1.0,
+    float(os.getenv("VECTOR_FAILURE_LOG_THROTTLE_SECONDS", "60")),
+)
 
 def get_reranker():
     global _RERANKER_MODEL
@@ -134,21 +141,30 @@ def hybrid_search(query: str, agent_id: str = None, top_k: int = 5, rerank: Opti
     print(f"🔍 Hybrid Search: '{query}'")
 
     # 1. Parallel retrieval — both searches are I/O-bound DB/model calls.
-    global _VECTOR_FAILURE_REASON
+    global _LAST_VECTOR_FAILURE_AT
     with ThreadPoolExecutor(max_workers=2) as _pool:
         _fut_vector = _pool.submit(vector_search_func, query, agent_id, top_k * 2)
         _fut_keyword = _pool.submit(keyword_search, query, agent_id, top_k * 2)
 
         try:
             vector_docs = _fut_vector.result(timeout=15)
+            with _VECTOR_FAILURE_LOCK:
+                _LAST_VECTOR_FAILURE_AT = None
         except FutureTimeoutError:
             print("[WARN] Vector search timed out")
             vector_docs = []
         except Exception as e:
-            reason = str(e)
-            if reason != _VECTOR_FAILURE_REASON:
-                print(f"[WARN] Vector search failed: {reason}")
-                _VECTOR_FAILURE_REASON = reason
+            now = time.monotonic()
+            should_log = False
+            with _VECTOR_FAILURE_LOCK:
+                if (
+                    _LAST_VECTOR_FAILURE_AT is None
+                    or (now - _LAST_VECTOR_FAILURE_AT) >= _VECTOR_FAILURE_THROTTLE_SECONDS
+                ):
+                    _LAST_VECTOR_FAILURE_AT = now
+                    should_log = True
+            if should_log:
+                print(f"[WARN] Vector search failed: {e}")
             vector_docs = []
 
         try:

@@ -75,8 +75,13 @@ def _simple_energy_vad(
 async def _send_json(ws: WebSocket, msg: dict):
     try:
         await ws.send_text(json.dumps(msg))
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.warning(
+            "WebSocket send_json failed (type=%s, ws=%s): %s",
+            msg.get("type") if isinstance(msg, dict) else None,
+            id(ws),
+            exc,
+        )
 
 
 async def _drip_feed_text(text: str, px_ws, chars: int = VOICE_DRIP_FEED_CHARS, interval_ms: int = VOICE_DRIP_FEED_INTERVAL_MS):
@@ -402,7 +407,7 @@ async def handle_personaplex(websocket: WebSocket, session: VoiceSession):
                     conversation_history.append({"role": "user", "content": transcript})
                     conversation_history.append({"role": "assistant", "content": answer})
                     if len(conversation_history) > 10:
-                        conversation_history = conversation_history[-10:]
+                        conversation_history[:] = conversation_history[-10:]
 
                     # Drip-feed answer text to PersonaPlex
                     try:

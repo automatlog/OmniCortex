@@ -4,6 +4,7 @@ Advanced Retrieval Module
 - Reciprocal Rank Fusion (RRF)
 - Cross-Encoder Reranking
 """
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 from typing import List, Dict, Any, Optional
 from sqlalchemy import text
 from ..database import get_session, ParentChunk
@@ -12,6 +13,7 @@ import os
 
 # Lazy load reranker model to save startup time/memory if not used
 _RERANKER_MODEL = None
+_VECTOR_FAILURE_REASON = None
 
 def get_reranker():
     global _RERANKER_MODEL
@@ -37,13 +39,13 @@ def keyword_search(query: str, agent_id: str = None, k: int = 10) -> List[Dict]:
         SELECT p.id, p.content, d.agent_id,
                ts_rank(to_tsvector('english', p.content), plainto_tsquery('english', :query)) as rank
         FROM omni_parent_chunks p
-        JOIN omni_documents d ON p.source_doc_id = d.id
+        LEFT JOIN omni_documents d ON p.source_doc_id = d.id
         WHERE to_tsvector('english', p.content) @@ plainto_tsquery('english', :query)
         """
         params = {"query": query}
-        
+
         if agent_id:
-            sql += " AND d.agent_id = :agent_id"
+            sql += " AND (d.agent_id = :agent_id OR d.agent_id IS NULL)"
             params["agent_id"] = agent_id
             
         sql += " ORDER BY rank DESC"
@@ -125,23 +127,36 @@ def rerank_documents(query: str, docs: List[Any], top_n: int = 4) -> List[Any]:
 def hybrid_search(query: str, agent_id: str = None, top_k: int = 5, rerank: Optional[bool] = None) -> List[Any]:
     """
     Main entry point: Hybrid Search (Vector + Keyword) -> RRF -> Rerank
+    Vector and keyword searches run in parallel via ThreadPoolExecutor.
     """
-    # Check if reranking is enabled
     use_reranker = (os.getenv("USE_RERANKER", "false").lower() == "true") if rerank is None else rerank
-    
-    # 1. Parallel Retrieval
+
     print(f"🔍 Hybrid Search: '{query}'")
-    
-    # Vector Search (Semantic) - getting slightly more candidates
-    try:
-        vector_docs = vector_search_func(query, agent_id, k=top_k * 2)
-    except Exception as e:
-        print(f"[WARN] Vector search failed: {e}")
-        vector_docs = []
-    
-    # Keyword Search (Lexical)
-    keyword_docs = keyword_search(query, agent_id, k=top_k*2)
-    
+
+    # 1. Parallel retrieval — both searches are I/O-bound DB/model calls.
+    global _VECTOR_FAILURE_REASON
+    with ThreadPoolExecutor(max_workers=2) as _pool:
+        _fut_vector = _pool.submit(vector_search_func, query, agent_id, top_k * 2)
+        _fut_keyword = _pool.submit(keyword_search, query, agent_id, top_k * 2)
+
+        try:
+            vector_docs = _fut_vector.result(timeout=15)
+        except FutureTimeoutError:
+            print("[WARN] Vector search timed out")
+            vector_docs = []
+        except Exception as e:
+            reason = str(e)
+            if reason != _VECTOR_FAILURE_REASON:
+                print(f"[WARN] Vector search failed: {reason}")
+                _VECTOR_FAILURE_REASON = reason
+            vector_docs = []
+
+        try:
+            keyword_docs = _fut_keyword.result(timeout=15)
+        except Exception as e:
+            print(f"[WARN] Keyword search failed: {e}")
+            keyword_docs = []
+
     print(f"   Found: {len(vector_docs)} vector, {len(keyword_docs)} keyword candidates")
     
     # 2. RRF Fusion

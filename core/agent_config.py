@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import copy
 import json
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -36,13 +37,35 @@ def _safe_agent_dir_name(name: str, fallback_id: str) -> str:
     return safe or fallback_id
 
 
+def _ensure_writable_dir(path: Path) -> bool:
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+        probe = path / ".write_probe"
+        probe.write_text("", encoding="utf-8")
+        probe.unlink(missing_ok=True)
+        return True
+    except Exception:
+        return False
+
+
 def _config_path_for_agent(agent: Dict[str, Any]) -> Path:
     agent_id = str(agent.get("id") or "unknown_agent")
     agent_name = str(agent.get("name") or agent_id)
     folder = _safe_agent_dir_name(agent_name, agent_id)
-    base = Path("storage") / "agents" / folder
-    base.mkdir(parents=True, exist_ok=True)
-    return base / "config.yaml"
+    tmp_root = Path(tempfile.gettempdir()) / "omnicortex_agents"
+
+    candidates = [
+        Path("storage") / "agents" / folder,
+        Path("storage") / "agents" / "by_id" / agent_id,
+        tmp_root / folder,
+    ]
+    for base in candidates:
+        if _ensure_writable_dir(base):
+            return base / "config.yaml"
+
+    fallback = tmp_root / "by_id" / agent_id
+    fallback.mkdir(parents=True, exist_ok=True)
+    return fallback / "config.yaml"
 
 
 def _agent_snapshot(agent: Dict[str, Any]) -> Dict[str, Any]:

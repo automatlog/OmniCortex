@@ -2,13 +2,23 @@ import logging
 import os
 from typing import Any, Dict
 
-import requests
+import httpx
 from fastapi import Security, HTTPException, Request
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from starlette.status import HTTP_403_FORBIDDEN, HTTP_503_SERVICE_UNAVAILABLE
 
 
 bearer_scheme = HTTPBearer(auto_error=False)
+
+# Reusable async client (connection pooling across requests).
+_http_client: httpx.AsyncClient | None = None
+
+
+def _get_http_client() -> httpx.AsyncClient:
+    global _http_client
+    if _http_client is None or _http_client.is_closed:
+        _http_client = httpx.AsyncClient(timeout=httpx.Timeout(_auth_verify_timeout()))
+    return _http_client
 
 
 def _auth_verify_url() -> str:
@@ -23,7 +33,7 @@ def _auth_verify_timeout() -> float:
         return 8.0
 
 
-def verify_bearer_token(token: str, x_user_id: str | None = None) -> Dict[str, Any]:
+async def verify_bearer_token(token: str, x_user_id: str | None = None) -> Dict[str, Any]:
     """Verify bearer token against external auth callback and return profile metadata."""
     clean_token = (token or "").strip()
     if not clean_token:
@@ -44,12 +54,12 @@ def verify_bearer_token(token: str, x_user_id: str | None = None) -> Dict[str, A
         verify_headers["X-User-Id"] = clean_user_id
 
     try:
-        response = requests.get(
+        client = _get_http_client()
+        response = await client.get(
             verify_url,
             headers=verify_headers,
-            timeout=_auth_verify_timeout(),
         )
-    except requests.RequestException as exc:
+    except httpx.HTTPError as exc:
         logging.error(f"Auth verification request failed: {exc}")
         raise HTTPException(
             status_code=HTTP_503_SERVICE_UNAVAILABLE,
@@ -81,4 +91,4 @@ async def get_api_key(
 
     token = str(credentials.credentials).strip()
     x_user_id = (request.headers.get("x-user-id") or "").strip()
-    return verify_bearer_token(token=token, x_user_id=x_user_id or None)
+    return await verify_bearer_token(token=token, x_user_id=x_user_id or None)

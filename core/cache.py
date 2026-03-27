@@ -56,6 +56,25 @@ def check_cache(question: str, agent_id: str = None) -> Optional[str]:
             db.close()
 
 
+def invalidate_agent_cache(agent_id: str):
+    """Remove all cached answers for an agent so new documents are reflected immediately."""
+    try:
+        db = get_session()
+        if agent_id:
+            db.execute(
+                text("DELETE FROM omni_semantic_cache WHERE agent_id = :agent_id"),
+                {"agent_id": agent_id},
+            )
+        else:
+            db.execute(text("DELETE FROM omni_semantic_cache WHERE agent_id IS NULL"))
+        db.commit()
+    except Exception as e:
+        print(f"[WARN] Cache invalidation failed: {e}")
+    finally:
+        if "db" in locals():
+            db.close()
+
+
 def save_to_cache(question: str, answer: str, agent_id: str = None):
     """Save a question-answer pair to the cache."""
     try:

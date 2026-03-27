@@ -32,15 +32,15 @@ TOKEN_USAGE = Counter(
     ['agent_id', 'agent_name', 'token_type']  # token_type: prompt, completion
 )
 
-CACHE_HITS = Counter(
-    'omnicortex_rag_cache_hits_total',
-    'Cache hits for RAG queries',
+RAG_CONTEXT_HIT = Counter(
+    'omnicortex_rag_context_hit_total',
+    'LLM invocations where RAG context was available',
     ['agent_id']
 )
 
-CACHE_MISSES = Counter(
-    'omnicortex_rag_cache_misses_total',
-    'Cache misses for RAG queries',
+RAG_CONTEXT_MISS = Counter(
+    'omnicortex_rag_context_miss_total',
+    'LLM invocations where no RAG context was available',
     ['agent_id']
 )
 
@@ -82,7 +82,7 @@ class ConfigLoader:
 
     @staticmethod
     def load_model_config() -> Dict[str, Any]:
-        if ConfigLoader._model_config:
+        if ConfigLoader._model_config is not None:
             return ConfigLoader._model_config
         
         path = os.path.join(os.path.dirname(__file__), "..", "config", "model_config.yaml")

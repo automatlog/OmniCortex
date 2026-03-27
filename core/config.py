@@ -133,3 +133,28 @@ MOSHI_ENABLED = os.getenv("MOSHI_ENABLED", "true").lower() == "true"
 # =============================================================================
 VOICE_MODEL = os.getenv("VOICE_MODEL", "LiquidAI/LFM2.5-Audio-1.5B")
 VOICE_MAX_INSTANCES = int(os.getenv("VOICE_MAX_INSTANCES", "8"))
+
+# =============================================================================
+# VOICE PIPELINE (Multi-Mode)
+# =============================================================================
+VOICE_DEFAULT_MODE = os.getenv("VOICE_DEFAULT_MODE", "personaplex")
+VOICE_ASR_MODEL = os.getenv("VOICE_ASR_MODEL", "base.en")
+VOICE_ASR_DEVICE = os.getenv("VOICE_ASR_DEVICE", "cuda")
+VOICE_VOCODER_DEVICE = os.getenv("VOICE_VOCODER_DEVICE", "cuda")
+VOICE_DRIP_FEED_CHARS = int(os.getenv("VOICE_DRIP_FEED_CHARS", "20"))
+VOICE_DRIP_FEED_INTERVAL_MS = int(os.getenv("VOICE_DRIP_FEED_INTERVAL_MS", "80"))
+VOICE_VAD_SILENCE_MS = int(os.getenv("VOICE_VAD_SILENCE_MS", "600"))
+VOICE_VAD_ENERGY_THRESHOLD = float(os.getenv("VOICE_VAD_ENERGY_THRESHOLD", "0.01"))
+VOICE_REASONER_QUEUE_SIZE = int(os.getenv("VOICE_REASONER_QUEUE_SIZE", "200"))
+VOICE_PERSONAPLEX_FALLBACK = os.getenv("VOICE_PERSONAPLEX_FALLBACK", "true").lower() == "true"
+
+# =============================================================================
+# PERSONAPLEX / RUNPOD CONNECTION
+# =============================================================================
+PERSONAPLEX_API_KEY = os.getenv("PERSONAPLEX_API_KEY", "").strip()
+PERSONAPLEX_AUTH_HEADER = os.getenv("PERSONAPLEX_AUTH_HEADER", "x-api-key").strip()
+PERSONAPLEX_SSL_VERIFY = os.getenv("PERSONAPLEX_SSL_VERIFY", "true").strip().lower() == "true"
+PERSONAPLEX_CONNECT_TIMEOUT = float(os.getenv("PERSONAPLEX_CONNECT_TIMEOUT", "15"))
+PERSONAPLEX_RECONNECT_ATTEMPTS = int(os.getenv("PERSONAPLEX_RECONNECT_ATTEMPTS", "3"))
+PERSONAPLEX_RECONNECT_DELAY = float(os.getenv("PERSONAPLEX_RECONNECT_DELAY", "2"))
+PERSONAPLEX_HEARTBEAT = float(os.getenv("PERSONAPLEX_HEARTBEAT", "20"))

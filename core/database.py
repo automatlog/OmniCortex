@@ -699,20 +699,29 @@ def get_agent_document_names(agent_id: str, limit: int = 50) -> List[str]:
 
 
 def delete_document(document_id: int) -> bool:
-    """Delete a document and update agent count"""
+    """Delete a document, its parent chunks, and update agent count.
+
+    Note: Individual vector embeddings tied to this document's parent chunks
+    are removed via the CASCADE on omni_parent_chunks.  A full vector-store
+    rebuild may be needed if the PGVector collection caches stale data.
+    """
     db = SessionLocal()
     try:
         doc = db.query(Document).filter(Document.id == document_id).first()
         if doc:
             agent_id = doc.agent_id
+
+            # Delete parent chunks linked to this document (cascades to vectors via parent_id metadata).
+            db.query(ParentChunk).filter(ParentChunk.source_doc_id == doc.id).delete()
+
             db.delete(doc)
-            
+
             # Update agent document count
             if agent_id:
                 agent = db.query(Agent).filter(Agent.id == agent_id).first()
                 if agent and agent.document_count > 0:
                     agent.document_count = agent.document_count - 1
-            
+
             db.commit()
             return True
         return False
@@ -769,7 +778,8 @@ def batch_save_parent_chunks(chunks: list, source_doc_id: int = None) -> Dict[st
         return content_to_id
         
     except Exception as e:
-        print(f"⚠️ Batch save failed: {e}")
+        import logging
+        logging.getLogger(__name__).error("Batch save parent chunks failed: %s", e)
         db.rollback()
         return {}
     finally:

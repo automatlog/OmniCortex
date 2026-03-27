@@ -177,7 +177,7 @@ def update_agent(
         if not agent:
             return False
 
-        if name:
+        if name is not None:
             agent.name = name
         if description is not None:
             agent.description = description
@@ -234,12 +234,19 @@ def update_agent_metadata(agent_id: str, document_count: int = None, message_cou
 
 
 def delete_agent(agent_id: str) -> bool:
-    """Delete agent and all associated data"""
+    """Delete agent and all associated data.
+
+    Order: DB rows first (semantic cache, then agent cascade), then vector store.
+    If the vector store deletion fails the DB changes are already committed,
+    but the agent row is gone so no stale references remain.
+    """
     db = SessionLocal()
     try:
         agent = db.query(Agent).filter(Agent.id == agent_id).first()
         if not agent:
             return False
+
+        agent_name = agent.name
 
         # semantic cache rows are not FK-constrained; clear them explicitly
         from sqlalchemy import text as sa_text
@@ -248,10 +255,18 @@ def delete_agent(agent_id: str) -> bool:
             {"agent_id": agent_id},
         )
 
-        delete_vector_store(agent_id)
         db.delete(agent)
         db.commit()
-        print(f"[OK] Deleted agent: {agent.name}")
+
+        # Vector store cleanup outside the transaction — best effort.
+        # The agent row is already gone, so even if this fails no stale
+        # foreign-key references exist.
+        try:
+            delete_vector_store(agent_id)
+        except Exception as exc:
+            print(f"[WARN] Vector store cleanup failed for agent {agent_id}: {exc}")
+
+        print(f"[OK] Deleted agent: {agent_name}")
         return True
     finally:
         db.close()

@@ -55,7 +55,7 @@ from core import (
     reset_chain,
 )
 from core.database import Channel, Tool, Session as DBSession, SessionLocal, ApiKey # Phase 2 & 3 & 4 support
-from core.graph import create_rag_agent
+# core.graph.create_rag_agent removed — not used by any route
 from core.processing.scraper import process_urls
 from core.config import MODEL_BACKENDS
 from core.agent_config import sync_agent_config
@@ -65,7 +65,6 @@ from core.monitoring import (
     REQUEST_COUNT,
     REQUEST_LATENCY,
     CHAT_REQUESTS,
-    PrometheusMiddleware
 )
 from core.manager.connection_manager import ConnectionManager
 from core.auth import get_api_key, verify_bearer_token
@@ -316,6 +315,12 @@ class AgentCreateResponse(BaseModel):
     status: str
     id: str
     agent_name: str
+
+
+class AgentSystemPromptResponse(BaseModel):
+    agent_id: str
+    system_prompt: str
+    source: Optional[str] = None
 
 class AgentUpdate(BaseModel):
     name: Optional[str] = None
@@ -859,7 +864,7 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
         # Mock Mode: Skip LLM for load testing (tests DB + vector store only)
         if request.mock_mode:
             # Simulate minimal processing
-            time.sleep(0.1)  # Simulate network latency
+            await asyncio.sleep(0.1)  # Simulate network latency
             response = QueryResponse(
                 answer="[MOCK] Load test response - LLM bypassed",
                 id=agent_id,
@@ -1445,8 +1450,8 @@ def _sanitize_voice_profile_payload(payload: Dict[str, Any], *, keep_existing_ap
     voice_prompt = str(payload.get("voice_prompt") or "").strip() or "NATF0.pt"
     extra = payload.get("extra") if isinstance(payload.get("extra"), dict) else {}
 
-    if len(context_query) > 400:
-        context_query = context_query[:400].strip()
+    if len(context_query) > 1000:
+        context_query = context_query[:1000].strip()
     if len(voice_prompt) > 120:
         voice_prompt = voice_prompt[:120].strip()
 
@@ -1680,6 +1685,22 @@ def _system_prompt_for_response(agent: Dict[str, Any]) -> Optional[str]:
     if _looks_like_prompt_path(raw):
         return _system_prompt_filename(raw)
     return _compact_text(raw)
+
+
+def _system_prompt_for_integration(agent: Dict[str, Any]) -> str:
+    """Return full prompt text for integrations (do not compact to filename/preview)."""
+    raw = str(agent.get("system_prompt") or "").strip()
+    if raw and _looks_like_prompt_path(raw):
+        raw = str(_resolve_system_prompt(raw) or "").strip()
+    if raw:
+        return raw
+
+    source = str(agent.get("system_prompt_source") or "").strip()
+    if source:
+        resolved = str(_resolve_system_prompt(source) or "").strip()
+        if resolved and not _looks_like_prompt_path(resolved):
+            return resolved
+    return ""
 
 
 def _normalize_agent_create_payload(agent_request: AgentCreate) -> Dict[str, Any]:
@@ -2162,6 +2183,21 @@ async def get_agent_detail(agent_id: str, request: Request, api_key: ApiKey = De
     return agent_to_response(agent, base_url)
 
 
+@app.get("/agents/{agent_id}/system-prompt", response_model=AgentSystemPromptResponse)
+async def get_agent_system_prompt(agent_id: str, api_key: ApiKey = Depends(get_api_key)):
+    """Return full resolved system prompt text for integrations (PersonaPlex/voice)."""
+    agent = _require_agent_access(agent_id, api_key)
+    full_prompt = _system_prompt_for_integration(agent).strip()
+    if not full_prompt:
+        full_prompt = "You are a helpful assistant."
+    source = str(agent.get("system_prompt_source") or "").strip() or None
+    return AgentSystemPromptResponse(
+        agent_id=agent_id,
+        system_prompt=full_prompt,
+        source=source,
+    )
+
+
 @app.post("/agents", response_model=AgentCreateResponse)
 async def create_new_agent(agent_request: AgentCreate, request: Request, background_tasks: BackgroundTasks, api_key: ApiKey = Depends(get_api_key)):
     """Create a new agent (optionally from local files)"""
@@ -2600,8 +2636,17 @@ async def get_voice_context(
 
     safe_top_k = max(1, min(6, int(top_k or 3)))
     retrieval_query = str(query or "").strip()
+    if _looks_like_prompt_path(retrieval_query):
+        retrieval_query = ""
     if not retrieval_query:
-        retrieval_query = str(agent.get("system_prompt") or "")[:500].strip()
+        raw_prompt = str(agent.get("system_prompt") or "").strip()
+        if _looks_like_prompt_path(raw_prompt):
+            raw_prompt = str(_resolve_system_prompt(raw_prompt) or "").strip()
+            if _looks_like_prompt_path(raw_prompt):
+                raw_prompt = ""
+        retrieval_query = raw_prompt[:500].strip()
+    if not retrieval_query:
+        retrieval_query = str(agent.get("description") or agent.get("name") or "").strip()[:300]
     if not retrieval_query:
         return {"agent_id": agent_id, "query": "", "documents": 0, "context": ""}
 
@@ -2751,7 +2796,7 @@ async def _authenticate_voice_websocket(websocket: WebSocket) -> Optional[str]:
     if not x_user_id:
         x_user_id = (websocket.query_params.get("x_user_id") or "").strip()
     try:
-        await asyncio.to_thread(verify_bearer_token, token, x_user_id or None)
+        await verify_bearer_token(token, x_user_id or None)
         return None
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, str) else "Unauthorized"
@@ -2878,7 +2923,7 @@ async def voice_ws_proxy(websocket: WebSocket):
     # --- Build the text_prompt from agent context ---
     agent_id = websocket.query_params.get("agent_id")
     client_text_prompt = websocket.query_params.get("text_prompt", "")
-    context_query = websocket.query_params.get("context_query", "")
+    context_query = str(websocket.query_params.get("context_query", "") or "")[:1000]
     voice_prompt = websocket.query_params.get("voice_prompt", "NATF0.pt")
     seed = websocket.query_params.get("seed", "-1")
 
@@ -2960,9 +3005,31 @@ async def voice_ws_proxy(websocket: WebSocket):
     logging.info(f"🎤 Voice proxy: Connecting to Moshi at {moshi_ws_base}/api/chat")
 
     # --- Relay WebSocket frames bidirectionally ---
+    # RunPod connection support: auth headers, SSL, heartbeat
+    from core.config import (
+        PERSONAPLEX_API_KEY as _PX_KEY,
+        PERSONAPLEX_AUTH_HEADER as _PX_HDR,
+        PERSONAPLEX_SSL_VERIFY as _PX_SSL_VERIFY,
+        PERSONAPLEX_HEARTBEAT as _PX_HB,
+    )
+    _ws_headers = {}
+    if _PX_KEY:
+        _ws_headers[_PX_HDR] = _PX_KEY
+    _ws_ssl = None
+    if moshi_ws_base.startswith("wss"):
+        import ssl as _ssl
+        _ws_ssl = _ssl.create_default_context()
+        if not _PX_SSL_VERIFY:
+            _ws_ssl.check_hostname = False
+            _ws_ssl.verify_mode = _ssl.CERT_NONE
     try:
         async with aiohttp.ClientSession() as session:
-            async with session.ws_connect(moshi_url) as moshi_ws:
+            async with session.ws_connect(
+                moshi_url,
+                headers=_ws_headers or None,
+                ssl=_ws_ssl,
+                heartbeat=_PX_HB,
+            ) as moshi_ws:
                 async def client_to_moshi():
                     """Forward binary frames from admin client to moshi server."""
                     try:
@@ -3008,6 +3075,133 @@ async def voice_ws_proxy(websocket: WebSocket):
             await websocket.close(code=1011, reason=str(e))
         except Exception:
             pass
+
+
+# =============================================================================
+# MULTI-MODE VOICE PIPELINE — /ws/voice/{agent_id}
+# =============================================================================
+
+@app.websocket("/ws/voice/{agent_id}")
+async def voice_pipeline_ws(websocket: WebSocket, agent_id: str):
+    """
+    Multi-mode voice WebSocket endpoint.
+
+    Query params:
+      - mode: personaplex | lfm | cascade (default: personaplex)
+      - token: Bearer token (required if Authorization header not set)
+      - voice_prompt: Voice prompt filename (default: NATF0.pt)
+      - sample_rate: Client PCM sample rate (default: 8000)
+      - x_user_id: User ID override
+    """
+    from core.config import VOICE_DEFAULT_MODE, VOICE_PERSONAPLEX_FALLBACK
+    from core.voice.voice_protocol import VoiceMode, VoiceSession, MSG_SESSION, MSG_STATUS, MSG_ERROR
+
+    # --- Auth ---
+    auth_error = await _authenticate_voice_websocket(websocket)
+    if auth_error:
+        await websocket.close(code=1008, reason=auth_error)
+        return
+
+    await websocket.accept()
+
+    # --- Parse params ---
+    mode_str = (websocket.query_params.get("mode") or VOICE_DEFAULT_MODE).strip().lower()
+    voice_prompt = websocket.query_params.get("voice_prompt", "NATF0.pt")
+    sample_rate = int(websocket.query_params.get("sample_rate", "8000"))
+    x_user_id = (websocket.headers.get("x-user-id") or websocket.query_params.get("x_user_id") or "").strip() or None
+
+    try:
+        mode = VoiceMode(mode_str)
+    except ValueError:
+        mode = VoiceMode.PERSONAPLEX
+
+    # --- Resolve agent ---
+    system_prompt = ""
+    agent_name = ""
+    model_selection = None
+    try:
+        agent = get_agent(agent_id)
+        if agent:
+            system_prompt = agent.get("system_prompt") or ""
+            agent_name = agent.get("name") or ""
+            model_selection = agent.get("model_selection")
+    except Exception:
+        pass
+
+    session = VoiceSession(
+        agent_id=agent_id,
+        mode=mode,
+        user_id=x_user_id,
+        sample_rate=sample_rate,
+        voice_prompt=voice_prompt,
+        system_prompt=system_prompt,
+        agent_name=agent_name,
+        model_selection=model_selection,
+    )
+
+    # Send session info
+    try:
+        import json as _json
+        await websocket.send_text(_json.dumps({
+            "type": MSG_SESSION,
+            "session_id": session.session_id,
+            "mode": session.mode.value,
+            "agent_id": agent_id,
+            "agent_name": agent_name,
+        }))
+    except Exception:
+        pass
+
+    logging.info("Voice pipeline session %s started (agent=%s, mode=%s)", session.session_id, agent_id, mode.value)
+
+    # --- Dispatch to mode handler ---
+    try:
+        if mode == VoiceMode.PERSONAPLEX:
+            try:
+                from core.voice.mode_personaplex import handle_personaplex
+                await handle_personaplex(websocket, session)
+            except ConnectionError as ce:
+                if VOICE_PERSONAPLEX_FALLBACK:
+                    logging.warning("PersonaPlex unavailable, falling back to cascade: %s", ce)
+                    try:
+                        await websocket.send_text(_json.dumps({
+                            "type": MSG_STATUS,
+                            "status": "fallback",
+                            "message": "PersonaPlex unavailable — using cascade mode",
+                        }))
+                    except Exception:
+                        pass
+                    session.mode = VoiceMode.CASCADE
+                    from core.voice.mode_cascade import handle_cascade
+                    await handle_cascade(websocket, session)
+                else:
+                    await websocket.send_text(_json.dumps({
+                        "type": MSG_ERROR,
+                        "message": f"PersonaPlex unavailable: {ce}",
+                    }))
+
+        elif mode == VoiceMode.LFM:
+            from core.voice.mode_lfm import handle_lfm
+            await handle_lfm(websocket, session)
+
+        elif mode == VoiceMode.CASCADE:
+            from core.voice.mode_cascade import handle_cascade
+            await handle_cascade(websocket, session)
+
+    except WebSocketDisconnect:
+        logging.info("Voice pipeline session %s disconnected", session.session_id)
+    except Exception as exc:
+        logging.error("Voice pipeline session %s error: %s", session.session_id, exc)
+        try:
+            await websocket.send_text(_json.dumps({"type": MSG_ERROR, "message": str(exc)}))
+        except Exception:
+            pass
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
+        logging.info("Voice pipeline session %s ended", session.session_id)
 
 
 # --- Voice ---

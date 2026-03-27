@@ -5,11 +5,12 @@ import os
 import json
 import time
 import re
+import tempfile
 from typing import Dict, List, Optional
 from urllib.parse import unquote
 
 from .agent_manager import get_agent, update_agent_metadata
-from .cache import check_cache, save_to_cache
+from .cache import check_cache, invalidate_agent_cache, save_to_cache
 from .guardrails import validate_input, validate_output
 from .llm import invoke_chain
 from .response_parser import enforce_canonical_media_tags
@@ -19,6 +20,33 @@ from .processing.pii import mask_pii
 from .rag.retrieval import hybrid_search
 from .rag.vector_store import create_vector_store
 from .database import Document, SessionLocal, save_message
+
+
+# ---------------------------------------------------------------------------
+# In-process TTL cache for agent document names.
+# Avoids a DB round-trip on every non-cached message.
+# ---------------------------------------------------------------------------
+_DOC_NAMES_CACHE: Dict[str, tuple] = {}  # agent_id -> (fetched_at, list[str])
+_DOC_NAMES_TTL = 60  # seconds
+
+
+def _get_doc_names_cached(agent_id: str) -> List[str]:
+    now = time.time()
+    entry = _DOC_NAMES_CACHE.get(agent_id)
+    if entry and (now - entry[0]) < _DOC_NAMES_TTL:
+        return entry[1]
+    try:
+        from .database import get_agent_document_names
+        names = get_agent_document_names(agent_id, limit=50)
+        _DOC_NAMES_CACHE[agent_id] = (now, names)
+        return names
+    except Exception as e:
+        print(f"⚠️ Failed to fetch doc names: {e}")
+        return []
+
+
+def _invalidate_doc_names_cache(agent_id: str) -> None:
+    _DOC_NAMES_CACHE.pop(agent_id, None)
 
 
 def _extract_first_prompt(items) -> Optional[str]:
@@ -37,7 +65,11 @@ def _extract_first_prompt(items) -> Optional[str]:
     return None
 
 
-def _rule_based_agent_reply(question: str, agent_id: Optional[str]) -> Optional[str]:
+def _rule_based_agent_reply(
+    question: str,
+    agent_id: Optional[str],
+    agent: Optional[Dict] = None,
+) -> Optional[str]:
     text = str(question or "").strip().lower()
     if not text:
         return None
@@ -56,9 +88,9 @@ def _rule_based_agent_reply(question: str, agent_id: Optional[str]) -> Optional[
     end_prompt = None
     if agent_id:
         try:
-            agent = get_agent(agent_id) or {}
-            starter_prompt = _extract_first_prompt(agent.get("conversation_starters"))
-            end_prompt = _extract_first_prompt(agent.get("conversation_end"))
+            resolved = agent or get_agent(agent_id) or {}
+            starter_prompt = _extract_first_prompt(resolved.get("conversation_starters"))
+            end_prompt = _extract_first_prompt(resolved.get("conversation_end"))
         except Exception:
             pass
 
@@ -173,8 +205,16 @@ def process_question(
     query_tokens = estimate_tokens(question)
     rag_query_tokens = estimate_tokens(safe_question)
 
+    # Fetch agent once and reuse throughout this request.
+    _agent_data: Optional[Dict] = None
+    if agent_id:
+        try:
+            _agent_data = get_agent(agent_id)
+        except Exception:
+            pass
+
     # Fast-path for salutations and sign-offs (agent-configurable).
-    scripted_reply = _rule_based_agent_reply(question, agent_id)
+    scripted_reply = _rule_based_agent_reply(question, agent_id, agent=_agent_data)
     if scripted_reply:
         scripted_reply = enforce_canonical_media_tags(scripted_reply)
         save_message("user", safe_question, agent_id=agent_id)
@@ -265,7 +305,7 @@ def process_question(
     agent_name = "default"
     if agent_id:
         try:
-            agent = get_agent(agent_id)
+            agent = _agent_data
             if agent:
                 agent_name = agent.get("name", "unknown")
                 
@@ -302,16 +342,10 @@ def process_question(
                     if video_names:
                         media_sections.append("Available Videos: " + json.dumps(video_names, ensure_ascii=False))
                 
-                # 3. Documents (Filenames)
-                try:
-                    from .database import get_agent_document_names
-                    # Simple fetch, optimize if too many docs
-                    # We might need to cache this or limit it
-                    doc_names = get_agent_document_names(agent_id, limit=50)
-                    if doc_names:
-                        media_sections.append("Available Documents: " + json.dumps(doc_names, ensure_ascii=False))
-                except Exception as e:
-                    print(f"⚠️ Failed to inject docs into context: {e}")
+                # 3. Documents (Filenames) — served from 60-second TTL cache.
+                doc_names = _get_doc_names_cached(agent_id)
+                if doc_names:
+                    media_sections.append("Available Documents: " + json.dumps(doc_names, ensure_ascii=False))
 
                 if media_sections:
                     context += "\n\n" + "\n\n".join(media_sections)
@@ -321,7 +355,7 @@ def process_question(
 
 
     answer = invoke_chain(
-        question,
+        safe_question,
         context,
         history,
         agent_id=agent_id,
@@ -368,16 +402,41 @@ def process_question(
     return answer
 
 
+def _resolve_agent_storage_dir(agent_id: str, agent_name: str) -> str:
+    safe_name = (agent_name or "").strip().replace(" ", "_").lower() or str(agent_id)
+    tmp_root = os.path.join(tempfile.gettempdir(), "omnicortex_agents")
+    candidates = [
+        os.path.join("storage", "agents", safe_name),
+        os.path.join("storage", "agents", "by_id", str(agent_id)),
+        os.path.join(tmp_root, safe_name),
+    ]
+    for storage_dir in candidates:
+        try:
+            os.makedirs(storage_dir, exist_ok=True)
+            probe = os.path.join(storage_dir, ".write_probe")
+            with open(probe, "w", encoding="utf-8") as f:
+                f.write("")
+            os.remove(probe)
+            return storage_dir
+        except Exception:
+            continue
+
+    fallback = os.path.join(tmp_root, "by_id", str(agent_id))
+    os.makedirs(fallback, exist_ok=True)
+    return fallback
+
+
 def save_text_to_file(agent_id: str, filename: str, text: str):
-    """Save extracted text to storage/agents/{agent_name}/{filename}.txt."""
+    """Save extracted text to a writable agent storage path."""
     try:
         agent = get_agent(agent_id)
         if not agent:
             return
 
-        agent_name = agent["name"].strip().replace(" ", "_").lower()
-        storage_dir = os.path.join("storage", "agents", agent_name)
-        os.makedirs(storage_dir, exist_ok=True)
+        storage_dir = _resolve_agent_storage_dir(
+            agent_id=agent_id,
+            agent_name=str(agent.get("name") or agent_id),
+        )
 
         safe_filename = "".join(
             [c for c in filename if c.isalpha() or c.isdigit() or c in (" ", ".", "_")]
@@ -429,19 +488,8 @@ def process_documents(files=None, text_input: str = None, agent_id: str = None) 
         return result
 
     pairs = parent_child_split(raw_text)
-    unique_parents = list(set(parent for _, parent in pairs))
+    unique_parents = list(dict.fromkeys(parent for _, parent in pairs))
     from .database import batch_save_parent_chunks
-
-    parent_id_map = {}
-    if agent_id and unique_parents:
-        parent_id_map = batch_save_parent_chunks(unique_parents)
-
-    chunks = []
-    metadatas = []
-    for child, parent in pairs:
-        chunks.append(child)
-        parent_id = parent_id_map.get(parent)
-        metadatas.append({"parent_id": parent_id} if parent_id else {})
 
     doc_ids: List[int] = []
     if agent_id:
@@ -482,6 +530,18 @@ def process_documents(files=None, text_input: str = None, agent_id: str = None) 
         finally:
             db.close()
 
+    parent_id_map = {}
+    if agent_id and unique_parents:
+        source_doc_id = doc_ids[0] if doc_ids else None
+        parent_id_map = batch_save_parent_chunks(unique_parents, source_doc_id=source_doc_id)
+
+    chunks = []
+    metadatas = []
+    for child, parent in pairs:
+        chunks.append(child)
+        parent_id = parent_id_map.get(parent)
+        metadatas.append({"parent_id": parent_id} if parent_id else {})
+
     t0 = time.time()
     status = "ready"
     try:
@@ -508,6 +568,8 @@ def process_documents(files=None, text_input: str = None, agent_id: str = None) 
 
         if status == "ready":
             update_agent_metadata(agent_id, document_count=len(doc_ids))
+            invalidate_agent_cache(agent_id)
+            _invalidate_doc_names_cache(agent_id)
 
     result["vector_store"] = f"omni_agent_{agent_id}" if agent_id else "omni_default"
     result["vector_chunks"] = len(chunks)

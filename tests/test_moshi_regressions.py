@@ -1,4 +1,5 @@
 import asyncio
+import importlib
 from types import SimpleNamespace
 
 import pytest
@@ -24,9 +25,18 @@ def _run(coro):
     return asyncio.run(coro)
 
 
+def _import_moshi_module(*candidates: str):
+    for name in candidates:
+        try:
+            return importlib.import_module(name)
+        except Exception:
+            continue
+    pytest.skip(f"Moshi module not importable from any of: {', '.join(candidates)}")
+
+
 def test_create_loss_report_handles_text_and_audio_targets_without_index_error():
     torch = pytest.importorskip("torch")
-    lm_mod = pytest.importorskip("moshi.moshi.models.lm")
+    lm_mod = _import_moshi_module("moshi.models.lm", "moshi.moshi.models.lm")
     create_loss_report = lm_mod.create_loss_report
 
     class _FakeLM:
@@ -73,7 +83,7 @@ def test_create_loss_report_handles_text_and_audio_targets_without_index_error()
 
 def test_handle_chat_rejects_unauthorized_when_token_is_configured(monkeypatch):
     web = pytest.importorskip("aiohttp.web")
-    server_mod = pytest.importorskip("moshi.moshi.server")
+    server_mod = _import_moshi_module("moshi.server", "moshi.moshi.server")
     handle_chat = server_mod.ServerState.handle_chat
 
     monkeypatch.setenv("MOSHI_API_TOKEN", "secret-token")
@@ -87,7 +97,7 @@ def test_handle_chat_rejects_unauthorized_when_token_is_configured(monkeypatch):
 
 def test_handle_chat_reads_seed_from_query_not_request_mapping(monkeypatch):
     pytest.importorskip("aiohttp.web")
-    server_mod = pytest.importorskip("moshi.moshi.server")
+    server_mod = _import_moshi_module("moshi.server", "moshi.moshi.server")
     handle_chat = server_mod.ServerState.handle_chat
 
     class _DummyWS:

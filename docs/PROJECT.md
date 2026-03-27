@@ -37,7 +37,7 @@ flowchart LR
 - `core/database.py`: SQLAlchemy models, schema/index setup, message/document/usage storage.
 - `core/clickhouse.py`: buffered async analytics writing (usage/chat/agent events).
 - `scripts/voice_gateway.py`: `/calls` WS bridge between telephony media and OmniCortex `/voice/ws`.
-- `moshi/moshi/server.py`: PersonaPlex runtime, OmniCortex-aware agent/prompt fetch, UI patching.
+- `personaplex/moshi/moshi/server.py`: PersonaPlex runtime, OmniCortex-aware agent/prompt fetch, UI patching.
 
 ## 3. End-to-End Flows
 

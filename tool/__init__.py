@@ -1,0 +1,2 @@
+"""Tool-calling package scaffold."""
+

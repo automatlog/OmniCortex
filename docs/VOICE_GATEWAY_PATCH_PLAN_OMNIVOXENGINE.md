@@ -28,9 +28,9 @@ Use these line anchors (`Ln`) as primary insertion points.
 3. `api.py:2374` - `POST /voice/transcribe` disabled in Moshi-only mode
 4. `api.py:2403` - `POST /voice/chat` disabled in Moshi-only mode
 5. `core/auth.py:26` - `verify_bearer_token(...)`
-6. `moshi/moshi/server.py:135` - `handle_chat(...)` websocket entrypoint
-7. `moshi/moshi/server.py:202` - inbound audio frame kind (`0x01`)
-8. `moshi/moshi/server.py:262` - outbound audio frame kind (`0x01`)
+6. `personaplex/moshi/moshi/server.py:135` - `handle_chat(...)` websocket entrypoint
+7. `personaplex/moshi/moshi/server.py:202` - inbound audio frame kind (`0x01`)
+8. `personaplex/moshi/moshi/server.py:262` - outbound audio frame kind (`0x01`)
 9. `OmniVoxEngine.UI/Program.cs:146` - existing service registrations start
 10. `OmniVoxEngine.UI/Program.cs:187` - hosted services registration block
 11. `OmniVoxEngine.UI/appsettings.json:38` - `OutboundSocket` section (add `VoiceGateway` nearby)
@@ -56,7 +56,7 @@ Use this when implementing patches so edits are deterministic.
    add a session-close summary log (duration, bytes in/out, close reason).
 5. `core/auth.py` after `Ln 67`:
    add optional claim extraction helper for downstream voice tracing (no auth behavior change).
-6. `moshi/moshi/server.py` after `Ln 146`:
+6. `personaplex/moshi/moshi/server.py` after `Ln 146`:
    add connect metadata logging hooks (`call_uuid`, `agent_id`) if present in query/header.
 
 ### OmniVoxEngine (C#) - Insert After

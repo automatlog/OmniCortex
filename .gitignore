@@ -39,6 +39,9 @@ data/cache/
 data/embeddings/
 data/vectordb/
 storage/
+bridge.py
+start_lfm.py
+test_py.py
 
 # Test artifacts
 *.json

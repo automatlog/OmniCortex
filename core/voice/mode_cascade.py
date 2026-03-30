@@ -106,7 +106,7 @@ async def handle_cascade(websocket: WebSocket, session: VoiceSession):
 
                 try:
                     asr = await get_asr_engine()
-                    transcript, confidence = await asr.transcribe(pcm_16k, sample_rate=LFM_INPUT_RATE)
+                    transcript, confidence, detected_lang = await asr.transcribe(pcm_16k, sample_rate=LFM_INPUT_RATE)
                 except Exception as exc:
                     logger.error("ASR failed: %s", exc)
                     await _send_json(websocket, {"type": MSG_ERROR, "message": "Transcription failed"})

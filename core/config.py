@@ -147,6 +147,17 @@ VOICE_VAD_SILENCE_MS = int(os.getenv("VOICE_VAD_SILENCE_MS", "600"))
 VOICE_VAD_ENERGY_THRESHOLD = float(os.getenv("VOICE_VAD_ENERGY_THRESHOLD", "0.01"))
 VOICE_REASONER_QUEUE_SIZE = int(os.getenv("VOICE_REASONER_QUEUE_SIZE", "200"))
 VOICE_PERSONAPLEX_FALLBACK = os.getenv("VOICE_PERSONAPLEX_FALLBACK", "true").lower() == "true"
+VOICE_POST_SILENCE_DELAY_MS = int(os.getenv("VOICE_POST_SILENCE_DELAY_MS", "500"))
+VOICE_BACKCHANNEL_PAUSE_MS = int(os.getenv("VOICE_BACKCHANNEL_PAUSE_MS", "300"))
+VOICE_BACKCHANNEL_COOLDOWN_S = float(os.getenv("VOICE_BACKCHANNEL_COOLDOWN_S", "4.0"))
+VOICE_BACKCHANNEL_MIN_SPEECH_S = float(os.getenv("VOICE_BACKCHANNEL_MIN_SPEECH_S", "2.0"))
+
+# =============================================================================
+# MULTI-AGENT ROUTING
+# =============================================================================
+VOICE_MAX_TRANSFERS_PER_SESSION = int(os.getenv("VOICE_MAX_TRANSFERS_PER_SESSION", "3"))
+VOICE_TRANSFER_COOLDOWN_S = float(os.getenv("VOICE_TRANSFER_COOLDOWN_S", "30"))
+VOICE_SENTIMENT_ANGRY_THRESHOLD = float(os.getenv("VOICE_SENTIMENT_ANGRY_THRESHOLD", "0.7"))
 
 # =============================================================================
 # PERSONAPLEX / RUNPOD CONNECTION

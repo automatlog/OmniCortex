@@ -13,6 +13,21 @@ from .rag.vector_store import delete_vector_store
 _DELETE_RETRY_ATTEMPTS = max(1, int(os.getenv("AGENT_DELETE_VECTOR_RETRIES", "5")))
 _DELETE_RETRY_DELAY_SECONDS = max(0.1, float(os.getenv("AGENT_DELETE_VECTOR_RETRY_DELAY", "2")))
 
+# Safe filter: skip .deleted check if the column doesn't exist on the model
+_HAS_DELETED = hasattr(Agent, "deleted")
+
+def _not_deleted():
+    """Return filter clause for non-deleted agents, or True if column missing."""
+    if _HAS_DELETED:
+        return Agent.deleted.is_(False)
+    return True
+
+def _is_deleted():
+    """Return filter clause for soft-deleted agents, or False if column missing."""
+    if _HAS_DELETED:
+        return Agent.deleted.is_(True)
+    return False
+
 
 def _finalize_deleted_agent(agent_id: str) -> None:
     """Delete vectors first, then hard-delete an already soft-deleted agent row."""
@@ -30,7 +45,7 @@ def _finalize_deleted_agent(agent_id: str) -> None:
         if delete_vector_store(agent_id):
             db = SessionLocal()
             try:
-                agent = db.query(Agent).filter(Agent.id == agent_id, Agent.deleted.is_(True)).first()
+                agent = db.query(Agent).filter(Agent.id == agent_id, _is_deleted()).first()
                 if agent:
                     db.delete(agent)
                     db.commit()
@@ -80,14 +95,14 @@ def create_agent(
     """Create a new agent"""
     db = SessionLocal()
     try:
-        existing = db.query(Agent).filter(Agent.name == name, Agent.deleted.is_(False)).first()
+        existing = db.query(Agent).filter(Agent.name == name, _not_deleted()).first()
         if existing:
             raise ValueError(f"Agent '{name}' already exists")
 
         agent_id = str(id).strip() if id is not None else ""
         if not agent_id:
             raise ValueError("id is required")
-        id_exists = db.query(Agent).filter(Agent.id == agent_id, Agent.deleted.is_(False)).first()
+        id_exists = db.query(Agent).filter(Agent.id == agent_id, _not_deleted()).first()
         if id_exists:
             raise ValueError(f"Agent id '{agent_id}' already exists")
 
@@ -130,7 +145,7 @@ def get_agent(agent_id: str) -> Optional[Dict]:
     """Get agent by ID"""
     db = SessionLocal()
     try:
-        agent = db.query(Agent).filter(Agent.id == agent_id, Agent.deleted.is_(False)).first()
+        agent = db.query(Agent).filter(Agent.id == agent_id, _not_deleted()).first()
         if not agent:
             return None
         metadata = agent.extra_data or {}
@@ -167,7 +182,7 @@ def get_all_agents() -> List[Dict]:
     """Get all agents"""
     db = SessionLocal()
     try:
-        agents = db.query(Agent).filter(Agent.deleted.is_(False)).order_by(Agent.created_at.desc()).all()
+        agents = db.query(Agent).filter(_not_deleted()).order_by(Agent.created_at.desc()).all()
         return [
             {
                 "metadata": a.extra_data or {},
@@ -218,11 +233,12 @@ def update_agent(
     subagent_type: str = None,
     model_selection: str = None,
     user_id: str = None,
+    extra_data: Dict = None,
 ) -> bool:
     """Update agent details"""
     db = SessionLocal()
     try:
-        agent = db.query(Agent).filter(Agent.id == agent_id, Agent.deleted.is_(False)).first()
+        agent = db.query(Agent).filter(Agent.id == agent_id, _not_deleted()).first()
         if not agent:
             return False
 
@@ -260,6 +276,11 @@ def update_agent(
             agent.model_selection = model_selection
         if user_id is not None:
             agent.user_id = user_id
+        if extra_data is not None:
+            # Merge into existing extra_data to preserve owner_token_id etc.
+            existing = agent.extra_data or {}
+            existing.update(extra_data)
+            agent.extra_data = existing
 
         db.commit()
         return True
@@ -271,7 +292,7 @@ def update_agent_metadata(agent_id: str, document_count: int = None, message_cou
     """Update agent counts"""
     db = SessionLocal()
     try:
-        agent = db.query(Agent).filter(Agent.id == agent_id, Agent.deleted.is_(False)).first()
+        agent = db.query(Agent).filter(Agent.id == agent_id, _not_deleted()).first()
         if agent:
             if document_count is not None:
                 agent.document_count = (agent.document_count or 0) + document_count

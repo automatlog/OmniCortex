@@ -41,6 +41,13 @@ class VoiceSession:
     system_prompt: str = ""
     agent_name: str = ""
     model_selection: Optional[str] = None
+    detected_language: str = "en"
+    workflow_state: str = ""
+    # Multi-agent transfer fields
+    transfer_count: int = 0
+    previous_agent_ids: list = field(default_factory=list)
+    handoff_reason: str = ""
+    pending_transfer_agent_id: str = ""
 
 
 # =============================================================================
@@ -63,3 +70,4 @@ MSG_STATUS = "status"
 MSG_ERROR = "error"
 MSG_SESSION = "session"
 MSG_CONTROL = "control"
+MSG_TRANSFER = "transfer"

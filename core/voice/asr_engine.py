@@ -64,15 +64,20 @@ class ASREngine:
             frac = (idx - left).astype(np.float32)
             return (pcm_float32[left] * (1.0 - frac) + pcm_float32[right] * frac).astype(np.float32)
 
-    def _transcribe_sync(self, pcm_float32: np.ndarray, sample_rate: int) -> Tuple[str, float]:
+    def _transcribe_sync(self, pcm_float32: np.ndarray, sample_rate: int) -> Tuple[str, float, str]:
         """Blocking transcription — must be called via run_in_executor.
 
-        Returns confidence as average log probability. If no segments are produced,
-        confidence is NaN to indicate "not available".
+        Returns (text, confidence, detected_language).
+        Confidence is average log probability; NaN if no segments produced.
+        detected_language is ISO 639-1 code (e.g. "en", "hi", "gu").
         """
         self._load()
         audio_input = self._resample_to_16k(pcm_float32, sample_rate)
-        segments, info = self._model.transcribe(audio_input, beam_size=3, language="en")
+        # Use language=None for auto-detection when multilingual model is loaded
+        # For English-only models (e.g. "base.en"), language is always "en"
+        is_multilingual = not self.model_size.endswith(".en")
+        lang_param = None if is_multilingual else "en"
+        segments, info = self._model.transcribe(audio_input, beam_size=3, language=lang_param)
         text_parts = []
         total_prob = 0.0
         count = 0
@@ -82,10 +87,14 @@ class ASREngine:
             count += 1
         text = " ".join(text_parts).strip()
         confidence = (total_prob / count) if count > 0 else math.nan
-        return text, confidence
+        detected_lang = getattr(info, "language", "en") or "en"
+        return text, confidence, detected_lang
 
-    async def transcribe(self, pcm_float32: np.ndarray, sample_rate: int = 16000) -> Tuple[str, float]:
-        """Async transcription — runs blocking model in executor."""
+    async def transcribe(self, pcm_float32: np.ndarray, sample_rate: int = 16000) -> Tuple[str, float, str]:
+        """Async transcription — runs blocking model in executor.
+
+        Returns (text, confidence, detected_language).
+        """
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(None, self._transcribe_sync, pcm_float32, sample_rate)
 

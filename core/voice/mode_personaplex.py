@@ -12,8 +12,10 @@ Uses aiohttp.ClientSession.ws_connect() for the PersonaPlex upstream connection.
 import asyncio
 import json
 import logging
+import random
 import re
 import ssl
+import time
 from typing import List, Optional
 from urllib.parse import urlencode
 
@@ -34,15 +36,23 @@ from core.config import (
     VOICE_VAD_SILENCE_MS,
     VOICE_VAD_ENERGY_THRESHOLD,
     VOICE_REASONER_QUEUE_SIZE,
+    VOICE_POST_SILENCE_DELAY_MS,
+    VOICE_BACKCHANNEL_PAUSE_MS,
+    VOICE_BACKCHANNEL_COOLDOWN_S,
+    VOICE_BACKCHANNEL_MIN_SPEECH_S,
 )
 from core.voice.voice_protocol import (
     VoiceSession, SessionState,
     GATEWAY_RATE, PERSONAPLEX_RATE, LFM_INPUT_RATE,
-    MSG_TRANSCRIPT, MSG_ANSWER, MSG_STATUS, MSG_ERROR,
+    MSG_TRANSCRIPT, MSG_ANSWER, MSG_STATUS, MSG_ERROR, MSG_TRANSFER,
 )
 from core.voice.resampler import Resampler, pcm16_bytes_to_float32, float32_to_pcm16_bytes
 from core.voice.opus_codec import OpusCodec
 from core.voice.asr_engine import get_asr_engine
+from core.voice.intent_tracker import IntentTracker
+from core.voice.agent_workflow import AgentWorkflow
+from core.voice.agent_router import AgentRouter, analyze_sentiment, extract_entities
+from core.voice.conversation_gate import ConversationGate
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +64,43 @@ _QUERY_PATTERN = re.compile(
 
 def _is_query_intent(text: str) -> bool:
     return bool(_QUERY_PATTERN.search(text)) or text.rstrip().endswith("?")
+
+
+# ── Backchannel / mimicking ─────────────────────────────────────────
+BACKCHANNEL_PHRASES = ["hmm", "okay", "I see", "got it", "right", "yes", "alright", "I understand"]
+
+def _detect_brief_pause(
+    buffer: np.ndarray,
+    threshold: float = VOICE_VAD_ENERGY_THRESHOLD,
+    brief_ms: int = VOICE_BACKCHANNEL_PAUSE_MS,
+    silence_ms: int = VOICE_VAD_SILENCE_MS,
+    rate: int = GATEWAY_RATE,
+) -> str:
+    """Detect pause type in audio buffer tail.
+
+    Returns:
+      "speaking"       — energy above threshold at tail
+      "brief_pause"    — silence >= brief_ms but < silence_ms (backchannel window)
+      "utterance_end"  — silence >= silence_ms (full utterance boundary)
+    """
+    if buffer.size == 0:
+        return "speaking"
+    brief_samples = int(rate * brief_ms / 1000)
+    silence_samples = int(rate * silence_ms / 1000)
+
+    # Check for full utterance end first
+    if buffer.size >= silence_samples:
+        tail_long = buffer[-silence_samples:]
+        if float(np.mean(tail_long ** 2)) < threshold:
+            return "utterance_end"
+
+    # Check for brief pause
+    if buffer.size >= brief_samples:
+        tail_short = buffer[-brief_samples:]
+        if float(np.mean(tail_short ** 2)) < threshold:
+            return "brief_pause"
+
+    return "speaking"
 
 
 def _simple_energy_vad(
@@ -97,6 +144,19 @@ async def _drip_feed_text(text: str, px_ws, chars: int = VOICE_DRIP_FEED_CHARS, 
         except Exception:
             break
         await asyncio.sleep(interval_ms / 1000.0)
+
+
+async def _fast_inject_text(text: str, px_ws, chars: int = 80):
+    """Send text to PersonaPlex in large chunks with minimal delay.
+    Used for RAG context injection where speed matters more than pacing."""
+    for i in range(0, len(text), chars):
+        chunk = text[i:i + chars]
+        frame = b"\x02" + chunk.encode("utf-8")
+        try:
+            await px_ws.send_bytes(frame)
+        except Exception:
+            break
+        await asyncio.sleep(0.01)  # 10ms — just enough to not flood
 
 
 def _build_personaplex_url(session: VoiceSession) -> str:
@@ -145,13 +205,15 @@ async def handle_personaplex(websocket: WebSocket, session: VoiceSession):
 
     try:
         loop = asyncio.get_running_loop()
+
+        # Build a broad prefill query from the system prompt keywords
+        # so we pull diverse knowledge (not just "account loan balance")
+        _base = session.system_prompt or session.text_prompt or ""
+        _prefill_query = _base[:200] if len(_base) > 30 else "general information services products"
+
         prefill_chunks = await loop.run_in_executor(
             None,
-            lambda: hybrid_search(
-                "account information loan balance",
-                session.agent_id,
-                top_k=5,
-            )
+            lambda q=_prefill_query: hybrid_search(q, session.agent_id, top_k=8)
         )
         chunk_texts = []
         for c in prefill_chunks:
@@ -163,7 +225,7 @@ async def handle_personaplex(websocket: WebSocket, session: VoiceSession):
         base_prompt = session.text_prompt or session.system_prompt or ""
         if knowledge:
             full_prompt = base_prompt + "\n\nKnowledge:\n" + knowledge
-            session.text_prompt = full_prompt[:1000]
+            session.text_prompt = full_prompt[:2000]
             logger.info("Prefilled %d chunks (%d chars) for agent %s",
                         len(chunk_texts), len(session.text_prompt), session.agent_id)
     except Exception as exc:
@@ -179,6 +241,42 @@ async def handle_personaplex(websocket: WebSocket, session: VoiceSession):
     reasoner_queue: asyncio.Queue = asyncio.Queue(maxsize=VOICE_REASONER_QUEUE_SIZE)
     conversation_history: List[dict] = []
     stop_event = asyncio.Event()
+
+    # Intent tracker — load agent-specific intent map if available
+    agent_intent_kw = None
+    agent_follow_map = None
+    try:
+        from core.agent_manager import get_agent as _get_agent
+        _agent = _get_agent(session.agent_id)
+        if _agent:
+            _extra = _agent.get("extra_data") or {}
+            agent_intent_kw = _extra.get("intent_keywords")
+            agent_follow_map = _extra.get("follow_up_map")
+    except Exception:
+        pass
+    intent_tracker = IntentTracker(
+        agent_intent_keywords=agent_intent_kw,
+        agent_follow_up_map=agent_follow_map,
+    )
+
+    # Agent workflow state machine (loaded from agent.logic or extra_data)
+    workflow: Optional[AgentWorkflow] = None
+    try:
+        workflow = AgentWorkflow.from_agent(_agent)
+        if workflow and workflow.is_active():
+            session.workflow_state = workflow.current_state
+            logger.info("Workflow initialized: state=%s", workflow.current_state)
+    except Exception:
+        pass
+
+    # Multi-agent router (loaded from agent.logic or extra_data routing config)
+    agent_router = AgentRouter.from_agent(_agent)
+    if agent_router.has_rules():
+        logger.info("AgentRouter loaded with %d transfer rules", len(agent_router._rules))
+
+    # Conversation gate — validates caller input before agent continues
+    conv_gate = ConversationGate()
+    agent_sentence_buf = [""]  # accumulate PersonaPlex text tokens into sentences
 
     # Build connection kwargs for RunPod support
     connect_headers = {}
@@ -291,6 +389,17 @@ async def handle_personaplex(websocket: WebSocket, session: VoiceSession):
                         elif kind == 2:  # Text token
                             token_text = payload.decode("utf-8", errors="replace")
                             await _send_json(websocket, {"type": MSG_TRANSCRIPT, "text": token_text, "final": False})
+                            # Track agent output sentences for conversation gate
+                            agent_sentence_buf[0] += token_text
+                            for end_ch in ".!?\n":
+                                if end_ch in agent_sentence_buf[0]:
+                                    idx = agent_sentence_buf[0].rindex(end_ch)
+                                    sentence = agent_sentence_buf[0][:idx + 1].strip()
+                                    agent_sentence_buf[0] = agent_sentence_buf[0][idx + 1:]
+                                    if sentence:
+                                        clean = sentence.replace("\u2581", " ").strip()
+                                        conv_gate.on_agent_sentence(clean)
+                                    break
                         elif kind == 3:  # Special
                             pass  # Reserved
 
@@ -305,8 +414,13 @@ async def handle_personaplex(websocket: WebSocket, session: VoiceSession):
             """
             Drain audio queue -> VAD -> ASR -> intent detection ->
             process_question_voice() -> drip-feed answer text to PersonaPlex.
+            Includes backchannel injection during brief pauses.
             """
             audio_chunks: List[np.ndarray] = []
+            last_backchannel_t = 0.0       # monotonic time of last backchannel
+            speech_start_t = 0.0           # when caller started speaking
+            last_bc_phrase_idx = -1        # avoid repeating same phrase consecutively
+            detected_lang = "en"           # track detected language across turns
 
             while not stop_event.is_set():
                 # Drain available audio from queue
@@ -327,10 +441,57 @@ async def handle_personaplex(websocket: WebSocket, session: VoiceSession):
 
                 full_buffer = np.concatenate(audio_chunks) if audio_chunks else np.array([], dtype=np.float32)
 
-                if not _simple_energy_vad(full_buffer, rate=GATEWAY_RATE):
+                # Detect pause type: speaking / brief_pause / utterance_end
+                pause_type = _detect_brief_pause(full_buffer, rate=GATEWAY_RATE)
+
+                if pause_type == "speaking":
+                    # Track when caller started speaking
+                    if speech_start_t == 0.0:
+                        speech_start_t = time.monotonic()
                     continue
 
-                # Utterance boundary detected
+                if pause_type == "brief_pause":
+                    # Backchannel injection during brief pauses
+                    now = time.monotonic()
+                    speech_dur = now - speech_start_t if speech_start_t > 0 else 0
+                    cooldown_ok = (now - last_backchannel_t) >= VOICE_BACKCHANNEL_COOLDOWN_S
+                    speech_long_enough = speech_dur >= VOICE_BACKCHANNEL_MIN_SPEECH_S
+
+                    if cooldown_ok and speech_long_enough:
+                        # Pick a phrase, avoiding consecutive repeats
+                        idx = random.randint(0, len(BACKCHANNEL_PHRASES) - 1)
+                        while idx == last_bc_phrase_idx and len(BACKCHANNEL_PHRASES) > 1:
+                            idx = random.randint(0, len(BACKCHANNEL_PHRASES) - 1)
+                        phrase = BACKCHANNEL_PHRASES[idx]
+                        last_bc_phrase_idx = idx
+                        last_backchannel_t = now
+
+                        # Send as kind=2 text frame to PersonaPlex
+                        try:
+                            await px_ws.send_bytes(b"\x02" + phrase.encode("utf-8"))
+                            logger.info("Backchannel injected: '%s' (speech=%.1fs)", phrase, speech_dur)
+                        except Exception:
+                            pass
+                    continue
+
+                # pause_type == "utterance_end"
+                speech_start_t = 0.0  # reset for next utterance
+
+                # Wait 0.5s to confirm caller is done
+                await asyncio.sleep(VOICE_POST_SILENCE_DELAY_MS / 1000.0)
+
+                # Re-check: if new audio arrived during delay, caller was just pausing
+                resumed = False
+                while not reasoner_queue.empty():
+                    try:
+                        extra = reasoner_queue.get_nowait()
+                        audio_chunks.append(pcm16_bytes_to_float32(extra))
+                        resumed = True
+                    except asyncio.QueueEmpty:
+                        break
+                if resumed:
+                    continue  # go back to VAD, caller is still speaking
+
                 if full_buffer.size == 0:
                     audio_chunks.clear()
                     continue
@@ -341,7 +502,7 @@ async def handle_personaplex(websocket: WebSocket, session: VoiceSession):
                 # ASR
                 try:
                     asr = await get_asr_engine()
-                    transcript, confidence = await asr.transcribe(pcm_16k, sample_rate=LFM_INPUT_RATE)
+                    transcript, confidence, detected_lang = await asr.transcribe(pcm_16k, sample_rate=LFM_INPUT_RATE)
                 except Exception as exc:
                     logger.warning("Reasoner ASR failed: %s", exc)
                     continue
@@ -349,71 +510,259 @@ async def handle_personaplex(websocket: WebSocket, session: VoiceSession):
                 if not transcript.strip():
                     continue
 
-                await _send_json(websocket, {"type": MSG_TRANSCRIPT, "text": transcript, "final": True})
+                # Language change detection
+                prev_lang = session.detected_language
+                if detected_lang and detected_lang != prev_lang:
+                    session.detected_language = detected_lang
+                    logger.info("Language changed: %s -> %s", prev_lang, detected_lang)
+                    await _send_json(websocket, {
+                        "type": MSG_STATUS, "status": "language_changed",
+                        "from_language": prev_lang, "to_language": detected_lang,
+                    })
 
-                # Intent detection
-                if not _is_query_intent(transcript):
+                logger.info("ASR: lang=%s conf=%.2f text=%.60s", detected_lang, confidence, transcript)
+                await _send_json(websocket, {
+                    "type": MSG_TRANSCRIPT, "text": transcript,
+                    "final": True, "language": detected_lang,
+                })
+
+                # --- Conversation gate: validate caller input ---
+                if conv_gate.is_blocking():
+                    gate_result = conv_gate.validate_caller_input(transcript)
+                    if not gate_result.valid:
+                        # Input didn't match — ask caller to repeat
+                        if gate_result.retry_prompt:
+                            logger.info("Gate: retry — %s", gate_result.retry_prompt)
+                            await _drip_feed_text(gate_result.retry_prompt, px_ws)
+                            await _send_json(websocket, {
+                                "type": MSG_ANSWER, "text": gate_result.retry_prompt,
+                            })
+                        continue  # skip LLM, wait for caller to repeat
+                    # Input is valid — inject confirmation
+                    if gate_result.confirmation_text:
+                        logger.info("Gate: confirmed — %s", gate_result.confirmation_text)
+                        await _drip_feed_text(gate_result.confirmation_text, px_ws)
+                        await _send_json(websocket, {
+                            "type": MSG_ANSWER, "text": gate_result.confirmation_text,
+                        })
+                    # Feed extracted value to workflow entities
+                    if gate_result.extracted_value and workflow and workflow.is_active():
+                        for ent_key in ["phone", "dob", "account_number"]:
+                            if ent_key in conv_gate.expecting:
+                                workflow.collect_entity(ent_key, gate_result.extracted_value)
+                    await _send_json(websocket, {
+                        "type": MSG_STATUS, "status": "input_validated",
+                        "collected": dict(conv_gate.collected),
+                    })
+                else:
+                    # Gate is open — also validate opportunistically
+                    gate_result = conv_gate.validate_caller_input(transcript)
+                    if gate_result.confirmation_text:
+                        await _drip_feed_text(gate_result.confirmation_text, px_ws)
+
+                # Intent detection via tracker (replaces old regex _is_query_intent)
+                if not intent_tracker.is_query_intent(transcript):
                     continue
+
+                current_intent = intent_tracker.get_current_intent()
+                logger.info("Intent: %s | History: %s", current_intent,
+                            ", ".join(intent_tracker.intent_history[-3:]))
+
+                # --- Sentiment analysis + entity extraction ---
+                sentiment_label, sentiment_score = analyze_sentiment(transcript)
+                entities = extract_entities(transcript)
+                if entities:
+                    logger.info("Entities extracted: %s", entities)
+                    # Feed entities to workflow if active
+                    if workflow and workflow.is_active():
+                        for ent_name, ent_val in entities.items():
+                            workflow.collect_entity(ent_name, ent_val)
+
+                # --- Multi-agent transfer evaluation ---
+                if agent_router.has_rules():
+                    transfer = agent_router.evaluate(
+                        transcript=transcript,
+                        intent=current_intent or "",
+                        sentiment=sentiment_label,
+                        sentiment_score=sentiment_score,
+                        detected_language=detected_lang,
+                        workflow_state=session.workflow_state,
+                        current_agent_id=session.agent_id,
+                    )
+                    if transfer.should_transfer:
+                        logger.info("Transfer triggered: %s -> agent %s (%s)",
+                                    session.agent_id, transfer.target_agent_id[:8], transfer.reason)
+                        # Speak transfer message to caller via PersonaPlex
+                        if transfer.message:
+                            await _drip_feed_text(transfer.message, px_ws)
+                        # Record transfer in history and session
+                        agent_router.transfer_history.add(
+                            session.agent_id, transfer.target_agent_id, transfer.reason)
+                        session.previous_agent_ids.append(session.agent_id)
+                        session.transfer_count += 1
+                        session.pending_transfer_agent_id = transfer.target_agent_id
+                        session.handoff_reason = transfer.reason
+                        # Notify client about transfer
+                        await _send_json(websocket, {
+                            "type": MSG_TRANSFER,
+                            "target_agent_id": transfer.target_agent_id,
+                            "reason": transfer.reason,
+                            "message": transfer.message,
+                            "rule_matched": transfer.rule_matched,
+                            "transfer_count": session.transfer_count,
+                        })
+                        # Signal stop — the API layer will reconnect to new agent
+                        stop_event.set()
+                        break
+
+                # Check workflow transfer_to_agent (state-driven transfers)
+                if workflow and workflow.is_active():
+                    wf_transfer_target = workflow.get_transfer_target()
+                    if wf_transfer_target and wf_transfer_target != session.agent_id:
+                        logger.info("Workflow transfer: state=%s -> agent %s",
+                                    workflow.current_state, wf_transfer_target[:8])
+                        session.previous_agent_ids.append(session.agent_id)
+                        session.transfer_count += 1
+                        session.pending_transfer_agent_id = wf_transfer_target
+                        session.handoff_reason = f"workflow_state={workflow.current_state}"
+                        await _send_json(websocket, {
+                            "type": MSG_TRANSFER,
+                            "target_agent_id": wf_transfer_target,
+                            "reason": f"workflow_state={workflow.current_state}",
+                            "transfer_count": session.transfer_count,
+                        })
+                        stop_event.set()
+                        break
+
+                # Workflow: check if current state blocks this intent
+                if workflow and workflow.is_active() and current_intent:
+                    if workflow.is_blocked(current_intent):
+                        logger.info("Workflow blocks intent '%s' in state '%s'",
+                                    current_intent, workflow.current_state)
+                        # Respond with the current state's prompt override instead
+                        override = workflow.get_current_prompt_override()
+                        if override:
+                            await _drip_feed_text(override, px_ws)
+                        continue
 
                 # --- Phase 4: fast pgvector drip-feed (before LLM) ---
                 loop = asyncio.get_running_loop()
-                try:
-                    rag_chunks = await loop.run_in_executor(
-                        None,
-                        lambda t=transcript: hybrid_search(t, session.agent_id, top_k=3)
-                    )
+
+                # Check prefetch cache first (from previous turn's prediction)
+                cached = intent_tracker.get_cached(current_intent) if current_intent else None
+                rag_context_text = ""
+                if cached:
                     chunk_texts = []
-                    for c in rag_chunks:
+                    for c in cached:
                         text = c.get("content") or c.get("page_content") or ""
                         if text:
                             chunk_texts.append(text.strip())
-                    context_text = " ".join(chunk_texts)[:400]
-                    if context_text:
-                        await _drip_feed_text(context_text, px_ws)
-                        logger.info("Drip-fed %d pgvector chars for: %.40s", len(context_text), transcript)
-                except Exception as exc:
-                    logger.warning("pgvector drip-feed failed: %s", exc)
+                    rag_context_text = " ".join(chunk_texts)[:600]
+                    if rag_context_text:
+                        await _fast_inject_text(rag_context_text, px_ws)
+                        logger.info("Fast-injected %d CACHED chars for intent=%s", len(rag_context_text), current_intent)
+                else:
+                    try:
+                        rag_chunks = await loop.run_in_executor(
+                            None,
+                            lambda t=transcript: hybrid_search(t, session.agent_id, top_k=3)
+                        )
+                        chunk_texts = []
+                        for c in rag_chunks:
+                            text = c.get("content") or c.get("page_content") or ""
+                            if text:
+                                chunk_texts.append(text.strip())
+                        rag_context_text = " ".join(chunk_texts)[:600]
+                        if rag_context_text:
+                            await _fast_inject_text(rag_context_text, px_ws)
+                            logger.info("Fast-injected %d pgvector chars for: %.40s", len(rag_context_text), transcript)
+                    except Exception as exc:
+                        logger.warning("pgvector drip-feed failed: %s", exc)
+
+                # Background prefetch for predicted follow-up intents
+                prefetch_queries = intent_tracker.get_prefetch_queries()
+                for pq in prefetch_queries[:2]:
+                    async def _do_prefetch(query=pq):
+                        try:
+                            results = await loop.run_in_executor(
+                                None,
+                                lambda q=query: hybrid_search(q, session.agent_id, top_k=3)
+                            )
+                            for intent_name, intent_query in [
+                                (k, v) for k, v in {
+                                    "loan_balance": "loan balance outstanding amount principal",
+                                    "payment": "payment options installment EMI schedule",
+                                    "interest_rate": "interest rate APR percentage annual",
+                                    "due_date": "payment due date deadline schedule",
+                                    "account_info": "account details profile information",
+                                    "transaction_history": "transaction history statement recent activity",
+                                }.items() if v == query
+                            ]:
+                                intent_tracker.cache_prefetch(intent_name, results)
+                                break
+                        except Exception:
+                            pass
+                    asyncio.create_task(_do_prefetch())
                 # --- END Phase 4 ---
 
-                # RAG + LLM
-                session.state = SessionState.THINKING
-                await _send_json(websocket, {"type": MSG_STATUS, "status": SessionState.THINKING.value})
-
-                try:
-                    from core.voice_chat_service import process_question_voice
-
-                    answer = await loop.run_in_executor(
-                        None,
-                        lambda: process_question_voice(
-                            question=transcript,
-                            agent_id=session.agent_id,
-                            conversation_history=conversation_history,
-                            max_history=5,
-                            model_selection=session.model_selection,
-                            session_id=session.session_id,
-                            user_id=session.user_id,
-                            transcript_confidence=confidence,
-                        ),
-                    )
-                except Exception as exc:
-                    logger.error("Reasoner RAG+LLM failed: %s", exc)
-                    session.state = SessionState.LISTENING
-                    await _send_json(websocket, {"type": MSG_STATUS, "status": SessionState.LISTENING.value})
-                    continue
-
-                if answer:
-                    await _send_json(websocket, {"type": MSG_ANSWER, "text": answer})
-
-                    conversation_history.append({"role": "user", "content": transcript})
-                    conversation_history.append({"role": "assistant", "content": answer})
-                    if len(conversation_history) > 10:
-                        conversation_history[:] = conversation_history[-10:]
-
-                    # Drip-feed answer text to PersonaPlex
+                # RAG chunks already injected into Helium — run LLM in background
+                # so Helium can start speaking immediately from RAG context
+                async def _background_llm(
+                    _transcript=transcript, _confidence=confidence,
+                    _sentiment_label=sentiment_label, _sentiment_score=sentiment_score,
+                    _current_intent=current_intent,
+                ):
                     try:
-                        await _drip_feed_text(answer, px_ws)
+                        from core.voice_chat_service import process_question_voice
+
+                        intent_context = intent_tracker.get_intent_context()
+                        enriched_question = _transcript
+                        if intent_context:
+                            enriched_question = f"{_transcript}\n[{intent_context}]"
+                        if _sentiment_label != "neutral":
+                            enriched_question = f"{enriched_question}\n[Caller sentiment: {_sentiment_label} ({_sentiment_score:.2f})]"
+                        if workflow and workflow.is_active():
+                            wf_override = workflow.get_current_prompt_override()
+                            if wf_override:
+                                enriched_question = f"{enriched_question}\n[Workflow instruction: {wf_override}]"
+
+                        answer = await loop.run_in_executor(
+                            None,
+                            lambda: process_question_voice(
+                                question=enriched_question,
+                                agent_id=session.agent_id,
+                                conversation_history=conversation_history,
+                                max_history=5,
+                                model_selection=session.model_selection,
+                                session_id=session.session_id,
+                                user_id=session.user_id,
+                                transcript_confidence=_confidence,
+                            ),
+                        )
+
+                        if answer:
+                            await _send_json(websocket, {"type": MSG_ANSWER, "text": answer})
+                            conversation_history.append({"role": "user", "content": _transcript})
+                            conversation_history.append({"role": "assistant", "content": answer})
+                            if len(conversation_history) > 10:
+                                conversation_history[:] = conversation_history[-10:]
+                            # Drip-feed LLM answer as refinement
+                            await _drip_feed_text(answer, px_ws)
+                            # Advance workflow
+                            if workflow and workflow.is_active():
+                                new_override = workflow.advance(_transcript, answer)
+                                session.workflow_state = workflow.current_state
+                                if new_override:
+                                    logger.info("Workflow advanced to '%s'", workflow.current_state)
+                                    await _send_json(websocket, {
+                                        "type": MSG_STATUS,
+                                        "status": "workflow_state_changed",
+                                        "workflow": workflow.get_state_info(),
+                                    })
                     except Exception as exc:
-                        logger.warning("Drip-feed failed: %s", exc)
+                        logger.error("Background LLM failed: %s", exc)
+
+                asyncio.create_task(_background_llm())
 
                 session.state = SessionState.LISTENING
                 await _send_json(websocket, {"type": MSG_STATUS, "status": SessionState.LISTENING.value})

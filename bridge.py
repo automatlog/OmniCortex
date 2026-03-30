@@ -32,6 +32,7 @@ except ImportError:
     HAS_EDGE_TTS = False
     print("\033[93mWARNING: edge-tts not installed. Run: pip install edge-tts\033[0m")
 
+
 # ── ANSI Colors ─────────────────────────────────────────────────────
 C_RESET   = "\033[0m"
 C_BOLD    = "\033[1m"
@@ -104,9 +105,9 @@ def _bar(value, width=20, max_val=0.15):
 
 # ── Config ──────────────────────────────────────────────────────────
 FS_PORT           = 8001
-API_KEY           = (os.getenv("MOSHI_API_KEY") or "").strip()
-_BASE_URL         = "wss://qxpksbv6g9k06w-8998.proxy.runpod.net/api/chat"
-_TEXT_PROMPT      = "You are a helpful voice assistant. Be concise and friendly."
+API_KEY           = "b6f3b11e-64a5-49c7-9a90-54dd5a4cd482"
+_BASE_URL         = "wss://hq8ftw1drbvwro-8998.proxy.runpod.net/api/chat"
+_TEXT_PROMPT      = "You work for ICICI Bank and your name is Priya Sharma. You are a helpful and professional customer service representative specializing in personal accounts and loan products. You are currently assisting a customer who holds a personal savings account with a current balance of ₹50,000. Your role is to help the customer with any queries related to their account balance, recent transactions, and available loan products including personal loans, home loans, car loans, and education loans. When discussing loans, always mention that ICICI Bank offers competitive interest rates starting from 10.5% per annum for personal loans, with flexible EMI options and instant approval for eligible customers. Always verify the customer's identity before sharing any account details by asking for their registered mobile number and date of birth. Speak in a warm, helpful, and professional tone. If the customer asks about loan eligibility, guide them based on their current balance and account history."
 MOSHI_URL         = f"{_BASE_URL}?text_prompt={quote(_TEXT_PROMPT)}"
 
 FS_RATE           = 16000   # FreeSWITCH L16 mono (must match uuid_audio_stream rate)
@@ -129,8 +130,28 @@ SUPPRESS_TOKENS   = {"PAD", "EPAD"}
 
 # TTS playback via FreeSWITCH (bypasses broken mod_audio_stream receive)
 TTS_ENABLED       = True
-TTS_VOICE         = "en-US-AriaNeural"   # Microsoft Edge TTS voice
+TTS_VOICE         = "en-US-AriaNeural"   # Microsoft Edge TTS voice (default)
 TTS_DIR           = "/tmp/bridge_tts"
+
+# Language-aware TTS voice map for dynamic switching
+TTS_VOICE_MAP = {
+    "en": "en-US-AriaNeural",
+    "hi": "hi-IN-SwaraNeural",
+    "gu": "gu-IN-DhwaniNeural",
+    "ta": "ta-IN-PallaviNeural",
+    "te": "te-IN-ShrutiNeural",
+    "mr": "mr-IN-AarohiNeural",
+    "bn": "bn-IN-TanishaaNeural",
+    "kn": "kn-IN-SapnaNeural",
+    "ml": "ml-IN-SobhanaNeural",
+    "ur": "ur-PK-UzmaNeural",
+    "es": "es-ES-ElviraNeural",
+    "fr": "fr-FR-DeniseNeural",
+    "de": "de-DE-KatjaNeural",
+    "ja": "ja-JP-NanamiNeural",
+    "zh": "zh-CN-XiaoxiaoNeural",
+    "ar": "ar-SA-ZariyahNeural",
+}
 FS_CLI            = "/usr/local/freeswitch/bin/fs_cli"  # FreeSWITCH CLI
 DEBUG_DUMP_PCM    = os.getenv("DEBUG_DUMP_PCM", "false").strip().lower() == "true" or os.getenv("DEBUG_WAV", "false").strip().lower() == "true"
 MAX_DEBUG_PCM_BYTES = max(0, int(os.getenv("MAX_DEBUG_PCM_BYTES", str(16 * 1024 * 1024))))
@@ -140,6 +161,47 @@ _UUID_RE = re.compile(
 
 if not API_KEY:
     raise RuntimeError("MOSHI_API_KEY is required. Set it via environment variables.")
+
+
+def _detect_text_language(text: str) -> str:
+    """Simple script-based language detection from text.
+    Returns ISO 639-1 code. Falls back to 'en'."""
+    if not text or len(text.strip()) < 3:
+        return "en"
+    # Count characters by Unicode script
+    devanagari = sum(1 for c in text if '\u0900' <= c <= '\u097F')  # Hindi, Marathi, Sanskrit
+    gujarati = sum(1 for c in text if '\u0A80' <= c <= '\u0AFF')
+    tamil = sum(1 for c in text if '\u0B80' <= c <= '\u0BFF')
+    telugu = sum(1 for c in text if '\u0C00' <= c <= '\u0C7F')
+    bengali = sum(1 for c in text if '\u0980' <= c <= '\u09FF')
+    kannada = sum(1 for c in text if '\u0C80' <= c <= '\u0CFF')
+    arabic = sum(1 for c in text if '\u0600' <= c <= '\u06FF')
+    cjk = sum(1 for c in text if '\u4E00' <= c <= '\u9FFF')
+    hiragana = sum(1 for c in text if '\u3040' <= c <= '\u309F')
+    total = len(text.replace(" ", ""))
+    if total == 0:
+        return "en"
+    # Require at least 20% non-Latin characters to switch
+    threshold = total * 0.2
+    if devanagari > threshold:
+        return "hi"
+    if gujarati > threshold:
+        return "gu"
+    if tamil > threshold:
+        return "ta"
+    if telugu > threshold:
+        return "te"
+    if bengali > threshold:
+        return "bn"
+    if kannada > threshold:
+        return "kn"
+    if arabic > threshold:
+        return "ar"
+    if cjk > threshold:
+        return "zh"
+    if hiragana > threshold:
+        return "ja"
+    return "en"
 
 
 def sanitize_uuid(raw: str) -> str:
@@ -318,7 +380,12 @@ async def bridge_connection(fs_ws):
     sentence_buf   = [""]              # mutable accumulator for text tokens
     last_text_time = [0.0]             # monotonic time of last text token
     tts_playing    = [False]           # True while uuid_broadcast is active
-    BARGEIN_RMS_THRESHOLD = 0.02       # RMS above this = caller is speaking
+    BARGEIN_RMS_THRESHOLD = 0.04       # RMS above this = caller is speaking
+
+    # Language detection from text tokens
+    detected_tts_voice = [TTS_VOICE]   # current TTS voice, can change dynamically
+    text_token_buf     = [""]          # accumulate text tokens for language detection
+    text_byte_buf      = bytearray()   # accumulate raw bytes for multi-byte UTF-8 reassembly
 
     try:
         async with websockets.connect(
@@ -418,6 +485,12 @@ async def bridge_connection(fs_ws):
                         except Exception as e:
                             log_error(uuid, f"uuid_break failed: {e}")
 
+                    # NOTE: Backchannel via kind=2 text frames is NOT supported by
+                    # vanilla Moshi server — it logs "[Warn] unknown message kind 2"
+                    # and disconnects. Backchanneling only works in mode_personaplex.py
+                    # where PersonaPlex accepts kind=2 input. For bridge.py, a future
+                    # approach would use short edge-tts clips via uuid_broadcast.
+
                     await send_pcm(data)
 
             # ── Test tone generator ──────────────────────────────────
@@ -463,7 +536,8 @@ async def bridge_connection(fs_ws):
                         mp3_path = f"{TTS_DIR}/{uuid[:8]}_{ts_ms}.mp3"
                         wav_path = mp3_path.replace(".mp3", ".wav")
 
-                        comm = edge_tts.Communicate(text, TTS_VOICE)
+                        voice = detected_tts_voice[0]
+                        comm = edge_tts.Communicate(text, voice)
                         await comm.save(mp3_path)
 
                         proc = await asyncio.create_subprocess_exec(
@@ -597,16 +671,46 @@ async def bridge_connection(fs_ws):
                                 return
 
                     elif kind == KIND_TEXT:
-                        token = payload.decode("utf-8", errors="replace")
+                        # Accumulate raw bytes for multi-byte UTF-8 reassembly
+                        # Moshi can split chars like ₹ (E2 82 B9) across tokens
+                        text_byte_buf.extend(payload)
+                        try:
+                            token = text_byte_buf.decode("utf-8")
+                            text_byte_buf.clear()
+                        except UnicodeDecodeError:
+                            # Incomplete multi-byte sequence — wait for more
+                            if len(text_byte_buf) > 6:
+                                # Too many bad bytes, flush with replacement
+                                token = text_byte_buf.decode("utf-8", errors="replace")
+                                text_byte_buf.clear()
+                            else:
+                                continue
                         log_text(uuid, token)
                         if TTS_ENABLED and HAS_EDGE_TTS:
                             sentence_buf[0] += token
+                            text_token_buf[0] += token
                             last_text_time[0] = time.monotonic()
+
+                            # Language detection from accumulated text tokens
+                            if len(text_token_buf[0]) > 30:
+                                new_lang = _detect_text_language(text_token_buf[0])
+                                new_voice = TTS_VOICE_MAP.get(new_lang, TTS_VOICE)
+                                if new_voice != detected_tts_voice[0]:
+                                    log_info(uuid, f"Language switch: {detected_tts_voice[0]} -> {new_voice} (lang={new_lang})")
+                                    detected_tts_voice[0] = new_voice
+                                text_token_buf[0] = ""  # reset for next detection window
+
+                            # Sentence boundary detection — skip decimal points in numbers
+                            buf = sentence_buf[0]
                             for end_ch in ".!?\n":
-                                if end_ch in sentence_buf[0]:
-                                    idx = sentence_buf[0].rindex(end_ch)
-                                    sentence = sentence_buf[0][:idx + 1].strip()
-                                    sentence_buf[0] = sentence_buf[0][idx + 1:]
+                                if end_ch in buf:
+                                    idx = buf.rindex(end_ch)
+                                    # Skip decimal points: digit before AND digit after
+                                    if end_ch == "." and idx > 0 and idx < len(buf) - 1:
+                                        if buf[idx - 1].isdigit() and buf[idx + 1].isdigit():
+                                            continue
+                                    sentence = buf[:idx + 1].strip()
+                                    sentence_buf[0] = buf[idx + 1:]
                                     # Clean SentencePiece ▁ markers to spaces
                                     clean = sentence.replace("\u2581", " ").strip()
                                     if len(clean) > 2:

@@ -39,9 +39,6 @@ data/cache/
 data/embeddings/
 data/vectordb/
 storage/
-bridge.py
-start_lfm.py
-test_py.py
 
 # Test artifacts
 *.json
@@ -52,6 +49,9 @@ test_py.py
 *.key
 secrets/
 temp_api_key.txt
+bridge.py
+start_lfm.py
+test_py.py
 
 # Local data (never commit)
 local_pg_data/

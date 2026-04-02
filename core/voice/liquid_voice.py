@@ -286,17 +286,111 @@ class LiquidVoiceEngine:
         return ""
 
 
-# Singleton instance
-_voice_engine: Optional[LiquidVoiceEngine] = None
+class LFMRemoteClient:
+    """
+    HTTP client that talks to a standalone LFM server (serve_lfm.py).
+    Exposes the same interface as LiquidVoiceEngine so callers don't change.
+    """
 
+    def __init__(self, server_url: str):
+        self.server_url = server_url.rstrip("/")
+        self._loaded = True  # always "loaded" — the server manages the model
 
-def get_voice_engine() -> LiquidVoiceEngine:
-    """Get or create the voice engine singleton"""
-    global _voice_engine
-    if _voice_engine is None:
-        _voice_engine = LiquidVoiceEngine(
-            model_id=os.getenv("VOICE_MODEL", "LiquidAI/LFM2.5-Audio-1.5B"),
-            device="cuda" if torch.cuda.is_available() else "cpu",
-            max_instances=int(os.getenv("VOICE_MAX_INSTANCES", "8"))
+    def load(self):
+        pass
+
+    def unload(self):
+        pass
+
+    def speech_to_text(self, audio_bytes: bytes) -> str:
+        import requests
+
+        resp = requests.post(
+            f"{self.server_url}/stt",
+            files={"audio": ("audio.wav", audio_bytes, "audio/wav")},
+            timeout=30,
         )
+        resp.raise_for_status()
+        return resp.json().get("text", "")
+
+    def text_to_speech(self, text: str, max_new_tokens: int = 256) -> bytes:
+        import requests
+
+        resp = requests.post(
+            f"{self.server_url}/tts",
+            data={"text": text, "max_new_tokens": max_new_tokens},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.content
+
+    def transcribe_and_respond(
+        self,
+        audio_bytes: bytes,
+        system_prompt: str = "You are a helpful assistant. Respond with interleaved text and audio.",
+        conversation_history: list = None,
+        max_new_tokens: int = 512,
+        audio_temperature: float = 1.0,
+        audio_top_k: int = 4,
+    ) -> VoiceResponse:
+        import requests
+        import json
+
+        form_data = {
+            "system_prompt": system_prompt,
+            "max_new_tokens": max_new_tokens,
+            "audio_temperature": audio_temperature,
+            "audio_top_k": audio_top_k,
+        }
+        
+        if conversation_history:
+            form_data["conversation_history"] = json.dumps(conversation_history)
+
+        resp = requests.post(
+            f"{self.server_url}/respond",
+            files={"audio": ("audio.wav", audio_bytes, "audio/wav")},
+            data=form_data,
+            timeout=60,
+        )
+        resp.raise_for_status()
+        text = resp.headers.get("X-LFM-Text", "")
+        return VoiceResponse(text=text, audio_bytes=resp.content, sample_rate=24000)
+
+
+# Singleton instance
+_voice_engine = None
+_voice_engine_lock = __import__('threading').Lock()
+
+
+def get_voice_engine():
+    """
+    Get or create the voice engine singleton.
+
+    If LFM_SERVER_URL is set, returns a remote client that talks to
+    the standalone serve_lfm.py server via HTTP.
+    Otherwise, loads the model in-process (original behavior).
+    """
+    global _voice_engine
+    
+    # First check (without lock)
+    if _voice_engine is not None:
+        return _voice_engine
+    
+    # Acquire lock for initialization
+    with _voice_engine_lock:
+        # Second check (with lock) to ensure another thread didn't beat us
+        if _voice_engine is not None:
+            return _voice_engine
+        
+        lfm_server_url = os.getenv("LFM_SERVER_URL", "").strip()
+        if lfm_server_url:
+            print(f"[LiquidVoice] Using remote LFM server at {lfm_server_url}")
+            _voice_engine = LFMRemoteClient(lfm_server_url)
+        else:
+            _voice_engine = LiquidVoiceEngine(
+                model_id=os.getenv("VOICE_MODEL", "LiquidAI/LFM2.5-Audio-1.5B"),
+                device="cuda" if torch.cuda.is_available() else "cpu",
+                max_instances=int(os.getenv("VOICE_MAX_INSTANCES", "8")),
+            )
+    
     return _voice_engine

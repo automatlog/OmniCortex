@@ -90,6 +90,7 @@ def _agent_snapshot(agent: Dict[str, Any]) -> Dict[str, Any]:
         "image_urls": agent.get("image_urls"),
         "video_urls": agent.get("video_urls"),
         "created_at": agent.get("created_at"),
+        "logic": agent.get("logic"),
     }
 
 

@@ -64,6 +64,11 @@ async def _send_json(ws: WebSocket, msg: dict):
 async def handle_lfm(websocket: WebSocket, session: VoiceSession):
     """LFM2.5 interleaved voice handler."""
     from core.voice.liquid_voice import get_voice_engine
+    from core.config import VOICE_LLM_BACKEND
+
+    # Default voice reasoning model if agent has no model_selection.
+    if not session.model_selection:
+        session.model_selection = VOICE_LLM_BACKEND
 
     resample_up = Resampler(GATEWAY_RATE, LFM_INPUT_RATE)
     resample_down = Resampler(24000, GATEWAY_RATE)  # LFM2.5 outputs 24kHz

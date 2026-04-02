@@ -16,6 +16,16 @@ _DELETE_RETRY_DELAY_SECONDS = max(0.1, float(os.getenv("AGENT_DELETE_VECTOR_RETR
 # Safe filter: skip .deleted check if the column doesn't exist on the model
 _HAS_DELETED = hasattr(Agent, "deleted")
 
+
+def _safe_int(value: Optional[str], default: int) -> int:
+    """Safely convert env var string to int, returning default on error."""
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (ValueError, TypeError):
+        return default
+
 def _not_deleted():
     """Return filter clause for non-deleted agents, or True if column missing."""
     if _HAS_DELETED:
@@ -265,7 +275,12 @@ def update_agent(
         if scraped_data is not None:
             agent.scraped_data = scraped_data
         if logic is not None:
-            agent.logic = logic
+            if isinstance(logic, dict) and isinstance(agent.logic, dict):
+                merged = dict(agent.logic)
+                merged.update(logic)
+                agent.logic = merged
+            else:
+                agent.logic = logic
         if conversation_end is not None:
             agent.conversation_end = conversation_end
         if agent_type is not None:
@@ -301,6 +316,56 @@ def update_agent_metadata(agent_id: str, document_count: int = None, message_cou
             db.commit()
     finally:
         db.close()
+
+
+def resolve_retrieval_config(agent_id: str, agent: dict = None) -> dict:
+    """Resolve retrieval settings: agent.logic.retrieval > env > hardcoded defaults."""
+    if agent is None and agent_id:
+        agent = get_agent(agent_id)
+    logic = (agent.get("logic") or {}) if agent else {}
+    agent_cfg = logic.get("retrieval") or {} if isinstance(logic, dict) else {}
+    return {
+        "use_hybrid_search": agent_cfg.get(
+            "use_hybrid_search",
+            os.getenv("USE_HYBRID_SEARCH", "true").lower() == "true",
+        ),
+        "use_reranker": agent_cfg.get(
+            "use_reranker",
+            os.getenv("USE_RERANKER", "false").lower() == "true",
+        ),
+        "reranker_model": agent_cfg.get(
+            "reranker_model",
+            os.getenv("RERANKER_MODEL_NAME", "BAAI/bge-reranker-large"),
+        ),
+        "top_k": agent_cfg.get("top_k", 4),
+        "voice_top_k": agent_cfg.get("voice_top_k", 3),
+    }
+
+
+def resolve_voice_config(agent_id: str, agent: dict = None) -> dict:
+    """Resolve voice settings: agent.logic.voice > env > hardcoded defaults."""
+    if agent is None and agent_id:
+        agent = get_agent(agent_id)
+    logic = (agent.get("logic") or {}) if agent else {}
+    agent_cfg = logic.get("voice") or {} if isinstance(logic, dict) else {}
+    return {
+        "enabled": agent_cfg.get("enabled", True),
+        "mode": agent_cfg.get(
+            "mode",
+            os.getenv("VOICE_DEFAULT_MODE", "personaplex"),
+        ),
+        "voice_prompt": agent_cfg.get("voice_prompt", "NATF0.pt"),
+        "sample_rate": agent_cfg.get("sample_rate", 8000),
+        "rag_enabled": agent_cfg.get(
+            "rag_enabled",
+            os.getenv("VOICE_RAG_ENABLED", "true").lower() == "true",
+        ),
+        "rag_top_k": agent_cfg.get(
+            "rag_top_k",
+            _safe_int(os.getenv("VOICE_RAG_TOP_K"), 3),
+        ),
+        "context_query": agent_cfg.get("context_query", ""),
+    }
 
 
 def delete_agent(agent_id: str) -> bool:

@@ -1,0 +1,694 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>LFM2.5 Audio Mic Tester</title>
+  <style>
+    @import url("https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=JetBrains+Mono:wght@400;600&display=swap");
+
+    :root {
+      --bg: #f5f7f9;
+      --text: #122029;
+      --muted: #57707d;
+      --panel: #ffffff;
+      --line: #d3dee6;
+      --accent: #0b8f77;
+      --accent-2: #2f6ef6;
+      --warn: #c36a08;
+      --err: #c33a3a;
+      --ok: #127a4e;
+      --shadow: 0 12px 28px rgba(14, 43, 57, 0.08);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      color: var(--text);
+      font-family: "Space Grotesk", "Trebuchet MS", sans-serif;
+      background:
+        radial-gradient(circle at 8% 12%, rgba(11, 143, 119, 0.17), transparent 28%),
+        radial-gradient(circle at 92% 8%, rgba(47, 110, 246, 0.14), transparent 26%),
+        linear-gradient(180deg, #f7fafc 0%, #f3f6f8 60%, #eef3f5 100%);
+      min-height: 100vh;
+      padding: 28px 16px 40px;
+    }
+
+    .wrap {
+      max-width: 1120px;
+      margin: 0 auto;
+      display: grid;
+      gap: 16px;
+    }
+
+    .header {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+      padding: 18px 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+
+    .title {
+      margin: 0;
+      font-size: 24px;
+      letter-spacing: 0.2px;
+    }
+
+    .subtitle {
+      margin: 3px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .badge {
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      padding: 7px 12px;
+      border: 1px solid transparent;
+      background: #eef3f6;
+      color: #38515e;
+    }
+
+    .badge.ok { background: #e6f7ef; color: var(--ok); border-color: #b8e7cf; }
+    .badge.warn { background: #fff5e8; color: var(--warn); border-color: #f1cfab; }
+    .badge.err { background: #ffeceb; color: var(--err); border-color: #f2c0bb; }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(12, minmax(0, 1fr));
+      gap: 16px;
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      box-shadow: var(--shadow);
+      padding: 16px;
+    }
+
+    .panel h3 {
+      margin: 0 0 10px;
+      font-size: 17px;
+    }
+
+    .col-12 { grid-column: span 12; }
+    .col-7 { grid-column: span 7; }
+    .col-5 { grid-column: span 5; }
+    .col-6 { grid-column: span 6; }
+
+    @media (max-width: 940px) {
+      .col-7, .col-5, .col-6 { grid-column: span 12; }
+    }
+
+    label {
+      display: block;
+      margin-bottom: 6px;
+      font-size: 13px;
+      font-weight: 600;
+      color: #2f4652;
+    }
+
+    input[type="text"], textarea {
+      width: 100%;
+      border: 1px solid #c8d6df;
+      border-radius: 11px;
+      padding: 10px 12px;
+      font-family: "JetBrains Mono", Consolas, monospace;
+      font-size: 13px;
+      color: #15313d;
+      background: #fbfdfe;
+      outline: none;
+    }
+
+    textarea {
+      min-height: 92px;
+      resize: vertical;
+      font-family: "Space Grotesk", "Trebuchet MS", sans-serif;
+      line-height: 1.42;
+    }
+
+    input:focus, textarea:focus {
+      border-color: var(--accent-2);
+      box-shadow: 0 0 0 3px rgba(47, 110, 246, 0.12);
+    }
+
+    .row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    button {
+      border: 1px solid #b4c7d4;
+      border-radius: 10px;
+      background: #ffffff;
+      color: #17303c;
+      padding: 9px 12px;
+      font-size: 13px;
+      font-weight: 600;
+      letter-spacing: 0.2px;
+      cursor: pointer;
+      transition: 140ms ease;
+    }
+
+    button:hover:not(:disabled) {
+      transform: translateY(-1px);
+      border-color: #8fa8b7;
+      box-shadow: 0 7px 18px rgba(17, 42, 55, 0.12);
+    }
+
+    button:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+      transform: none;
+      box-shadow: none;
+    }
+
+    .btn-primary {
+      background: linear-gradient(135deg, #0b8f77, #178d96);
+      border-color: #0a7f6a;
+      color: #ffffff;
+    }
+
+    .btn-accent {
+      background: linear-gradient(135deg, #2f6ef6, #2f88f6);
+      border-color: #2d66dc;
+      color: #ffffff;
+    }
+
+    .btn-warn {
+      background: linear-gradient(135deg, #c6760e, #d58a16);
+      border-color: #be7010;
+      color: #ffffff;
+    }
+
+    .hint {
+      margin-top: 8px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .audio-box {
+      margin-top: 10px;
+      background: #f6fafc;
+      border: 1px solid #d7e4eb;
+      border-radius: 10px;
+      padding: 10px;
+    }
+
+    audio { width: 100%; }
+
+    #log {
+      min-height: 220px;
+      max-height: 360px;
+      overflow: auto;
+      border-radius: 12px;
+      border: 1px solid #203747;
+      background: #0f1a21;
+      padding: 12px;
+      font-family: "JetBrains Mono", Consolas, monospace;
+      font-size: 12px;
+      line-height: 1.45;
+      color: #c3dae4;
+      white-space: pre-wrap;
+    }
+
+    .log-line { margin: 0 0 6px; }
+    .log-ok { color: #73d1a3; }
+    .log-warn { color: #f0c078; }
+    .log-err { color: #ff8f8f; }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <section class="header">
+      <div>
+        <h1 class="title">LFM2.5 Audio Browser Mic Test</h1>
+        <p class="subtitle">Record from browser mic, send WAV to <code>/stt</code> and <code>/respond</code>, and inspect live diagnostics.</p>
+      </div>
+      <div id="statusBadge" class="badge warn">Idle</div>
+    </section>
+
+    <section class="grid">
+      <article class="panel col-7">
+        <h3>Connection</h3>
+        <label for="baseUrl">LFM Base URL</label>
+        <input id="baseUrl" type="text" placeholder="https://...-8012.proxy.runpod.net">
+        <div class="hint">If this page is HTTPS, use an HTTPS LFM URL only.</div>
+
+        <div class="row">
+          <button id="btnHealth" class="btn-accent">Check Health</button>
+          <button id="btnWarm" class="btn-warn">Warm Model</button>
+          <button id="btnSaveUrl">Save URL</button>
+        </div>
+      </article>
+
+      <article class="panel col-5">
+        <h3>Runtime</h3>
+        <label for="systemPrompt">System Prompt (for /respond)</label>
+        <textarea id="systemPrompt">You are a concise, helpful voice assistant. Reply with clear, actionable guidance.</textarea>
+        <div class="hint">Model warm-up can take time on first request when preload is disabled.</div>
+      </article>
+
+      <article class="panel col-6">
+        <h3>Record</h3>
+        <div class="row">
+          <button id="btnStart" class="btn-primary">Start Mic</button>
+          <button id="btnStop" disabled>Stop Mic</button>
+        </div>
+        <div class="audio-box">
+          <label for="localAudio">Recorded Audio</label>
+          <audio id="localAudio" controls></audio>
+        </div>
+      </article>
+
+      <article class="panel col-6">
+        <h3>Send Requests</h3>
+        <div class="row">
+          <button id="btnStt" disabled>Send /stt</button>
+          <button id="btnRespond" disabled class="btn-accent">Send /respond</button>
+          <button id="btnClear">Clear Log</button>
+        </div>
+        <div class="audio-box">
+          <label for="aiAudio">AI Audio (/respond)</label>
+          <audio id="aiAudio" controls></audio>
+        </div>
+      </article>
+
+      <article class="panel col-12">
+        <h3>Transcript / Response Text</h3>
+        <textarea id="textOut" readonly placeholder="Text output appears here..."></textarea>
+      </article>
+
+      <article class="panel col-12">
+        <h3>Log</h3>
+        <div id="log"></div>
+      </article>
+    </section>
+  </main>
+
+  <script>
+    const DEFAULT_LFM = "https://jwpma2d42856fn-8012.proxy.runpod.net";
+
+    let mediaStream = null;
+    let audioContext = null;
+    let mediaSource = null;
+    let processorNode = null;
+    let recording = false;
+    let inputSampleRate = 48000;
+    let chunks = [];
+    let lastWavBlob = null;
+
+    const $ = (id) => document.getElementById(id);
+    const logEl = $("log");
+
+    function now() {
+      return new Date().toLocaleTimeString();
+    }
+
+    function log(msg, level = "info") {
+      const line = `[${now()}] ${msg}`;
+      const div = document.createElement("div");
+      div.className = "log-line";
+      if (level === "ok") div.classList.add("log-ok");
+      if (level === "warn") div.classList.add("log-warn");
+      if (level === "err") div.classList.add("log-err");
+      div.textContent = line;
+      logEl.appendChild(div);
+      logEl.scrollTop = logEl.scrollHeight;
+      console.log(line);
+    }
+
+    function setStatus(text, type = "warn") {
+      const badge = $("statusBadge");
+      badge.textContent = text;
+      badge.classList.remove("ok", "warn", "err");
+      badge.classList.add(type);
+    }
+
+    function normalizeBaseUrl(raw) {
+      let value = (raw || "").trim();
+      if (!value) return "";
+      if (!/^https?:\/\//i.test(value)) value = `https://${value}`;
+      return value.replace(/\/+$/, "");
+    }
+
+    function baseUrl() {
+      return normalizeBaseUrl($("baseUrl").value);
+    }
+
+    function writeBaseUrl(url) {
+      $("baseUrl").value = normalizeBaseUrl(url) || DEFAULT_LFM;
+    }
+
+    async function fetchWithTimeout(url, options = {}, timeoutMs = 180000) {
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), timeoutMs);
+      try {
+        return await fetch(url, { ...options, signal: controller.signal });
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+
+    function explainFetchError(err, url) {
+      if (err && err.name === "AbortError") {
+        return `Request timeout to ${url}. The model may still be loading.`;
+      }
+      return `Failed to fetch ${url}. Check RunPod public port, HTTPS URL, and LFM process status.`;
+    }
+
+    async function loadConfigFromServer() {
+      try {
+        const r = await fetch("/config");
+        if (!r.ok) return;
+        const data = await r.json();
+        if (data && data.lfmBaseUrl) {
+          writeBaseUrl(data.lfmBaseUrl);
+          return;
+        }
+      } catch (_) {}
+    }
+
+    function saveUrl() {
+      const url = baseUrl();
+      if (!url) {
+        log("Cannot save empty URL.", "warn");
+        return;
+      }
+      localStorage.setItem("lfm_base_url", url);
+      $("baseUrl").value = url;
+      log(`Saved base URL: ${url}`, "ok");
+    }
+
+    async function checkHealth(logLine = true) {
+      const url = `${baseUrl()}/health`;
+      if (!baseUrl()) {
+        setStatus("Missing base URL", "err");
+        if (logLine) log("Set LFM Base URL first.", "err");
+        return null;
+      }
+      if (window.location.protocol === "https:" && url.startsWith("http://")) {
+        setStatus("Mixed content blocked", "err");
+        if (logLine) log("This page is HTTPS, so LFM URL must also be HTTPS.", "err");
+        return null;
+      }
+      try {
+        const r = await fetchWithTimeout(url, {}, 15000);
+        const data = await r.json();
+        if (data.loaded) setStatus("Model Ready", "ok");
+        else setStatus("Model Warming", "warn");
+        if (logLine) log(`GET /health -> ${r.status} ${JSON.stringify(data)}`, r.ok ? "ok" : "err");
+        return data;
+      } catch (e) {
+        setStatus("Health check failed", "err");
+        if (logLine) log(explainFetchError(e, url), "err");
+        return null;
+      }
+    }
+
+    async function pollUntilReady(maxAttempts = 20, delayMs = 2500) {
+      for (let i = 1; i <= maxAttempts; i++) {
+        const data = await checkHealth(i === 1 || i % 4 === 0);
+        if (data && data.loaded) return true;
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
+      return false;
+    }
+
+    function mergeChunks(parts) {
+      let total = 0;
+      for (const p of parts) total += p.length;
+      const out = new Float32Array(total);
+      let offset = 0;
+      for (const p of parts) {
+        out.set(p, offset);
+        offset += p.length;
+      }
+      return out;
+    }
+
+    function downsample(input, inRate, outRate) {
+      if (outRate >= inRate) return input;
+      const ratio = inRate / outRate;
+      const newLength = Math.round(input.length / ratio);
+      const result = new Float32Array(newLength);
+      let offsetResult = 0;
+      let offsetBuffer = 0;
+      while (offsetResult < result.length) {
+        const nextOffsetBuffer = Math.round((offsetResult + 1) * ratio);
+        let accum = 0;
+        let count = 0;
+        for (let i = offsetBuffer; i < nextOffsetBuffer && i < input.length; i++) {
+          accum += input[i];
+          count++;
+        }
+        result[offsetResult] = count ? (accum / count) : 0;
+        offsetResult++;
+        offsetBuffer = nextOffsetBuffer;
+      }
+      return result;
+    }
+
+    function writeAscii(view, offset, text) {
+      for (let i = 0; i < text.length; i++) {
+        view.setUint8(offset + i, text.charCodeAt(i));
+      }
+    }
+
+    function encodeWavPcm16(samples, sampleRate) {
+      const bytesPerSample = 2;
+      const blockAlign = bytesPerSample;
+      const buffer = new ArrayBuffer(44 + samples.length * bytesPerSample);
+      const view = new DataView(buffer);
+
+      writeAscii(view, 0, "RIFF");
+      view.setUint32(4, 36 + samples.length * bytesPerSample, true);
+      writeAscii(view, 8, "WAVE");
+      writeAscii(view, 12, "fmt ");
+      view.setUint32(16, 16, true);
+      view.setUint16(20, 1, true);
+      view.setUint16(22, 1, true);
+      view.setUint32(24, sampleRate, true);
+      view.setUint32(28, sampleRate * blockAlign, true);
+      view.setUint16(32, blockAlign, true);
+      view.setUint16(34, 16, true);
+      writeAscii(view, 36, "data");
+      view.setUint32(40, samples.length * bytesPerSample, true);
+
+      let offset = 44;
+      for (let i = 0; i < samples.length; i++, offset += 2) {
+        const s = Math.max(-1, Math.min(1, samples[i]));
+        view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+      }
+      return buffer;
+    }
+
+    async function warmModel() {
+      if (!baseUrl()) {
+        log("Set LFM Base URL first.", "warn");
+        return;
+      }
+      setStatus("Warming model", "warn");
+      log("Warm-up started. Sending 1s silent WAV to /stt.", "warn");
+
+      const silence = new Float32Array(16000);
+      const warmWav = new Blob([encodeWavPcm16(silence, 16000)], { type: "audio/wav" });
+      const fd = new FormData();
+      fd.append("audio", warmWav, "warm.wav");
+
+      try {
+        const r = await fetchWithTimeout(`${baseUrl()}/stt`, { method: "POST", body: fd }, 240000);
+        const txt = await r.text();
+        if (!r.ok) log(`Warm-up request returned ${r.status}: ${txt}`, "warn");
+        else log("Warm-up request accepted.", "ok");
+      } catch (e) {
+        log(explainFetchError(e, `${baseUrl()}/stt`), "warn");
+      }
+
+      const ready = await pollUntilReady(16, 3000);
+      if (ready) {
+        setStatus("Model Ready", "ok");
+        log("Model is ready.", "ok");
+      } else {
+        setStatus("Still warming", "warn");
+        log("Model still warming. Retry in 20-40 seconds.", "warn");
+      }
+    }
+
+    async function startMic() {
+      try {
+        mediaStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        inputSampleRate = audioContext.sampleRate;
+        mediaSource = audioContext.createMediaStreamSource(mediaStream);
+        processorNode = audioContext.createScriptProcessor(4096, 1, 1);
+        chunks = [];
+
+        processorNode.onaudioprocess = (event) => {
+          if (!recording) return;
+          chunks.push(new Float32Array(event.inputBuffer.getChannelData(0)));
+        };
+
+        mediaSource.connect(processorNode);
+        processorNode.connect(audioContext.destination);
+        recording = true;
+        $("btnStart").disabled = true;
+        $("btnStop").disabled = false;
+        $("btnStt").disabled = true;
+        $("btnRespond").disabled = true;
+        setStatus("Recording", "ok");
+        log(`Mic started. Input sample rate: ${inputSampleRate} Hz`, "ok");
+      } catch (e) {
+        setStatus("Mic start failed", "err");
+        log(`Mic start failed: ${e}`, "err");
+      }
+    }
+
+    async function stopMic() {
+      recording = false;
+      $("btnStart").disabled = false;
+      $("btnStop").disabled = true;
+
+      try {
+        if (processorNode) processorNode.disconnect();
+        if (mediaSource) mediaSource.disconnect();
+        if (mediaStream) mediaStream.getTracks().forEach((t) => t.stop());
+        if (audioContext) await audioContext.close();
+      } catch (_) {}
+
+      const merged = mergeChunks(chunks);
+      if (!merged.length) {
+        setStatus("No audio captured", "warn");
+        log("No audio captured.", "warn");
+        return;
+      }
+
+      const targetRate = 16000;
+      const down = downsample(merged, inputSampleRate, targetRate);
+      lastWavBlob = new Blob([encodeWavPcm16(down, targetRate)], { type: "audio/wav" });
+      $("localAudio").src = URL.createObjectURL(lastWavBlob);
+      $("btnStt").disabled = false;
+      $("btnRespond").disabled = false;
+      setStatus("Audio captured", "ok");
+      log(`Mic stopped. WAV size=${lastWavBlob.size} bytes`, "ok");
+    }
+
+    async function ensureWarmBeforeInference() {
+      const info = await checkHealth(false);
+      if (info && info.loaded) return true;
+      log("Model is warming. Running warm-up before inference.", "warn");
+      await warmModel();
+      const finalInfo = await checkHealth(false);
+      return !!(finalInfo && finalInfo.loaded);
+    }
+
+    async function sendStt() {
+      if (!lastWavBlob) {
+        log("Record audio first.", "warn");
+        return;
+      }
+      const isReady = await ensureWarmBeforeInference();
+      if (!isReady) {
+        log("Model not ready yet. Retry after warm-up completes.", "warn");
+        return;
+      }
+
+      setStatus("Sending /stt", "warn");
+      const url = `${baseUrl()}/stt`;
+      try {
+        const fd = new FormData();
+        fd.append("audio", lastWavBlob, "mic.wav");
+        const r = await fetchWithTimeout(url, { method: "POST", body: fd }, 240000);
+        const txt = await r.text();
+        let data = {};
+        try { data = JSON.parse(txt); } catch (_) {}
+        if (!r.ok) {
+          setStatus("STT failed", "err");
+          log(`/stt failed ${r.status}: ${txt}`, "err");
+          return;
+        }
+        $("textOut").value = data.text || "";
+        setStatus("STT complete", "ok");
+        log(`/stt ok: ${JSON.stringify(data)}`, "ok");
+      } catch (e) {
+        setStatus("STT request error", "err");
+        log(explainFetchError(e, url), "err");
+      }
+    }
+
+    async function sendRespond() {
+      if (!lastWavBlob) {
+        log("Record audio first.", "warn");
+        return;
+      }
+      const isReady = await ensureWarmBeforeInference();
+      if (!isReady) {
+        log("Model not ready yet. Retry after warm-up completes.", "warn");
+        return;
+      }
+
+      setStatus("Sending /respond", "warn");
+      const url = `${baseUrl()}/respond`;
+      try {
+        const fd = new FormData();
+        fd.append("audio", lastWavBlob, "mic.wav");
+        fd.append("system_prompt", $("systemPrompt").value || "");
+        fd.append("max_new_tokens", "256");
+        const r = await fetchWithTimeout(url, { method: "POST", body: fd }, 300000);
+        if (!r.ok) {
+          const err = await r.text();
+          setStatus("Respond failed", "err");
+          log(`/respond failed ${r.status}: ${err}`, "err");
+          return;
+        }
+
+        const textHeader = r.headers.get("X-LFM-Text") || "";
+        const latency = r.headers.get("X-LFM-Latency-Ms") || "";
+        const blob = new Blob([await r.arrayBuffer()], { type: "audio/wav" });
+        $("aiAudio").src = URL.createObjectURL(blob);
+        if (textHeader) $("textOut").value = textHeader;
+        setStatus("Respond complete", "ok");
+        log(`/respond ok: audio=${blob.size} bytes latency=${latency || "-"}ms text="${textHeader || "(header unavailable)"}"`, "ok");
+      } catch (e) {
+        setStatus("Respond request error", "err");
+        log(explainFetchError(e, url), "err");
+      }
+    }
+
+    function clearLog() {
+      logEl.textContent = "";
+      $("textOut").value = "";
+      log("Log cleared.", "ok");
+    }
+
+    async function bootstrap() {
+      const saved = localStorage.getItem("lfm_base_url");
+      writeBaseUrl(saved || DEFAULT_LFM);
+      await loadConfigFromServer();
+      log(`Using LFM Base URL: ${baseUrl()}`);
+      await checkHealth(false);
+    }
+
+    $("btnHealth").addEventListener("click", () => checkHealth(true));
+    $("btnWarm").addEventListener("click", warmModel);
+    $("btnSaveUrl").addEventListener("click", saveUrl);
+    $("btnStart").addEventListener("click", startMic);
+    $("btnStop").addEventListener("click", stopMic);
+    $("btnStt").addEventListener("click", sendStt);
+    $("btnRespond").addEventListener("click", sendRespond);
+    $("btnClear").addEventListener("click", clearLog);
+
+    bootstrap();
+  </script>
+</body>
+</html>

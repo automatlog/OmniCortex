@@ -4,13 +4,32 @@ Embedding model handling with caching and fallbacks.
 import logging
 import os
 import threading
+from pathlib import Path
+
 from langchain_huggingface import HuggingFaceEmbeddings
-from ..config import EMBEDDING_MODEL
+from ..config import EMBEDDING_DIM, EMBEDDING_MODEL
 
 
 logger = logging.getLogger(__name__)
 _EMBEDDINGS_INSTANCE = None
 _EMBEDDINGS_LOCK = threading.Lock()
+
+
+def _default_embedding_fallbacks() -> list[str]:
+    dim = int(EMBEDDING_DIM or 0)
+    if dim >= 1024:
+        return [
+            "intfloat/e5-large-v2",
+            "thenlper/gte-large",
+        ]
+    if dim >= 768:
+        return [
+            "BAAI/bge-base-en-v1.5",
+            "sentence-transformers/all-mpnet-base-v2",
+        ]
+    return [
+        "sentence-transformers/all-MiniLM-L6-v2",
+    ]
 
 
 def _embedding_candidates() -> list[str]:
@@ -28,7 +47,43 @@ def _embedding_candidates() -> list[str]:
             if candidate and candidate not in candidates:
                 candidates.append(candidate)
 
+    for candidate in _default_embedding_fallbacks():
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+
     return candidates
+
+
+def _local_model_hint(model_name: str) -> str:
+    try:
+        path = Path(model_name)
+        if not path.exists():
+            return ""
+        cfg = path / "config.json"
+        return f" local_path={path.resolve()} config_json={'yes' if cfg.exists() else 'no'}"
+    except Exception:
+        return ""
+
+
+def _model_kwargs() -> dict:
+    kwargs = {}
+    token = (
+        os.getenv("HF_TOKEN", "").strip()
+        or os.getenv("HUGGING_FACE_HUB_TOKEN", "").strip()
+    )
+    if token:
+        # sentence-transformers/transformers accept `token`; older stacks may
+        # still look at env vars, but passing it explicitly makes startup less brittle.
+        kwargs["token"] = token
+    return kwargs
+
+
+def _cache_folder() -> str | None:
+    for key in ("HF_HOME", "HUGGINGFACE_HUB_CACHE", "TRANSFORMERS_CACHE"):
+        value = os.getenv(key, "").strip()
+        if value:
+            return value
+    return None
 
 
 def get_embeddings():
@@ -52,22 +107,30 @@ def get_embeddings():
         candidates = _embedding_candidates()
         errors: list[str] = []
         primary_model = str(EMBEDDING_MODEL or "").strip()
+        model_kwargs = _model_kwargs()
+        cache_folder = _cache_folder()
 
         for model_name in candidates:
             try:
-                instance = HuggingFaceEmbeddings(model_name=model_name)
+                instance = HuggingFaceEmbeddings(
+                    model_name=model_name,
+                    model_kwargs=model_kwargs,
+                    cache_folder=cache_folder,
+                )
                 _EMBEDDINGS_INSTANCE = instance
                 if model_name != primary_model:
                     logger.warning(
-                        "Embedding model fallback active: '%s' -> '%s'",
+                        "Embedding model fallback active: '%s' -> '%s' (dim=%s)",
                         primary_model,
                         model_name,
+                        EMBEDDING_DIM,
                     )
                 else:
-                    logger.info("Embedding model loaded: %s", model_name)
+                    logger.info("Embedding model loaded: %s (dim=%s)", model_name, EMBEDDING_DIM)
                 return instance
             except Exception as exc:
-                errors.append(f"{model_name}: {exc}")
+                hint = _local_model_hint(model_name)
+                errors.append(f"{model_name}: {exc}{hint}")
 
         # Don't cache the error — allow retry on next call for transient failures.
         raise RuntimeError(

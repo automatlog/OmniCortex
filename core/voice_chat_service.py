@@ -19,7 +19,7 @@ import time
 import logging
 from typing import Dict, List, Optional
 
-from .agent_manager import get_agent
+from .agent_manager import get_agent, resolve_retrieval_config
 from .chat_service import format_context, format_history, estimate_tokens
 from .llm import invoke_chain
 from .processing.pii import mask_pii
@@ -67,8 +67,19 @@ def process_question_voice(
     query_tokens = estimate_tokens(question)
     rag_query_tokens = estimate_tokens(safe_question)
 
-    # RAG retrieval
-    docs = hybrid_search(safe_question, agent_id=agent_id, top_k=2)
+    # RAG retrieval — use agent-level config if available
+    _ret_cfg = (resolve_retrieval_config(agent_id) if agent_id else None) or {}
+    _vk = _ret_cfg.get("voice_top_k", _ret_cfg.get("top_k", 2))
+    _rerank = _ret_cfg.get("use_reranker")
+    _reranker_model = _ret_cfg.get("reranker_model")
+    docs = hybrid_search(
+        safe_question,
+        agent_id=agent_id,
+        top_k=_vk,
+        use_hybrid=_ret_cfg.get("use_hybrid_search"),
+        rerank=_rerank,
+        reranker_model=_reranker_model,
+    )
     context = format_context(docs)
     history = format_history(conversation_history or [], max_history)
 

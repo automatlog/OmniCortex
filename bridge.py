@@ -32,6 +32,14 @@ except ImportError:
     HAS_EDGE_TTS = False
     print("\033[93mWARNING: edge-tts not installed. Run: pip install edge-tts\033[0m")
 
+try:
+    from core.voice.asr_engine import get_asr_engine
+    HAS_LOCAL_ASR = True
+except Exception:
+    HAS_LOCAL_ASR = False
+    get_asr_engine = None
+    print("\033[93mWARNING: faster-whisper ASR unavailable. Phrase barge-in disabled.\033[0m")
+
 
 # ── ANSI Colors ─────────────────────────────────────────────────────
 C_RESET   = "\033[0m"
@@ -106,11 +114,11 @@ def _bar(value, width=20, max_val=0.15):
 # ── Config ──────────────────────────────────────────────────────────
 FS_PORT           = 8001
 API_KEY           = "b6f3b11e-64a5-49c7-9a90-54dd5a4cd482"
-_BASE_URL         = "wss://hq8ftw1drbvwro-8998.proxy.runpod.net/api/chat"
+_BASE_URL         = "wss://jwpma2d42856fn-8998.proxy.runpod.net/api/chat"
 _TEXT_PROMPT      = "You work for ICICI Bank and your name is Priya Sharma. You are a helpful and professional customer service representative specializing in personal accounts and loan products. You are currently assisting a customer who holds a personal savings account with a current balance of ₹50,000. Your role is to help the customer with any queries related to their account balance, recent transactions, and available loan products including personal loans, home loans, car loans, and education loans. When discussing loans, always mention that ICICI Bank offers competitive interest rates starting from 10.5% per annum for personal loans, with flexible EMI options and instant approval for eligible customers. Always verify the customer's identity before sharing any account details by asking for their registered mobile number and date of birth. Speak in a warm, helpful, and professional tone. If the customer asks about loan eligibility, guide them based on their current balance and account history."
 MOSHI_URL         = f"{_BASE_URL}?text_prompt={quote(_TEXT_PROMPT)}"
 
-FS_RATE           = 16000   # FreeSWITCH L16 mono (must match uuid_audio_stream rate)
+FS_RATE           = 8000   # FreeSWITCH L16 mono (must match uuid_audio_stream rate)
 FS_RETURN_RATE    = 8000    # Match caller's PCMU/8000 codec
 FS_BIG_ENDIAN     = False   # Set True if mod_audio_stream expects big-endian L16
 TEST_TONE_MODE    = False   # Disabled — mod_audio_stream receive doesn't work
@@ -132,6 +140,28 @@ SUPPRESS_TOKENS   = {"PAD", "EPAD"}
 TTS_ENABLED       = True
 TTS_VOICE         = "en-US-AriaNeural"   # Microsoft Edge TTS voice (default)
 TTS_DIR           = "/tmp/bridge_tts"
+PHRASE_BARGE_IN_ENABLED = os.getenv("PHRASE_BARGE_IN_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
+PHRASE_BARGE_IN_MIN_AUDIO_SEC = float(os.getenv("PHRASE_BARGE_IN_MIN_AUDIO_SEC", "0.8"))
+PHRASE_BARGE_IN_MAX_AUDIO_SEC = float(os.getenv("PHRASE_BARGE_IN_MAX_AUDIO_SEC", "2.5"))
+PHRASE_BARGE_IN_CHECK_INTERVAL_SEC = float(os.getenv("PHRASE_BARGE_IN_CHECK_INTERVAL_SEC", "0.8"))
+PHRASE_BARGE_IN_RMS_GATE = float(os.getenv("PHRASE_BARGE_IN_RMS_GATE", "0.012"))
+TTS_SUPPRESS_AFTER_BARGE_SEC = float(os.getenv("TTS_SUPPRESS_AFTER_BARGE_SEC", "1.75"))
+STOP_PHRASES = [
+    "stop",
+    "wait",
+    "hold on",
+    "pause",
+    "one second",
+    "just a second",
+    "interrupt",
+    "cancel",
+    "stop talking",
+    "please stop",
+    "enough",
+    "quiet",
+    "mute",
+    "shut up",
+]
 
 # Language-aware TTS voice map for dynamic switching
 TTS_VOICE_MAP = {
@@ -202,6 +232,19 @@ def _detect_text_language(text: str) -> str:
     if hiragana > threshold:
         return "ja"
     return "en"
+
+
+def _normalize_phrase_text(text: str) -> str:
+    return re.sub(r"[^a-z0-9\s]+", " ", str(text or "").lower()).strip()
+
+
+def _match_stop_phrase(text: str) -> str:
+    normalized = f" {_normalize_phrase_text(text)} "
+    for phrase in STOP_PHRASES:
+        needle = _normalize_phrase_text(phrase)
+        if needle and f" {needle} " in normalized:
+            return phrase
+    return ""
 
 
 def sanitize_uuid(raw: str) -> str:
@@ -377,15 +420,56 @@ async def bridge_connection(fs_ws):
     frame_cnt = [0, 0]            # [sent, received] for debug
     debug_pcm = bytearray() if DEBUG_DUMP_PCM else None
     tts_queue      = asyncio.Queue()   # sentences waiting for TTS
+    phrase_audio_queue = asyncio.Queue(maxsize=48)
     sentence_buf   = [""]              # mutable accumulator for text tokens
     last_text_time = [0.0]             # monotonic time of last text token
     tts_playing    = [False]           # True while uuid_broadcast is active
-    BARGEIN_RMS_THRESHOLD = 0.04       # RMS above this = caller is speaking
+    tts_active     = [False]           # True while generating or playing TTS
+    tts_generation = [0]               # Increment to invalidate current queued/active TTS jobs
+    suppress_tts_until = [0.0]         # Temporarily suppress AI TTS after user interrupt
 
     # Language detection from text tokens
     detected_tts_voice = [TTS_VOICE]   # current TTS voice, can change dynamically
     text_token_buf     = [""]          # accumulate text tokens for language detection
     text_byte_buf      = bytearray()   # accumulate raw bytes for multi-byte UTF-8 reassembly
+
+    async def cancel_tts(reason: str, transcript: str = "") -> None:
+        had_activity = tts_active[0] or tts_playing[0] or (not tts_queue.empty())
+        tts_generation[0] += 1
+        tts_active[0] = False
+        tts_playing[0] = False
+        suppress_tts_until[0] = time.monotonic() + TTS_SUPPRESS_AFTER_BARGE_SEC
+        sentence_buf[0] = ""
+        text_token_buf[0] = ""
+        text_byte_buf.clear()
+
+        drained = 0
+        while True:
+            try:
+                item = tts_queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            else:
+                if item is not None:
+                    drained += 1
+                with suppress(ValueError):
+                    tts_queue.task_done()
+
+        if not had_activity and drained == 0:
+            return
+
+        transcript_suffix = f' transcript="{transcript}"' if transcript else ""
+        log_tts(uuid, f"{C_RED}{C_BOLD}CANCEL{C_RESET} reason={reason} drained={drained}{transcript_suffix}")
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                FS_CLI, "-x", f"uuid_break {uuid} all",
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            out, _ = await proc.communicate()
+            log_tts(uuid, f"uuid_break result: {out.decode().strip()}")
+        except Exception as e:
+            log_error(uuid, f"uuid_break failed: {e}")
 
     try:
         async with websockets.connect(
@@ -447,7 +531,6 @@ async def bridge_connection(fs_ws):
             async def fs_to_moshi() -> None:
                 await hs_event.wait()
                 fs_frames = 0
-                bargein_cooldown = 0  # skip N frames after barge-in to avoid re-trigger
                 async for data in fs_ws:
                     if not isinstance(data, bytes):
                         log_fs_in(uuid, f"metadata: {C_BOLD}{data}{C_RESET}")
@@ -466,24 +549,19 @@ async def bridge_connection(fs_ws):
                     if fs_frames <= 5 or fs_frames % 250 == 0:
                         log_fs_in(uuid, f"PCM #{fs_frames}: {len(data)}B  rms={rms_in:.4f} {_bar(rms_in)}")
 
-                    # Barge-in: detect caller speech during TTS playback
-                    if bargein_cooldown > 0:
-                        bargein_cooldown -= 1
-                    elif tts_playing[0] and rms_in > BARGEIN_RMS_THRESHOLD:
-                        log_tts(uuid, f"{C_RED}{C_BOLD}BARGE-IN{C_RESET} detected  rms={rms_in:.4f} — cancelling TTS")
-                        tts_playing[0] = False
-                        bargein_cooldown = 25  # ~500ms cooldown at 20ms frames
-                        # Cancel the current broadcast
+                    if (
+                        PHRASE_BARGE_IN_ENABLED
+                        and HAS_LOCAL_ASR
+                        and (tts_active[0] or tts_playing[0])
+                    ):
                         try:
-                            proc = await asyncio.create_subprocess_exec(
-                                FS_CLI, "-x", f"uuid_break {uuid} all",
-                                stdout=asyncio.subprocess.PIPE,
-                                stderr=asyncio.subprocess.PIPE,
-                            )
-                            out, _ = await proc.communicate()
-                            log_tts(uuid, f"uuid_break result: {out.decode().strip()}")
-                        except Exception as e:
-                            log_error(uuid, f"uuid_break failed: {e}")
+                            phrase_audio_queue.put_nowait(pcm_f32_tmp.copy())
+                        except asyncio.QueueFull:
+                            with suppress(asyncio.QueueEmpty):
+                                phrase_audio_queue.get_nowait()
+                                phrase_audio_queue.task_done()
+                            with suppress(asyncio.QueueFull):
+                                phrase_audio_queue.put_nowait(pcm_f32_tmp.copy())
 
                     # NOTE: Backchannel via kind=2 text frames is NOT supported by
                     # vanilla Moshi server — it logs "[Warn] unknown message kind 2"
@@ -518,6 +596,69 @@ async def bridge_connection(fs_ws):
                             await asyncio.sleep(delay)
                 log_tone(uuid, f"{C_GREEN}Done.{C_RESET} {chunk_count} chunks, {len(pcm_data)} bytes")
 
+            # ── Phrase-based barge-in: only stop TTS on explicit stop phrases ──
+            async def phrase_barge_worker() -> None:
+                if not PHRASE_BARGE_IN_ENABLED:
+                    return
+                if not HAS_LOCAL_ASR:
+                    log_info(uuid, f"{C_YELLOW}Phrase barge-in disabled{C_RESET}  local ASR unavailable")
+                    return
+
+                min_samples = max(1, int(FS_RATE * PHRASE_BARGE_IN_MIN_AUDIO_SEC))
+                max_samples = max(min_samples, int(FS_RATE * PHRASE_BARGE_IN_MAX_AUDIO_SEC))
+                last_check = 0.0
+                pcm_window = np.array([], dtype=np.float32)
+                asr = await get_asr_engine()
+                log_info(uuid, f"{C_YELLOW}Phrase barge-in enabled{C_RESET}  stop_phrases={len(STOP_PHRASES)}")
+
+                while True:
+                    chunk = await phrase_audio_queue.get()
+                    try:
+                        if chunk is None:
+                            return
+                        if not (tts_active[0] or tts_playing[0]):
+                            pcm_window = np.array([], dtype=np.float32)
+                            continue
+                        if chunk.size == 0:
+                            continue
+
+                        rms_in = float(np.sqrt(np.mean(chunk ** 2))) if len(chunk) > 0 else 0.0
+                        if rms_in < PHRASE_BARGE_IN_RMS_GATE:
+                            if pcm_window.size > max_samples:
+                                pcm_window = pcm_window[-max_samples:]
+                            continue
+
+                        pcm_window = np.concatenate([pcm_window, chunk])
+                        if pcm_window.size > max_samples:
+                            pcm_window = pcm_window[-max_samples:]
+                        now = time.monotonic()
+                        if pcm_window.size < min_samples:
+                            continue
+                        if now - last_check < PHRASE_BARGE_IN_CHECK_INTERVAL_SEC:
+                            continue
+
+                        last_check = now
+                        transcript, confidence, detected_lang = await asr.transcribe(
+                            pcm_window.copy(), sample_rate=FS_RATE
+                        )
+                        transcript = (transcript or "").strip()
+                        if transcript:
+                            log_tts(
+                                uuid,
+                                f'Barge-in ASR lang={detected_lang} conf={confidence:.2f} text="{transcript}"'
+                            )
+                        phrase = _match_stop_phrase(transcript)
+                        if phrase:
+                            await cancel_tts(
+                                reason=f"stop_phrase:{phrase}",
+                                transcript=transcript,
+                            )
+                            pcm_window = np.array([], dtype=np.float32)
+                        elif pcm_window.size >= max_samples:
+                            pcm_window = pcm_window[-min_samples:]
+                    finally:
+                        phrase_audio_queue.task_done()
+
             # ── TTS worker: text tokens → audio file → FS playback ───
             async def tts_worker() -> None:
                 if not TTS_ENABLED or not HAS_EDGE_TTS:
@@ -530,7 +671,12 @@ async def bridge_connection(fs_ws):
                         break
                     seq += 1
                     mp3_path = wav_path = None
+                    job_generation = tts_generation[0]
                     try:
+                        if time.monotonic() < suppress_tts_until[0]:
+                            log_tts(uuid, f"Skip #{seq}: suppressed after barge-in")
+                            continue
+                        tts_active[0] = True
                         log_tts(uuid, f"Gen #{seq}: \"{text}\"")
                         ts_ms = int(time.time() * 1000)
                         mp3_path = f"{TTS_DIR}/{uuid[:8]}_{ts_ms}.mp3"
@@ -539,6 +685,9 @@ async def bridge_connection(fs_ws):
                         voice = detected_tts_voice[0]
                         comm = edge_tts.Communicate(text, voice)
                         await comm.save(mp3_path)
+                        if job_generation != tts_generation[0]:
+                            log_tts(uuid, f"Drop #{seq}: cancelled during TTS generation")
+                            continue
 
                         proc = await asyncio.create_subprocess_exec(
                             "ffmpeg", "-y", "-loglevel", "error",
@@ -551,6 +700,9 @@ async def bridge_connection(fs_ws):
                         _, stderr = await proc.communicate()
                         if proc.returncode != 0:
                             log_error(uuid, f"ffmpeg: {stderr.decode().strip()}")
+                            continue
+                        if job_generation != tts_generation[0]:
+                            log_tts(uuid, f"Drop #{seq}: cancelled during ffmpeg conversion")
                             continue
                         if mp3_path and os.path.exists(mp3_path):
                             os.unlink(mp3_path)
@@ -571,6 +723,9 @@ async def bridge_connection(fs_ws):
                             stderr=asyncio.subprocess.PIPE,
                         )
                         out, _ = await proc.communicate()
+                        if job_generation != tts_generation[0]:
+                            log_tts(uuid, f"Drop #{seq}: cancelled before playback")
+                            continue
                         result = out.decode().strip()
                         if "+OK" in result:
                             log_tts(uuid, f"#{seq} broadcast started")
@@ -581,7 +736,7 @@ async def bridge_connection(fs_ws):
                         # Wait for playback to finish (or barge-in clears the flag)
                         sleep_step = 0.1
                         remaining = dur + 0.5
-                        while remaining > 0 and tts_playing[0]:
+                        while remaining > 0 and tts_playing[0] and job_generation == tts_generation[0]:
                             await asyncio.sleep(min(sleep_step, remaining))
                             remaining -= sleep_step
                         tts_playing[0] = False
@@ -589,6 +744,8 @@ async def bridge_connection(fs_ws):
                     except Exception as e:
                         log_error(uuid, f"TTS: {e}")
                     finally:
+                        tts_active[0] = False
+                        tts_playing[0] = False
                         for p in (mp3_path, wav_path):
                             if p and os.path.exists(p):
                                 with suppress(OSError):
@@ -605,7 +762,7 @@ async def bridge_connection(fs_ws):
                     if buf and len(buf) > 2 and time.monotonic() - last_text_time[0] > 1.5:
                         sentence_buf[0] = ""
                         clean = buf.replace("\u2581", " ").strip()
-                        if clean:
+                        if clean and time.monotonic() >= suppress_tts_until[0]:
                             tts_queue.put_nowait(clean)
                             log_tts(uuid, f"Flushed: \"{clean}\"")
 
@@ -713,7 +870,7 @@ async def bridge_connection(fs_ws):
                                     sentence_buf[0] = buf[idx + 1:]
                                     # Clean SentencePiece ▁ markers to spaces
                                     clean = sentence.replace("\u2581", " ").strip()
-                                    if len(clean) > 2:
+                                    if len(clean) > 2 and time.monotonic() >= suppress_tts_until[0]:
                                         tts_queue.put_nowait(clean)
                                     break
 
@@ -731,6 +888,8 @@ async def bridge_connection(fs_ws):
             extra_tasks = []
             if TEST_TONE_MODE:
                 extra_tasks.append(asyncio.create_task(test_tone_to_fs(), name="test_tone"))
+            if PHRASE_BARGE_IN_ENABLED:
+                extra_tasks.append(asyncio.create_task(phrase_barge_worker(), name="phrase_barge_worker"))
             if TTS_ENABLED and HAS_EDGE_TTS:
                 extra_tasks.append(asyncio.create_task(tts_worker(), name="tts_worker"))
                 extra_tasks.append(asyncio.create_task(text_flusher(), name="text_flusher"))
@@ -746,6 +905,9 @@ async def bridge_connection(fs_ws):
                 else:
                     log_info(uuid, f"Task '{t.get_name()}' finished")
             # Signal TTS worker to stop
+            if PHRASE_BARGE_IN_ENABLED:
+                with suppress(asyncio.QueueFull):
+                    phrase_audio_queue.put_nowait(None)
             if TTS_ENABLED and HAS_EDGE_TTS:
                 tts_queue.put_nowait(None)
             for t in [t_fs, *extra_tasks, *pending]:

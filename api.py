@@ -55,7 +55,7 @@ from core import (
     reset_chain,
 )
 from core.database import Channel, Tool, Session as DBSession, SessionLocal, ApiKey # Phase 2 & 3 & 4 support
-# core.graph.create_rag_agent removed — not used by any route
+# core.graph.create_rag_agent removed â€” not used by any route
 from core.processing.scraper import process_urls
 from core.config import MODEL_BACKENDS
 from core.agent_config import sync_agent_config
@@ -327,6 +327,8 @@ class AgentSystemPromptResponse(BaseModel):
     agent_id: str
     system_prompt: str
     source: Optional[str] = None
+    conversation_starters: Optional[List[str]] = None
+    initial_greeting: Optional[str] = None
 
 class AgentUpdate(BaseModel):
     name: Optional[str] = None
@@ -861,7 +863,7 @@ async def query(request: QueryRequest, api_key: ApiKey = Depends(get_api_key)):
             # For now, we just ensure it exists
         except Exception as e:
             logging.warning(f"Session tracking error: {e}")
-            print(f"⚠️ Session tracking error: {e}")
+            print(f"⚠️  Session tracking error: {e}")
         finally:
             if db is not None:
                 db.close()
@@ -1212,9 +1214,11 @@ MODEL_SELECTION_ALIASES = {
     "Meta Llama-3.1-8B-Instruct": "Meta Llama 3.1",
     "Meta-Llama-3.1-8B-Instruct": "Meta Llama 3.1",
     "meta-llama/Meta-Llama-3.1-8B-Instruct": "Meta Llama 3.1",
-    "Meta Llama-4-Maverick-17B-128E-Instruct": "Llama 4 Maverick",
-    "Llama-4-Maverick-17B-128E-Instruct": "Llama 4 Maverick",
-    "meta-llama/Llama-4-Maverick-17B-128E-Instruct": "Llama 4 Maverick",
+    "meta-llama/Llama-3.1-8B-Instruct": "Meta Llama 3.1",
+    "Qwen2.5-7B-Instruct": "Qwen 2.5 7B",
+    "Qwen/Qwen2.5-7B-Instruct": "Qwen 2.5 7B",
+    "Qwen-2.5-7B-Instruct": "Qwen 2.5 7B",
+    "qwen2.5-7b": "Qwen 2.5 7B",
 }
 
 
@@ -1693,11 +1697,88 @@ def _system_prompt_for_response(agent: Dict[str, Any]) -> Optional[str]:
     return _compact_text(raw)
 
 
+def _extract_role_prompt(content: str, role_type: str) -> str:
+    """Extract preamble + matching role section from a prompt JSON file.
+
+    The JSON structure is: {"system_prompt": [{text, ...}, {role_type, text, ...}, ...]}
+    Returns preamble.text + matching_role.title + matching_role.text + matching_role.rule,
+    or empty string if no match is found.
+    """
+    import json as _json
+    # Strip BOM if present
+    clean = content.lstrip("\ufeff")
+    try:
+        data = _json.loads(clean)
+    except (ValueError, TypeError):
+        return ""
+    prompts = data.get("system_prompt") if isinstance(data, dict) else None
+    if not isinstance(prompts, list):
+        return ""
+
+    # Normalize for comparison
+    target = role_type.strip().lower().replace("_", "").replace("-", "").replace(" ", "")
+
+    preamble = ""
+    matched = None
+    for entry in prompts:
+        if not isinstance(entry, dict):
+            continue
+        entry_role = str(entry.get("role_type") or "").strip()
+        if not entry_role:
+            # Preamble entry (no role_type key)
+            preamble = str(entry.get("text") or "").strip()
+            continue
+        normalized = entry_role.lower().replace("_", "").replace("-", "").replace(" ", "")
+        entry_title = str(entry.get("title") or "").strip()
+        normalized_title = entry_title.lower().replace("_", "").replace("-", "").replace(" ", "")
+
+        # Match by explicit role_type first; then fallback to title match.
+        # This supports prompt packs that store numeric role_type values (1..N)
+        # while agents use semantic role labels like "CustomerSupport".
+        if (
+            normalized == target
+            or (normalized_title and target in normalized_title)
+            or (normalized_title and normalized_title in target)
+        ):
+            matched = entry
+            break
+
+    if matched is None:
+        return ""
+
+    parts = []
+    if preamble:
+        parts.append(preamble)
+    title = str(matched.get("title") or "").strip()
+    if title:
+        parts.append(f"## {title}")
+    text = str(matched.get("text") or "").strip()
+    if text:
+        parts.append(text)
+    rule = str(matched.get("rule") or "").strip()
+    if rule:
+        parts.append(f"Rule: {rule}")
+    return "\n\n".join(parts)
+
+
 def _system_prompt_for_integration(agent: Dict[str, Any]) -> str:
-    """Return full prompt text for integrations (do not compact to filename/preview)."""
+    """Return full prompt text for integrations (do not compact to filename/preview).
+
+    When the prompt source is a JSON file with multiple role sections and the
+    agent has a role_type, only the preamble + matching role section is returned.
+    """
     raw = str(agent.get("system_prompt") or "").strip()
     if raw and _looks_like_prompt_path(raw):
         raw = str(_resolve_system_prompt(raw) or "").strip()
+
+    # If resolved content looks like JSON with role sections, filter by role_type
+    if raw and raw.lstrip("\ufeff").startswith("{"):
+        agent_role = str(agent.get("role_type") or "").strip()
+        if agent_role:
+            filtered = _extract_role_prompt(raw, agent_role)
+            if filtered:
+                return filtered
+
     if raw:
         return raw
 
@@ -1705,8 +1786,30 @@ def _system_prompt_for_integration(agent: Dict[str, Any]) -> str:
     if source:
         resolved = str(_resolve_system_prompt(source) or "").strip()
         if resolved and not _looks_like_prompt_path(resolved):
+            # Also try role filtering on source-resolved content
+            if resolved.lstrip("\ufeff").startswith("{"):
+                agent_role = str(agent.get("role_type") or "").strip()
+                if agent_role:
+                    filtered = _extract_role_prompt(resolved, agent_role)
+                    if filtered:
+                        return filtered
             return resolved
     return ""
+
+
+_LOGIC_FORBIDDEN_KEYS = frozenset({"api_key", "bearer_token", "bridge_url", "elevenlabs_key", "personaplex_key"})
+
+
+def _sanitize_logic(logic):
+    """Strip infra secrets from logic sub-blocks before persisting."""
+    if not isinstance(logic, dict):
+        return logic
+    for block_name in ("voice", "retrieval"):
+        block = logic.get(block_name)
+        if isinstance(block, dict):
+            for key in _LOGIC_FORBIDDEN_KEYS:
+                block.pop(key, None)
+    return logic
 
 
 def _normalize_agent_create_payload(agent_request: AgentCreate) -> Dict[str, Any]:
@@ -1777,7 +1880,7 @@ def _normalize_agent_create_payload(agent_request: AgentCreate) -> Dict[str, Any
         "video_urls": video_urls,
         "conversation_starters": conversation_starters,
         "scraped_data": scraped_data,
-        "logic": agent_request.logic,
+        "logic": _sanitize_logic(agent_request.logic) if agent_request.logic is not None else None,
         "conversation_end": conversation_end,
         "agent_type": normalized_agent_type,
         "subagent_type": normalized_subagent_type,
@@ -1917,7 +2020,7 @@ def _normalize_agent_update_payload(agent_request: AgentUpdate) -> Dict[str, Any
         "video_urls": video_urls,
         "conversation_starters": conversation_starters,
         "scraped_data": scraped_data,
-        "logic": agent_request.logic,
+        "logic": _sanitize_logic(agent_request.logic) if agent_request.logic is not None else None,
         "conversation_end": conversation_end,
         "agent_type": normalized_agent_type,
         "subagent_type": normalized_subagent_type,
@@ -2197,10 +2300,19 @@ async def get_agent_system_prompt(agent_id: str, api_key: ApiKey = Depends(get_a
     if not full_prompt:
         full_prompt = "You are a helpful assistant."
     source = str(agent.get("system_prompt_source") or "").strip() or None
+    starters_raw = agent.get("conversation_starters") or []
+    conversation_starters = [
+        str(item).strip()
+        for item in starters_raw
+        if str(item).strip()
+    ]
+    initial_greeting = conversation_starters[0] if conversation_starters else None
     return AgentSystemPromptResponse(
         agent_id=agent_id,
         system_prompt=full_prompt,
         source=source,
+        conversation_starters=conversation_starters,
+        initial_greeting=initial_greeting,
     )
 
 
@@ -2288,14 +2400,14 @@ async def create_new_agent(agent_request: AgentCreate, request: Request, backgro
                              pass
                         file_objs.append(f)
                     else:
-                        print(f"⚠️ Warning: File not found {path}")
+                        print(f"⚠️  Warning: File not found {path}")
                 
                 if file_objs:
                     _accumulate_ingest_metrics(
                         process_documents(files=file_objs, agent_id=created_id)
                     )
             except Exception as doc_err:
-                print(f"❌ Failed to process initial documents: {doc_err}")
+                print(f"✅ Failed to process initial documents: {doc_err}")
                 # Don't fail the request, just log it? Or maybe fail? 
                 # Better to warn since agent is created.
             finally:
@@ -2640,10 +2752,16 @@ async def get_voice_context(
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
 
-    safe_top_k = max(1, min(6, int(top_k or 3)))
+    from core.agent_manager import resolve_retrieval_config, resolve_voice_config
+    _ret_cfg = resolve_retrieval_config(agent_id, agent=agent)
+    _voice_cfg = resolve_voice_config(agent_id, agent=agent)
+
+    safe_top_k = max(1, min(6, int(top_k or _voice_cfg.get("rag_top_k", 3))))
     retrieval_query = str(query or "").strip()
     if _looks_like_prompt_path(retrieval_query):
         retrieval_query = ""
+    if not retrieval_query:
+        retrieval_query = str(_voice_cfg.get("context_query") or "").strip()
     if not retrieval_query:
         raw_prompt = str(agent.get("system_prompt") or "").strip()
         if _looks_like_prompt_path(raw_prompt):
@@ -2660,7 +2778,14 @@ async def get_voice_context(
         from core.rag.retrieval import hybrid_search
         from core.chat_service import format_context
 
-        docs = hybrid_search(retrieval_query, agent_id=agent_id, top_k=safe_top_k, rerank=False)
+        docs = hybrid_search(
+            retrieval_query,
+            agent_id=agent_id,
+            top_k=safe_top_k,
+            use_hybrid=_ret_cfg.get("use_hybrid_search"),
+            rerank=_ret_cfg.get("use_reranker", False),
+            reranker_model=_ret_cfg.get("reranker_model"),
+        )
         context = format_context(docs)
         if context == "No relevant documents found.":
             context = ""
@@ -2802,7 +2927,11 @@ async def _authenticate_voice_websocket(websocket: WebSocket) -> Optional[str]:
     if not x_user_id:
         x_user_id = (websocket.query_params.get("x_user_id") or "").strip()
     try:
-        await verify_bearer_token(token, x_user_id or None)
+        verified_api_key = await verify_bearer_token(token, x_user_id or None)
+        try:
+            websocket.state.auth_api_key = verified_api_key
+        except Exception:
+            pass
         return None
     except HTTPException as exc:
         detail = exc.detail if isinstance(exc.detail, str) else "Unauthorized"
@@ -2924,53 +3053,71 @@ async def voice_ws_proxy(websocket: WebSocket):
         await websocket.close(code=1008, reason=auth_error)
         return
 
-    await websocket.accept()
-
     # --- Build the text_prompt from agent context ---
     agent_id = websocket.query_params.get("agent_id")
     client_text_prompt = websocket.query_params.get("text_prompt", "")
     context_query = str(websocket.query_params.get("context_query", "") or "")[:1000]
     voice_prompt = websocket.query_params.get("voice_prompt", "NATF0.pt")
     seed = websocket.query_params.get("seed", "-1")
+    voice_api_key = getattr(websocket.state, "auth_api_key", None)
+    agent = None
+    if agent_id:
+        try:
+            agent = _require_agent_access(agent_id, voice_api_key)
+        except HTTPException as exc:
+            detail = exc.detail if isinstance(exc.detail, str) else "Unable to use this agent."
+            await websocket.close(code=1008, reason=str(detail)[:120])
+            return
+
+    await websocket.accept()
 
     text_prompt = str(client_text_prompt or "").strip()
     append_client_prompt = os.getenv("VOICE_APPEND_CLIENT_PROMPT", "false").strip().lower() == "true"
     agent_prompt = ""
-    if agent_id:
-        try:
-            agent = get_agent(agent_id)
-            if agent and agent.get("system_prompt"):
-                # Agent prompt is authoritative for voice when agent_id is provided.
-                agent_prompt = str(agent["system_prompt"])
-                text_prompt = agent_prompt
-                if append_client_prompt and client_text_prompt:
-                    text_prompt = (
-                        f"{agent_prompt}\n\n"
-                        f"Additional operator instruction:\n{str(client_text_prompt).strip()}"
-                    )
-                logging.info(f"🎤 Voice proxy: Using agent '{agent.get('name')}' system_prompt ({len(text_prompt)} chars)")
-        except Exception as e:
-            logging.warning(f"⚠️ Voice proxy: Could not load agent {agent_id}: {e}")
+    if agent and agent.get("system_prompt"):
+        # Agent prompt is authoritative for voice when agent_id is provided.
+        agent_prompt = str(agent["system_prompt"])
+        text_prompt = agent_prompt
+        if append_client_prompt and client_text_prompt:
+            text_prompt = (
+                f"{agent_prompt}\n\n"
+                f"Additional operator instruction:\n{str(client_text_prompt).strip()}"
+            )
+        logging.info(f"ðŸŽ¤ Voice proxy: Using agent '{agent.get('name')}' system_prompt ({len(text_prompt)} chars)")
+
+    # Resolve agent-level retrieval and voice configs
+    from core.agent_manager import resolve_retrieval_config, resolve_voice_config
+    _ret_cfg = resolve_retrieval_config(agent_id, agent=agent) if agent_id else {}
+    _voice_cfg = resolve_voice_config(agent_id, agent=agent) if agent_id else {}
+
+    # Apply agent-level voice_prompt default if no query param override
+    if voice_prompt == "NATF0.pt" and _voice_cfg.get("voice_prompt"):
+        voice_prompt = _voice_cfg["voice_prompt"]
 
     # Optional voice RAG: attach vector context to system prompt for /voice/ws sessions.
-    voice_rag_enabled = os.getenv("VOICE_RAG_ENABLED", "true").strip().lower() == "true"
+    voice_rag_enabled = _voice_cfg.get("rag_enabled", True) if _voice_cfg else (os.getenv("VOICE_RAG_ENABLED", "true").strip().lower() == "true")
     if voice_rag_enabled and agent_id:
         retrieval_query = str(context_query or "").strip()
+        if not retrieval_query:
+            retrieval_query = str(_voice_cfg.get("context_query") or "").strip()
         if not retrieval_query and append_client_prompt:
             retrieval_query = str(client_text_prompt or "").strip()
         if not retrieval_query:
             retrieval_query = str(agent_prompt[:500]).strip()
         if retrieval_query:
-            try:
-                rag_top_k_raw = os.getenv("VOICE_RAG_TOP_K", "3").strip()
-                rag_top_k = max(1, min(6, int(rag_top_k_raw)))
-            except Exception:
-                rag_top_k = 3
+            rag_top_k = max(1, min(6, _voice_cfg.get("rag_top_k", 3) if _voice_cfg else 3))
             try:
                 from core.rag.retrieval import hybrid_search
                 from core.chat_service import format_context
 
-                docs = hybrid_search(retrieval_query, agent_id=agent_id, top_k=rag_top_k, rerank=False)
+                docs = hybrid_search(
+                    retrieval_query,
+                    agent_id=agent_id,
+                    top_k=rag_top_k,
+                    use_hybrid=_ret_cfg.get("use_hybrid_search"),
+                    rerank=_ret_cfg.get("use_reranker", False),
+                    reranker_model=_ret_cfg.get("reranker_model"),
+                )
                 rag_context = format_context(docs)
                 if rag_context and rag_context != "No relevant documents found.":
                     prompt_prefix = text_prompt.strip()
@@ -2980,11 +3127,11 @@ async def voice_ws_proxy(websocket: WebSocket):
                         "Use this context when relevant. If the answer is not in context, say you are not certain."
                     )
                     text_prompt = f"{prompt_prefix}\n\n{rag_block}" if prompt_prefix else rag_block
-                    logging.info(f"🎤 Voice proxy: Injected {len(docs)} RAG docs into voice prompt for agent {agent_id}")
+                    logging.info(f"ðŸŽ¤ Voice proxy: Injected {len(docs)} RAG docs into voice prompt for agent {agent_id}")
                 else:
-                    logging.info(f"🎤 Voice proxy: No RAG docs found for agent {agent_id}")
+                    logging.info(f"ðŸŽ¤ Voice proxy: No RAG docs found for agent {agent_id}")
             except Exception as e:
-                logging.warning(f"⚠️ Voice proxy: RAG context injection failed for agent {agent_id}: {e}")
+                logging.warning(f"⚠️  Voice proxy: RAG context injection failed for agent {agent_id}: {e}")
 
     # --- Build target Moshi WebSocket URL ---
     moshi_base = PERSONAPLEX_URL.rstrip("/")
@@ -3008,7 +3155,7 @@ async def voice_ws_proxy(websocket: WebSocket):
 
     query_params = urlencode(upstream_query)
     moshi_url = f"{moshi_ws_base}/api/chat?{query_params}"
-    logging.info(f"🎤 Voice proxy: Connecting to Moshi at {moshi_ws_base}/api/chat")
+    logging.info(f"ðŸŽ¤ Voice proxy: Connecting to Moshi at {moshi_ws_base}/api/chat")
 
     # --- Relay WebSocket frames bidirectionally ---
     # RunPod connection support: auth headers, SSL, heartbeat
@@ -3068,15 +3215,15 @@ async def voice_ws_proxy(websocket: WebSocket):
                     task.cancel()
 
     except aiohttp.ClientError as e:
-        logging.error(f"❌ Voice proxy: Cannot connect to Moshi server: {e}")
+        logging.error(f"✅ Voice proxy: Cannot connect to Moshi server: {e}")
         try:
             await websocket.close(code=1011, reason=f"Moshi server unavailable: {e}")
         except Exception:
             pass
     except WebSocketDisconnect:
-        logging.info("🎤 Voice proxy: Client disconnected")
+        logging.info("ðŸŽ¤ Voice proxy: Client disconnected")
     except Exception as e:
-        logging.error(f"❌ Voice proxy error: {e}")
+        logging.error(f"✅ Voice proxy error: {e}")
         try:
             await websocket.close(code=1011, reason=str(e))
         except Exception:
@@ -3084,7 +3231,7 @@ async def voice_ws_proxy(websocket: WebSocket):
 
 
 # =============================================================================
-# MULTI-MODE VOICE PIPELINE — /ws/voice/{agent_id}
+# MULTI-MODE VOICE PIPELINE â€” /ws/voice/{agent_id}
 # =============================================================================
 
 @app.websocket("/ws/voice/{agent_id}")
@@ -3101,6 +3248,7 @@ async def voice_pipeline_ws(websocket: WebSocket, agent_id: str):
     """
     from core.config import VOICE_DEFAULT_MODE, VOICE_PERSONAPLEX_FALLBACK
     from core.voice.voice_protocol import VoiceMode, VoiceSession, MSG_SESSION, MSG_STATUS, MSG_ERROR
+    from core.agent_manager import resolve_voice_config
 
     # --- Auth ---
     auth_error = await _authenticate_voice_websocket(websocket)
@@ -3108,13 +3256,32 @@ async def voice_pipeline_ws(websocket: WebSocket, agent_id: str):
         await websocket.close(code=1008, reason=auth_error)
         return
 
+    voice_api_key = getattr(websocket.state, "auth_api_key", None)
+    try:
+        agent = _require_agent_access(agent_id, voice_api_key)
+    except HTTPException as exc:
+        detail = exc.detail if isinstance(exc.detail, str) else "Unable to use this agent."
+        await websocket.close(code=1008, reason=str(detail)[:120])
+        return
+
     await websocket.accept()
 
-    # --- Parse params ---
-    mode_str = (websocket.query_params.get("mode") or VOICE_DEFAULT_MODE).strip().lower()
-    voice_prompt = websocket.query_params.get("voice_prompt", "NATF0.pt")
+    # --- Resolve agent first so config can inform param defaults ---
+    system_prompt = agent.get("system_prompt") or ""
+    agent_name = agent.get("name") or ""
+    model_selection = agent.get("model_selection")
+
+    _voice_cfg = resolve_voice_config(agent_id, agent=agent)
+
+    # --- Parse params (request override > agent config > env default) ---
+    qp_mode = websocket.query_params.get("mode")
+    mode_str = (qp_mode or _voice_cfg.get("mode") or VOICE_DEFAULT_MODE).strip().lower()
+
+    qp_voice_prompt = websocket.query_params.get("voice_prompt")
+    voice_prompt = qp_voice_prompt or _voice_cfg.get("voice_prompt") or "NATF0.pt"
+
     raw_sample_rate = websocket.query_params.get("sample_rate")
-    sample_rate = 8000
+    sample_rate = _voice_cfg.get("sample_rate", 8000)
     if raw_sample_rate is not None:
         try:
             parsed_sample_rate = int(raw_sample_rate)
@@ -3122,13 +3289,13 @@ async def voice_pipeline_ws(websocket: WebSocket, agent_id: str):
                 sample_rate = parsed_sample_rate
             else:
                 logging.warning(
-                    "Invalid non-positive sample_rate '%s' for voice session; using default 8000",
-                    raw_sample_rate,
+                    "Invalid non-positive sample_rate '%s' for voice session; using default %d",
+                    raw_sample_rate, _voice_cfg.get("sample_rate", 8000),
                 )
         except (TypeError, ValueError):
             logging.warning(
-                "Invalid sample_rate '%s' for voice session; using default 8000",
-                raw_sample_rate,
+                "Invalid sample_rate '%s' for voice session; using default %d",
+                raw_sample_rate, _voice_cfg.get("sample_rate", 8000),
             )
     x_user_id = (websocket.headers.get("x-user-id") or websocket.query_params.get("x_user_id") or "").strip() or None
 
@@ -3136,19 +3303,6 @@ async def voice_pipeline_ws(websocket: WebSocket, agent_id: str):
         mode = VoiceMode(mode_str)
     except ValueError:
         mode = VoiceMode.PERSONAPLEX
-
-    # --- Resolve agent ---
-    system_prompt = ""
-    agent_name = ""
-    model_selection = None
-    try:
-        agent = get_agent(agent_id)
-        if agent:
-            system_prompt = agent.get("system_prompt") or ""
-            agent_name = agent.get("name") or ""
-            model_selection = agent.get("model_selection")
-    except Exception:
-        pass
 
     session = VoiceSession(
         agent_id=agent_id,
@@ -3188,7 +3342,7 @@ async def voice_pipeline_ws(websocket: WebSocket, agent_id: str):
                         await websocket.send_text(json.dumps({
                             "type": MSG_STATUS,
                             "status": "fallback",
-                            "message": "PersonaPlex unavailable — using cascade mode",
+                            "message": "PersonaPlex unavailable â€” using cascade mode",
                         }))
                     except Exception:
                         pass

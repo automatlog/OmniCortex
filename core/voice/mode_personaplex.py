@@ -195,13 +195,30 @@ async def handle_personaplex(websocket: WebSocket, session: VoiceSession):
     import aiohttp
 
     # --- Phase 1: pgvector prefill — enrich text_prompt with knowledge chunks ---
-    from core.agent_manager import get_agent
+    from core.agent_manager import get_agent, resolve_retrieval_config, resolve_voice_config
     from core.rag.retrieval import hybrid_search
+    from core.config import VOICE_LLM_BACKEND
+
+    _agent_data = get_agent(session.agent_id)
+    _ret_cfg = resolve_retrieval_config(session.agent_id, agent=_agent_data)
+    _voice_cfg = resolve_voice_config(session.agent_id, agent=_agent_data)
+
+    # Default voice reasoning model if agent has no model_selection.
+    if not session.model_selection:
+        session.model_selection = VOICE_LLM_BACKEND
 
     if not session.text_prompt and not session.system_prompt:
-        agent = get_agent(session.agent_id)
-        if agent:
-            session.system_prompt = agent.get("system_prompt") or ""
+        if _agent_data:
+            session.system_prompt = _agent_data.get("system_prompt") or ""
+
+    # Apply agent-level voice defaults if no query-param override was given
+    if session.voice_prompt == "NATF0.pt" and _voice_cfg.get("voice_prompt"):
+        session.voice_prompt = _voice_cfg["voice_prompt"]
+
+    _prefill_top_k = _ret_cfg.get("voice_top_k", 8)
+    _prefill_use_hybrid = _ret_cfg.get("use_hybrid_search")
+    _prefill_rerank = _ret_cfg.get("use_reranker")
+    _prefill_reranker_model = _ret_cfg.get("reranker_model")
 
     try:
         loop = asyncio.get_running_loop()
@@ -213,7 +230,14 @@ async def handle_personaplex(websocket: WebSocket, session: VoiceSession):
 
         prefill_chunks = await loop.run_in_executor(
             None,
-            lambda q=_prefill_query: hybrid_search(q, session.agent_id, top_k=8)
+            lambda q=_prefill_query: hybrid_search(
+                q,
+                session.agent_id,
+                top_k=_prefill_top_k,
+                use_hybrid=_prefill_use_hybrid,
+                rerank=_prefill_rerank,
+                reranker_model=_prefill_reranker_model,
+            )
         )
         chunk_texts = []
         for c in prefill_chunks:
@@ -246,10 +270,8 @@ async def handle_personaplex(websocket: WebSocket, session: VoiceSession):
     agent_intent_kw = None
     agent_follow_map = None
     try:
-        from core.agent_manager import get_agent as _get_agent
-        _agent = _get_agent(session.agent_id)
-        if _agent:
-            _extra = _agent.get("extra_data") or {}
+        if _agent_data:
+            _extra = _agent_data.get("extra_data") or _agent_data.get("metadata") or {}
             agent_intent_kw = _extra.get("intent_keywords")
             agent_follow_map = _extra.get("follow_up_map")
     except Exception:
@@ -665,7 +687,14 @@ async def handle_personaplex(websocket: WebSocket, session: VoiceSession):
                     try:
                         rag_chunks = await loop.run_in_executor(
                             None,
-                            lambda t=transcript: hybrid_search(t, session.agent_id, top_k=3)
+                            lambda t=transcript: hybrid_search(
+                                t,
+                                session.agent_id,
+                                top_k=_ret_cfg.get("voice_top_k", 3),
+                                use_hybrid=_ret_cfg.get("use_hybrid_search"),
+                                rerank=_ret_cfg.get("use_reranker"),
+                                reranker_model=_ret_cfg.get("reranker_model"),
+                            )
                         )
                         chunk_texts = []
                         for c in rag_chunks:
@@ -686,7 +715,14 @@ async def handle_personaplex(websocket: WebSocket, session: VoiceSession):
                         try:
                             results = await loop.run_in_executor(
                                 None,
-                                lambda q=query: hybrid_search(q, session.agent_id, top_k=3)
+                                lambda q=query: hybrid_search(
+                                    q,
+                                    session.agent_id,
+                                    top_k=_ret_cfg.get("voice_top_k", 3),
+                                    use_hybrid=_ret_cfg.get("use_hybrid_search"),
+                                    rerank=_ret_cfg.get("use_reranker"),
+                                    reranker_model=_ret_cfg.get("reranker_model"),
+                                )
                             )
                             for intent_name, intent_query in [
                                 (k, v) for k, v in {

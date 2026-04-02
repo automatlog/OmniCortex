@@ -34,13 +34,12 @@ VLLM1_MODEL = _first_non_empty(
 )
 VLLM1_API_KEY = _first_non_empty("VLLM1_API_KEY", "VLLM_API_KEY", default="not-needed")
 
-VLLM2_BASE_URL = _first_non_empty("VLLM2_BASE_URL", "LLAMA_BASE_URL", default="http://localhost:8081/v1")
+VLLM2_BASE_URL = _first_non_empty("VLLM2_BASE_URL", default="http://localhost:8082/v1")
 VLLM2_MODEL = _first_non_empty(
     "VLLM2_MODEL",
-    "LLAMA_MODEL",
-    default="meta-llama/Llama-4-Maverick-17B-128E-Instruct",
+    default="Qwen/Qwen2.5-7B-Instruct",
 )
-VLLM2_API_KEY = _first_non_empty("VLLM2_API_KEY", "LLAMA_API_KEY", "VLLM1_API_KEY", default="not-needed")
+VLLM2_API_KEY = _first_non_empty("VLLM2_API_KEY", "VLLM1_API_KEY", default="not-needed")
 
 MODEL_BACKENDS = {
     "default": {
@@ -53,12 +52,16 @@ MODEL_BACKENDS = {
         "model": VLLM1_MODEL,
         "api_key": VLLM1_API_KEY,
     },
-    "Llama 4 Maverick": {
+    "Qwen 2.5 7B": {
         "base_url": VLLM2_BASE_URL,
         "model": VLLM2_MODEL,
         "api_key": VLLM2_API_KEY,
     },
 }
+
+# Default LLM backend for voice reasoning (LFM/cascade/personaplex modes)
+# Defaults to vLLM1 alias to keep voice reasoning on the primary backend.
+VOICE_LLM_BACKEND = os.getenv("VOICE_LLM_BACKEND", "Meta Llama 3.1")
 
 # Voice Model (Moshi/PersonaPlex — runs locally)
 PERSONAPLEX_MODEL = os.getenv("PERSONAPLEX_MODEL", "nvidia/personaplex-7b-v1")
@@ -133,6 +136,7 @@ MOSHI_ENABLED = os.getenv("MOSHI_ENABLED", "true").lower() == "true"
 # =============================================================================
 VOICE_MODEL = os.getenv("VOICE_MODEL", "LiquidAI/LFM2.5-Audio-1.5B")
 VOICE_MAX_INSTANCES = int(os.getenv("VOICE_MAX_INSTANCES", "8"))
+LFM_SERVER_URL = os.getenv("LFM_SERVER_URL", "").strip()  # e.g. http://localhost:8099
 
 # =============================================================================
 # VOICE PIPELINE (Multi-Mode)

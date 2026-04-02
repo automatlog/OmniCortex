@@ -43,6 +43,7 @@ This README reflects the current implementation in this repo.
 - Optional: ClickHouse
 - Optional: Moshi/PersonaPlex server for voice proxy
 - Optional: Voice Gateway (`scripts/voice_gateway.py`) for FreeSWITCH/media WS bridging
+- Optional: Direct relay (`scripts/relay.py`) for low-latency FreeSWITCH -> PersonaPlex WS bridging
 
 ## Quick Start
 
@@ -116,6 +117,18 @@ MOSHI_ENABLE_OMNICORTEX_UI_PATCH=1
 VOICE_RAG_ENABLED=true
 VOICE_RAG_TOP_K=3
 ```
+
+Optional direct relay runtime:
+
+```ini
+PERSONAPLEX_WS=ws://127.0.0.1:8998/api/chat
+PROMPT_PRESET_FILE=config/direct_relay_presets.example.json
+PROMPT_PRESET_NAME=default
+RELAY_TTS_ENABLED=true
+RELAY_BACKCHANNEL_ENABLED=true
+```
+
+See `docs/DIRECT_RELAY.md` for the FreeSWITCH dialplan, prompt modes, and runtime flags for `scripts/relay.py`.
 
 ### 3) Run backend
 
@@ -408,6 +421,7 @@ Current defaults:
 - LLM default: `meta-llama/Llama-3.1-8B-Instruct`
 - Secondary model alias: `Llama 4 Maverick`
 - Embeddings: `BAAI/bge-large-en-v1.5`
+- Embedding fallbacks: `intfloat/e5-large-v2`, `thenlper/gte-large`
 - Reranker: `BAAI/bge-reranker-large`
 - Chunking: semantic + recursive splitting
 
@@ -503,6 +517,24 @@ python scripts/voice_gateway.py \
 ```
 
 If TLS is terminated by nginx, run gateway on `8099` and proxy `/calls` with websocket upgrade headers.
+
+Two-leg bridge (separate listen/speak websocket legs) is available at `scripts/voice_gateway_two_leg.py`:
+
+```bash
+python scripts/voice_gateway_two_leg.py \
+  --host 0.0.0.0 \
+  --port 8099 \
+  --listen-endpoint /listen \
+  --speak-endpoint /speak \
+  --omnicortex-voice-ws ws://127.0.0.1:8000/voice/ws
+```
+
+For two-leg mode, both legs must use the same `call_uuid` query value.
+
+For strict split runtime by process, use:
+- `brain_orchestrator.py`
+- `bridge_in.py`
+- `bridge_out.py`
 
 Detailed guide: `docs/VOICE_GATEWAY.md`.
 

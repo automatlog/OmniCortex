@@ -56,8 +56,12 @@ async def handle_cascade(websocket: WebSocket, session: VoiceSession):
     """
     Cascade mode handler — utterance-at-a-time voice pipeline.
     """
+    from core.config import VOICE_LLM_BACKEND
+
+    # Default voice reasoning model if agent has no model_selection.
+    if not session.model_selection:
+        session.model_selection = VOICE_LLM_BACKEND
     resample_up = Resampler(GATEWAY_RATE, LFM_INPUT_RATE)     # 8k -> 16k for ASR
-    resample_down = Resampler(LFM_INPUT_RATE, GATEWAY_RATE)     # 16k/24k -> 8k for gateway
 
     audio_buffer: List[np.ndarray] = []
     conversation_history: List[dict] = []

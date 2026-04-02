@@ -298,7 +298,19 @@ def process_question(
             pass
         return cached
 
-    docs = hybrid_search(safe_question, agent_id=agent_id, top_k=2, rerank=rerank)
+    from .agent_manager import resolve_retrieval_config
+    _ret_cfg = resolve_retrieval_config(agent_id, agent=_agent_data) if agent_id else {}
+    _effective_top_k = _ret_cfg.get("top_k", 2) if _ret_cfg else 2
+    _effective_rerank = rerank if rerank is not None else _ret_cfg.get("use_reranker")
+    _effective_reranker_model = _ret_cfg.get("reranker_model") if _ret_cfg else None
+    docs = hybrid_search(
+        safe_question,
+        agent_id=agent_id,
+        top_k=_effective_top_k,
+        use_hybrid=_ret_cfg.get("use_hybrid_search"),
+        rerank=_effective_rerank,
+        reranker_model=_effective_reranker_model,
+    )
     context = format_context(docs)
     history = format_history(conversation_history or [], max_history)
 

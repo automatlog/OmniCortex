@@ -1,0 +1,135 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  ICICI Bank Voice AI Dialplan
+  
+  Agent: Priya Sharma - Customer Service Representative
+  Voice: NATF0.pt (Natural Female Voice)
+  Services: Account balance, transactions, loan products
+  
+  Installation:
+  1. Copy to: /usr/local/freeswitch/conf/dialplan/default/icici_bank.xml
+  2. Reload: fs_cli -x "reloadxml"
+  3. Test: Call extension 1800 (ICICI Bank customer service)
+-->
+<include>
+  <!-- ICICI Bank Customer Service - Main Line -->
+  <extension name="icici_bank_main">
+    <condition field="destination_number" expression="^(1800)$">
+      <!-- Answer the call -->
+      <action application="answer"/>
+      
+      <!-- Play welcome message -->
+      <action application="playback" data="ivr/ivr-welcome.wav"/>
+      <action application="sleep" data="500"/>
+      
+      <!-- Log call start -->
+      <action application="log" data="INFO ICICI Bank call started - UUID: ${uuid}"/>
+      
+      <!-- Set call variables -->
+      <action application="set" data="call_uuid=${uuid}"/>
+      <action application="set" data="caller_id=${caller_id_number}"/>
+      <action application="set" data="call_start_time=${strftime(%Y-%m-%d %H:%M:%S)}"/>
+      
+      <!-- Connect to bridge_relay with ICICI Bank agent -->
+      <action application="socket" 
+              data="127.0.0.1:8001 async full"/>
+      
+      <!-- Log call end -->
+      <action application="log" data="INFO ICICI Bank call ended - UUID: ${uuid}, Duration: ${duration}"/>
+      
+      <!-- Hangup -->
+      <action application="hangup"/>
+    </condition>
+  </extension>
+
+  <!-- ICICI Bank - Personal Loans Department -->
+  <extension name="icici_bank_loans">
+    <condition field="destination_number" expression="^(1801)$">
+      <action application="answer"/>
+      
+      <!-- Play department message -->
+      <action application="playback" data="ivr/ivr-you_are_being_transferred.wav"/>
+      
+      <!-- Log -->
+      <action application="log" data="INFO ICICI Bank Loans - UUID: ${uuid}"/>
+      
+      <!-- Set specific prompt for loans -->
+      <action application="set" data="text_prompt=You work for ICICI Bank and your name is Priya Sharma. You are a loan specialist. Focus on helping customers with personal loans, home loans, car loans, and education loans. Mention competitive rates starting from 10.5% per annum with flexible EMI options."/>
+      
+      <!-- Connect to bridge_relay -->
+      <action application="socket" data="127.0.0.1:8001 async full"/>
+      
+      <action application="hangup"/>
+    </condition>
+  </extension>
+
+  <!-- ICICI Bank - Account Services -->
+  <extension name="icici_bank_accounts">
+    <condition field="destination_number" expression="^(1802)$">
+      <action application="answer"/>
+      
+      <!-- Play department message -->
+      <action application="playback" data="ivr/ivr-you_are_being_transferred.wav"/>
+      
+      <!-- Log -->
+      <action application="log" data="INFO ICICI Bank Accounts - UUID: ${uuid}"/>
+      
+      <!-- Set specific prompt for accounts -->
+      <action application="set" data="text_prompt=You work for ICICI Bank and your name is Priya Sharma. You are an account services specialist. Help customers with account balance inquiries, recent transactions, and account management. Always verify customer identity using registered mobile number and date of birth before sharing details."/>
+      
+      <!-- Connect to bridge_relay -->
+      <action application="socket" data="127.0.0.1:8001 async full"/>
+      
+      <action application="hangup"/>
+    </condition>
+  </extension>
+
+  <!-- ICICI Bank - IVR Menu -->
+  <extension name="icici_bank_ivr">
+    <condition field="destination_number" expression="^(1800|ICICI)$">
+      <action application="answer"/>
+      
+      <!-- Welcome message -->
+      <action application="playback" data="ivr/ivr-welcome_to_freeswitch.wav"/>
+      <action application="sleep" data="500"/>
+      
+      <!-- IVR Menu -->
+      <action application="ivr" data="icici_bank_menu"/>
+      
+      <action application="hangup"/>
+    </condition>
+  </extension>
+
+  <!-- ICICI Bank - Test Extension -->
+  <extension name="icici_bank_test">
+    <condition field="destination_number" expression="^(1899)$">
+      <action application="answer"/>
+      
+      <!-- Enable debug -->
+      <action application="set" data="DEBUG=true"/>
+      
+      <!-- Log test call -->
+      <action application="log" data="INFO ICICI Bank TEST call - UUID: ${uuid}"/>
+      
+      <!-- Play test message -->
+      <action application="playback" data="ivr/ivr-this_is_a_test.wav"/>
+      
+      <!-- Connect to bridge_relay -->
+      <action application="socket" data="127.0.0.1:8001 async full"/>
+      
+      <action application="hangup"/>
+    </condition>
+  </extension>
+
+  <!-- ICICI Bank - Emergency Fallback -->
+  <extension name="icici_bank_fallback">
+    <condition field="destination_number" expression="^(1800)$">
+      <condition field="${socket_error}" expression="true">
+        <!-- If bridge_relay is down, play error message -->
+        <action application="log" data="ERROR Bridge relay connection failed - UUID: ${uuid}"/>
+        <action application="playback" data="ivr/ivr-call_cannot_be_completed_as_dialed.wav"/>
+        <action application="hangup" data="NETWORK_OUT_OF_ORDER"/>
+      </condition>
+    </condition>
+  </extension>
+</include>

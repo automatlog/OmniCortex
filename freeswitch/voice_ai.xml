@@ -1,0 +1,134 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FreeSWITCH Dialplan for Bridge Relay
+  
+  Installation:
+  1. Copy to: /usr/local/freeswitch/conf/dialplan/default/voice_ai.xml
+  2. Edit: Update AGENT_ID and BEARER_TOKEN
+  3. Reload: fs_cli -x "reloadxml"
+  4. Test: originate user/1000 9999
+-->
+<include>
+  <!-- Voice AI Extension - Direct Socket Connection -->
+  <extension name="voice_ai_socket">
+    <condition field="destination_number" expression="^(9999)$">
+      <!-- Answer the call -->
+      <action application="answer"/>
+      
+      <!-- Log call start -->
+      <action application="log" data="INFO Starting Voice AI call for ${uuid}"/>
+      
+      <!-- Set variables -->
+      <action application="set" data="call_uuid=${uuid}"/>
+      <action application="set" data="agent_id=YOUR_AGENT_ID_HERE"/>
+      <action application="set" data="token=YOUR_BEARER_TOKEN_HERE"/>
+      <action application="set" data="voice_prompt=NATF0.pt"/>
+      
+      <!-- Connect to bridge_relay via socket -->
+      <action application="socket" 
+              data="127.0.0.1:8001 async full"/>
+      
+      <!-- Log call end -->
+      <action application="log" data="INFO Voice AI call ended for ${uuid}"/>
+      
+      <!-- Hangup -->
+      <action application="hangup"/>
+    </condition>
+  </extension>
+
+  <!-- Voice AI Extension - Audio Fork (Alternative) -->
+  <extension name="voice_ai_fork">
+    <condition field="destination_number" expression="^(9998)$">
+      <!-- Answer the call -->
+      <action application="answer"/>
+      
+      <!-- Log call start -->
+      <action application="log" data="INFO Starting Voice AI (fork) call for ${uuid}"/>
+      
+      <!-- Fork audio to bridge_relay -->
+      <action application="audio_fork" 
+              data="ws://127.0.0.1:8001/${uuid}?agent_id=YOUR_AGENT_ID_HERE&amp;token=YOUR_BEARER_TOKEN_HERE&amp;voice_prompt=NATF0.pt"/>
+      
+      <!-- Keep call alive -->
+      <action application="park"/>
+    </condition>
+  </extension>
+
+  <!-- Voice AI Extension - With Agent Selection -->
+  <extension name="voice_ai_with_agent">
+    <condition field="destination_number" expression="^(9997)$">
+      <action application="answer"/>
+      
+      <!-- Play menu -->
+      <action application="playback" data="ivr/ivr-please_enter_extension_followed_by_pound.wav"/>
+      
+      <!-- Read agent selection -->
+      <action application="read" 
+              data="1 1 ivr/ivr-that_was_an_invalid_entry.wav agent_selection 5000 #"/>
+      
+      <!-- Set agent based on selection -->
+      <action application="set" data="agent_id=${agent_selection}"/>
+      <action application="set" data="token=YOUR_BEARER_TOKEN_HERE"/>
+      
+      <!-- Connect to bridge_relay -->
+      <action application="socket" 
+              data="127.0.0.1:8001 async full"/>
+      
+      <action application="hangup"/>
+    </condition>
+  </extension>
+
+  <!-- Voice AI Extension - Hindi Support -->
+  <extension name="voice_ai_hindi">
+    <condition field="destination_number" expression="^(9996)$">
+      <action application="answer"/>
+      
+      <!-- Use Hindi voice -->
+      <action application="set" data="agent_id=YOUR_AGENT_ID_HERE"/>
+      <action application="set" data="token=YOUR_BEARER_TOKEN_HERE"/>
+      <action application="set" data="voice_prompt=NATF2.pt"/>
+      <action application="set" data="text_prompt=आप एक सहायक हैं। हिंदी में स्पष्ट और सरल भाषा में जवाब दें।"/>
+      
+      <!-- Connect to bridge_relay -->
+      <action application="socket" 
+              data="127.0.0.1:8001 async full"/>
+      
+      <action application="hangup"/>
+    </condition>
+  </extension>
+
+  <!-- Voice AI Extension - Different Voices -->
+  <extension name="voice_ai_female">
+    <condition field="destination_number" expression="^(9995)$">
+      <action application="answer"/>
+      <action application="set" data="voice_prompt=NATF0.pt"/>
+      <action application="socket" data="127.0.0.1:8001 async full"/>
+      <action application="hangup"/>
+    </condition>
+  </extension>
+
+  <extension name="voice_ai_male">
+    <condition field="destination_number" expression="^(9994)$">
+      <action application="answer"/>
+      <action application="set" data="voice_prompt=NATM0.pt"/>
+      <action application="socket" data="127.0.0.1:8001 async full"/>
+      <action application="hangup"/>
+    </condition>
+  </extension>
+
+  <!-- Voice AI Extension - Test/Debug -->
+  <extension name="voice_ai_test">
+    <condition field="destination_number" expression="^(9993)$">
+      <action application="answer"/>
+      
+      <!-- Enable debug logging -->
+      <action application="set" data="DEBUG=true"/>
+      
+      <!-- Test connection -->
+      <action application="log" data="INFO Testing bridge_relay connection"/>
+      <action application="socket" data="127.0.0.1:8001 async full"/>
+      
+      <action application="hangup"/>
+    </condition>
+  </extension>
+</include>

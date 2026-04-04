@@ -112,9 +112,21 @@ def _bar(value, width=20, max_val=0.15):
 
 
 # ── Config ──────────────────────────────────────────────────────────
+def parse_float_env(name: str, default: float) -> float:
+    """Safely parse a float environment variable with fallback."""
+    try:
+        value = os.getenv(name, "").strip()
+        if not value:
+            return default
+        return float(value)
+    except (ValueError, TypeError):
+        logger.error("Invalid value for env var %s; using default %.2f", name, default)
+        return default
+
+
 FS_PORT           = 8001
-API_KEY           = "b6f3b11e-64a5-49c7-9a90-54dd5a4cd482"
-_BASE_URL         = "wss://jwpma2d42856fn-8998.proxy.runpod.net/api/chat"
+API_KEY           = os.getenv("BRIDGE_API_KEY", "")
+_BASE_URL         = os.getenv("BRIDGE_BASE_URL", "wss://localhost:8998/api/chat")
 _TEXT_PROMPT      = "You work for ICICI Bank and your name is Priya Sharma. You are a helpful and professional customer service representative specializing in personal accounts and loan products. You are currently assisting a customer who holds a personal savings account with a current balance of ₹50,000. Your role is to help the customer with any queries related to their account balance, recent transactions, and available loan products including personal loans, home loans, car loans, and education loans. When discussing loans, always mention that ICICI Bank offers competitive interest rates starting from 10.5% per annum for personal loans, with flexible EMI options and instant approval for eligible customers. Always verify the customer's identity before sharing any account details by asking for their registered mobile number and date of birth. Speak in a warm, helpful, and professional tone. If the customer asks about loan eligibility, guide them based on their current balance and account history."
 MOSHI_URL         = f"{_BASE_URL}?text_prompt={quote(_TEXT_PROMPT)}"
 
@@ -141,11 +153,11 @@ TTS_ENABLED       = True
 TTS_VOICE         = "en-US-AriaNeural"   # Microsoft Edge TTS voice (default)
 TTS_DIR           = "/tmp/bridge_tts"
 PHRASE_BARGE_IN_ENABLED = os.getenv("PHRASE_BARGE_IN_ENABLED", "true").strip().lower() in {"1", "true", "yes", "on"}
-PHRASE_BARGE_IN_MIN_AUDIO_SEC = float(os.getenv("PHRASE_BARGE_IN_MIN_AUDIO_SEC", "0.8"))
-PHRASE_BARGE_IN_MAX_AUDIO_SEC = float(os.getenv("PHRASE_BARGE_IN_MAX_AUDIO_SEC", "2.5"))
-PHRASE_BARGE_IN_CHECK_INTERVAL_SEC = float(os.getenv("PHRASE_BARGE_IN_CHECK_INTERVAL_SEC", "0.8"))
-PHRASE_BARGE_IN_RMS_GATE = float(os.getenv("PHRASE_BARGE_IN_RMS_GATE", "0.012"))
-TTS_SUPPRESS_AFTER_BARGE_SEC = float(os.getenv("TTS_SUPPRESS_AFTER_BARGE_SEC", "1.75"))
+PHRASE_BARGE_IN_MIN_AUDIO_SEC = parse_float_env("PHRASE_BARGE_IN_MIN_AUDIO_SEC", 0.8)
+PHRASE_BARGE_IN_MAX_AUDIO_SEC = parse_float_env("PHRASE_BARGE_IN_MAX_AUDIO_SEC", 2.5)
+PHRASE_BARGE_IN_CHECK_INTERVAL_SEC = parse_float_env("PHRASE_BARGE_IN_CHECK_INTERVAL_SEC", 0.8)
+PHRASE_BARGE_IN_RMS_GATE = parse_float_env("PHRASE_BARGE_IN_RMS_GATE", 0.012)
+TTS_SUPPRESS_AFTER_BARGE_SEC = parse_float_env("TTS_SUPPRESS_AFTER_BARGE_SEC", 1.75)
 STOP_PHRASES = [
     "stop",
     "wait",
@@ -466,8 +478,14 @@ async def bridge_connection(fs_ws):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            out, _ = await proc.communicate()
-            log_tts(uuid, f"uuid_break result: {out.decode().strip()}")
+            try:
+                out, _ = await asyncio.wait_for(proc.communicate(), timeout=5.0)
+                log_tts(uuid, f"uuid_break result: {out.decode().strip()}")
+            except asyncio.TimeoutError:
+                log_error(uuid, f"uuid_break timed out after 5s (uuid={uuid})")
+                with contextlib.suppress(ProcessLookupError):
+                    proc.kill()
+                    await proc.wait()
         except Exception as e:
             log_error(uuid, f"uuid_break failed: {e}")
 
@@ -609,6 +627,9 @@ async def bridge_connection(fs_ws):
                 last_check = 0.0
                 pcm_window = np.array([], dtype=np.float32)
                 asr = await get_asr_engine()
+                if asr is None:
+                    log_error(uuid, "ASR engine unavailable; phrase barge-in disabled")
+                    return
                 log_info(uuid, f"{C_YELLOW}Phrase barge-in enabled{C_RESET}  stop_phrases={len(STOP_PHRASES)}")
 
                 while True:
@@ -638,9 +659,13 @@ async def bridge_connection(fs_ws):
                             continue
 
                         last_check = now
-                        transcript, confidence, detected_lang = await asr.transcribe(
-                            pcm_window.copy(), sample_rate=FS_RATE
-                        )
+                        try:
+                            transcript, confidence, detected_lang = await asr.transcribe(
+                                pcm_window.copy(), sample_rate=FS_RATE
+                            )
+                        except Exception as e:
+                            log_tts(uuid, f"Barge-in ASR failed: {e}")
+                            continue
                         transcript = (transcript or "").strip()
                         if transcript:
                             log_tts(

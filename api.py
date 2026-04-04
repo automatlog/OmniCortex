@@ -2400,14 +2400,14 @@ async def create_new_agent(agent_request: AgentCreate, request: Request, backgro
                              pass
                         file_objs.append(f)
                     else:
-                        print(f"⚠️  Warning: File not found {path}")
+                        logger.warning("File not found: %s", path)
                 
                 if file_objs:
                     _accumulate_ingest_metrics(
                         process_documents(files=file_objs, agent_id=created_id)
                     )
             except Exception as doc_err:
-                print(f"✅ Failed to process initial documents: {doc_err}")
+                logger.error("Failed to process initial documents for agent_id=%s: %s", created_id, doc_err, exc_info=True)
                 # Don't fail the request, just log it? Or maybe fail? 
                 # Better to warn since agent is created.
             finally:
@@ -3215,15 +3215,15 @@ async def voice_ws_proxy(websocket: WebSocket):
                     task.cancel()
 
     except aiohttp.ClientError as e:
-        logging.error(f"✅ Voice proxy: Cannot connect to Moshi server: {e}")
+        logging.error(f"❌ Voice proxy: Cannot connect to Moshi server: {e}")
         try:
-            await websocket.close(code=1011, reason=f"Moshi server unavailable: {e}")
+            await websocket.close(code=1011, reason=f"❌ Moshi server unavailable: {e}")
         except Exception:
             pass
     except WebSocketDisconnect:
-        logging.info("ðŸŽ¤ Voice proxy: Client disconnected")
+        logging.info("🎤 Voice proxy: Client disconnected")
     except Exception as e:
-        logging.error(f"✅ Voice proxy error: {e}")
+        logging.error(f"❌ Voice proxy error: {e}")
         try:
             await websocket.close(code=1011, reason=str(e))
         except Exception:

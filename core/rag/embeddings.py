@@ -16,11 +16,14 @@ _EMBEDDINGS_LOCK = threading.Lock()
 
 
 def _default_embedding_fallbacks() -> list[str]:
-    dim = int(EMBEDDING_DIM or 0)
+    try:
+        dim = int(EMBEDDING_DIM or 0)
+    except (ValueError, TypeError):
+        logger.warning("Invalid EMBEDDING_DIM value; using default 1024")
+        dim = 1024
     if dim >= 1024:
         return [
-            "intfloat/e5-large-v2",
-            "thenlper/gte-large",
+            "BAAI/bge-large-en-v1.5",
         ]
     if dim >= 768:
         return [

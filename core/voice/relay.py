@@ -29,11 +29,25 @@ except ImportError:
     HAS_EDGE_TTS = False
 
 try:
+    import lameenc
+    HAS_LAMEENC = True
+except ImportError:
+    lameenc = None
+    HAS_LAMEENC = False
+
+try:
     import opuslib
     HAS_OPUSLIB = True
 except ImportError:
     opuslib = None
     HAS_OPUSLIB = False
+
+try:
+    from core.voice.opus_codec import OpusCodec
+    HAS_SPHN_CODEC = True
+except Exception:
+    OpusCodec = None
+    HAS_SPHN_CODEC = False
 
 try:
     from core.voice.asr_engine import get_asr_engine
@@ -97,7 +111,9 @@ class DirectRelayConfig:
     health_path: str
     personaplex_ws: str
     personaplex_ssl_verify: bool
-    fs_sample_rate: int
+    fs_input_sample_rate: int
+    fs_output_sample_rate: int
+    http_output_sample_rate: int
     personaplex_rate: int
     frame_ms: int
     max_decode_samples: int
@@ -158,6 +174,16 @@ def _to_bool(value: Optional[str], default: bool = False) -> bool:
     if value is None:
         return default
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _env_int(name: str) -> Optional[int]:
+    value = os.getenv(name)
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text:
+        return None
+    return int(text)
 
 
 def _split_csv(value: Optional[str], default: Sequence[str]) -> List[str]:
@@ -525,7 +551,7 @@ class BackchannelCache:
             pcm = await synthesize_text_to_pcm(
                 phrase,
                 voice=self.cfg.tts_voice,
-                sample_rate=self.cfg.fs_sample_rate,
+                sample_rate=self.cfg.fs_output_sample_rate,
                 work_dir=self._dir,
                 cancel_event=cancel_event,
             )
@@ -610,6 +636,7 @@ class DirectRelayService:
         self.app["relay"] = self
         self.app.cleanup_ctx.append(self._lifecycle)
         self.app.router.add_get(cfg.health_path, self.handle_health)
+        self.app.router.add_get("/output/{call_uuid}", self.handle_audio_output)
         self.app.router.add_get(cfg.path, self.handle_calls)
         normalized_path = cfg.path.rstrip("/") or "/"
         if normalized_path != cfg.path:
@@ -640,6 +667,9 @@ class DirectRelayService:
             "active_calls": len(self.active_calls),
             "last_upstream_ok_at": self.last_upstream_ok_at,
             "last_upstream_error": self.last_upstream_error or None,
+            "fs_input_sample_rate": self.cfg.fs_input_sample_rate,
+            "fs_output_sample_rate": self.cfg.fs_output_sample_rate,
+            "http_output_sample_rate": self.cfg.http_output_sample_rate,
             "tts_enabled": self.cfg.tts_enabled and HAS_EDGE_TTS,
             "asr_enabled": self.cfg.local_asr_enabled and HAS_LOCAL_ASR,
             "opus_enabled": HAS_OPUSLIB,
@@ -647,6 +677,73 @@ class DirectRelayService:
             "native_audio_only": self.cfg.native_audio_only,
         }
         return web.json_response(data)
+
+    async def handle_audio_output(self, request: web.Request) -> web.StreamResponse:
+        """Stream MP3 audio for a given call_uuid.
+
+        Used by FreeSWITCH: playback(shout://<relay>/output/{call_uuid})
+        """
+        call_uuid = request.match_info["call_uuid"]
+
+        # Wait briefly for the call to appear (FS connects audio_fork + playback nearly simultaneously)
+        call: Optional["DirectRelayCall"] = None
+        for _ in range(50):  # up to 5 seconds
+            call = self.active_calls.get(call_uuid)
+            if call is not None:
+                break
+            await asyncio.sleep(0.1)
+        if call is None:
+            return web.Response(status=404, text=f"No active call {call_uuid}")
+
+        if not HAS_LAMEENC:
+            LOG.error("lameenc not installed — cannot serve MP3 output stream")
+            return web.Response(status=500, text="lameenc not installed")
+
+        out_rate = self.cfg.http_output_sample_rate
+        src_rate = self.cfg.fs_output_sample_rate
+        encoder = lameenc.Encoder()
+        encoder.set_bit_rate(64)
+        encoder.set_in_sample_rate(out_rate)
+        encoder.set_channels(1)
+        encoder.set_quality(7)  # fast encoding
+
+        resp = web.StreamResponse(
+            status=200,
+            headers={
+                "Content-Type": "audio/mpeg",
+                "Cache-Control": "no-cache",
+                "Connection": "keep-alive",
+                "icy-br": "64",
+            },
+        )
+        await resp.prepare(request)
+        LOG.info("[%s] HTTP audio output stream connected out_rate=%s src_rate=%s", call_uuid, out_rate, src_rate)
+
+        try:
+            while not call.closed:
+                try:
+                    pcm_data = await asyncio.wait_for(call.http_output_queue.get(), timeout=1.0)
+                except asyncio.TimeoutError:
+                    continue
+                if pcm_data is None:
+                    break
+                # Resample if HTTP output rate differs from WS output rate
+                if out_rate != src_rate:
+                    pcm_f32 = pcm16_to_f32(pcm_data)
+                    resampled = resample_linear(pcm_f32, src_rate, out_rate)
+                    pcm_data = f32_to_pcm16(resampled)
+                mp3_bytes = encoder.encode(pcm_data)
+                if mp3_bytes:
+                    await resp.write(mp3_bytes)
+            # Flush remaining MP3 frames
+            mp3_tail = encoder.flush()
+            if mp3_tail:
+                await resp.write(mp3_tail)
+        except (ConnectionResetError, ConnectionError):
+            LOG.info("[%s] HTTP audio output client disconnected", call_uuid)
+        finally:
+            LOG.info("[%s] HTTP audio output stream ended", call_uuid)
+        return resp
 
     async def handle_calls(self, request: web.Request) -> web.StreamResponse:
         LOG.info(
@@ -679,6 +776,7 @@ class DirectRelayCall:
         self.upstream_ws: Optional[aiohttp.ClientWebSocketResponse] = None
         self.encoder = None
         self.decoder = None
+        self.stream_codec = None
         self.ogg_mux = OggMuxer(self.cfg.personaplex_rate)
         self.ogg_demux = OggDemuxer()
         self.opus_frame_samples = self.cfg.personaplex_rate * self.cfg.frame_ms // 1000
@@ -695,6 +793,8 @@ class DirectRelayCall:
         self.local_speech_active = False
         self.current_response_revision: Optional[int] = None
         self.current_response_has_native_audio = False
+        self.current_response_logged_native_audio = False
+        self.current_response_logged_decoded_audio = False
         self.current_response_suppressed = False
         self.last_output_activity_at = 0.0
         self.current_text_revision: Optional[int] = None
@@ -716,6 +816,12 @@ class DirectRelayCall:
         self.partial_task: Optional[asyncio.Task] = None
         self.finalize_task: Optional[asyncio.Task] = None
         self.output_token_bytes = bytearray()
+        self.upstream_audio_frame_count = 0
+        self.upstream_audio_nonzero_pcm_count = 0
+        self.fs_pcm_send_count = 0
+        self.fs_pcm_sent_bytes_total = 0
+        # HTTP audio output queue for audio_fork + playback(shout://) mode
+        self.http_output_queue: asyncio.Queue[Optional[bytes]] = asyncio.Queue(maxsize=2000)
 
     @property
     def assistant_audio_active(self) -> bool:
@@ -725,10 +831,17 @@ class DirectRelayCall:
         LOG.log(level, "[%s] " + message, self.call_id, *args)
 
     async def run(self) -> None:
-        if not HAS_OPUSLIB:
+        if not HAS_OPUSLIB and not HAS_SPHN_CODEC:
             raise RuntimeError("opuslib is not installed. Install it before running the direct relay.")
-        self.encoder = opuslib.Encoder(self.cfg.personaplex_rate, 1, opuslib.APPLICATION_VOIP)
-        self.decoder = opuslib.Decoder(self.cfg.personaplex_rate, 1)
+        if HAS_SPHN_CODEC and OpusCodec is not None:
+            self.stream_codec = OpusCodec(sample_rate=self.cfg.personaplex_rate)
+            if getattr(self.stream_codec, "is_opus", False):
+                self.log("using sphn stream codec sample_rate=%s", self.cfg.personaplex_rate)
+            else:
+                self.log("sphn unavailable inside OpusCodec; falling back to legacy opuslib path", level=logging.WARNING)
+        if self.stream_codec is None or not getattr(self.stream_codec, "is_opus", False):
+            self.encoder = opuslib.Encoder(self.cfg.personaplex_rate, 1, opuslib.APPLICATION_VOIP)
+            self.decoder = opuslib.Decoder(self.cfg.personaplex_rate, 1)
         self.log("accepted connection remote=%s path=%s", self.remote, self.request.path)
         try:
             assert self.service.prompt_resolver is not None
@@ -777,6 +890,9 @@ class DirectRelayCall:
             for queue in (self.analysis_queue, self.local_speech_queue):
                 with suppress(asyncio.QueueFull):
                     queue.put_nowait(None)
+            # Signal HTTP output stream to end
+            with suppress(asyncio.QueueFull):
+                self.http_output_queue.put_nowait(None)
             await self._cancel_local_speech("session_end")
             if self.partial_task:
                 self.partial_task.cancel()
@@ -832,14 +948,17 @@ class DirectRelayCall:
         self.log("connected upstream=%s", self.cfg.personaplex_ws)
 
     def _encode_and_wrap(self, pcm_f32_24k: np.ndarray) -> bytes:
-        pcm16 = f32_to_pcm16(pcm_f32_24k)
-        opus_packet = self.encoder.encode(pcm16, self.opus_frame_samples)
-        return bytes([FRAME_AUDIO]) + self.ogg_mux.encode(opus_packet, self.opus_48k_frame)
+        if self.stream_codec is not None and getattr(self.stream_codec, "is_opus", False):
+            opus_packet = self.stream_codec.encode(pcm_f32_24k)
+        else:
+            pcm16 = f32_to_pcm16(pcm_f32_24k)
+            opus_packet = self.encoder.encode(pcm16, self.opus_frame_samples)
+        return bytes([FRAME_AUDIO]) + opus_packet
 
     async def _send_pcm_to_upstream(self, pcm16_bytes: bytes) -> None:
         assert self.upstream_ws is not None
         pcm_f32 = pcm16_to_f32(pcm16_bytes)
-        pcm_24k = resample_linear(pcm_f32, self.cfg.fs_sample_rate, self.cfg.personaplex_rate)
+        pcm_24k = resample_linear(pcm_f32, self.cfg.fs_input_sample_rate, self.cfg.personaplex_rate)
         if pcm_24k.size == 0:
             return
         self.pcm_up_buffer = np.concatenate([self.pcm_up_buffer, pcm_24k])
@@ -848,14 +967,35 @@ class DirectRelayCall:
             self.pcm_up_buffer = self.pcm_up_buffer[self.opus_frame_samples :]
             await self.upstream_ws.send_bytes(self._encode_and_wrap(frame))
 
-    async def _send_pcm_to_fs(self, pcm16_bytes: bytes) -> None:
-        if not pcm16_bytes or self.fs_ws.closed:
+    async def _send_pcm_to_fs(self, pcm16_bytes: bytes, *, source: str) -> None:
+        if not pcm16_bytes:
             return
-        async with self.fs_send_lock:
-            await self.fs_ws.send_bytes(pcm16_bytes)
+        # Always push to HTTP output queue for playback(shout://) consumers
+        try:
+            self.http_output_queue.put_nowait(pcm16_bytes)
+        except asyncio.QueueFull:
+            pass
+        if self.fs_ws.closed:
+            return
+        chunk_bytes = self.cfg.fs_output_sample_rate * 2 * self.cfg.frame_ms // 1000
+        for offset in range(0, len(pcm16_bytes), chunk_bytes):
+            chunk = pcm16_bytes[offset : offset + chunk_bytes]
+            if not chunk:
+                continue
+            async with self.fs_send_lock:
+                await self.fs_ws.send_bytes(chunk)
+            self.fs_pcm_send_count += 1
+            self.fs_pcm_sent_bytes_total += len(chunk)
+            self.log(
+                "sent pcm to freeswitch count=%s source=%s chunk_bytes=%s total_bytes=%s",
+                self.fs_pcm_send_count,
+                source,
+                len(chunk),
+                self.fs_pcm_sent_bytes_total,
+            )
 
     async def _stream_local_pcm(self, pcm16_bytes: bytes, *, revision: int, source: str, cancel_event: asyncio.Event) -> None:
-        chunk_bytes = self.cfg.fs_sample_rate * 2 * self.cfg.frame_ms // 1000
+        chunk_bytes = self.cfg.fs_output_sample_rate * 2 * self.cfg.frame_ms // 1000
         next_tick = time.monotonic()
         for offset in range(0, len(pcm16_bytes), chunk_bytes):
             if cancel_event.is_set():
@@ -869,7 +1009,7 @@ class DirectRelayCall:
             chunk = pcm16_bytes[offset : offset + chunk_bytes]
             if not chunk:
                 continue
-            await self._send_pcm_to_fs(chunk)
+            await self._send_pcm_to_fs(chunk, source=source)
             next_tick += self.cfg.frame_ms / 1000.0
             delay = next_tick - time.monotonic()
             if delay > 0:
@@ -906,6 +1046,8 @@ class DirectRelayCall:
         if self.current_response_revision is None or (self.last_output_activity_at and now - self.last_output_activity_at > self.cfg.response_idle_sec):
             self.current_response_revision = self.turn_revision
             self.current_response_has_native_audio = False
+            self.current_response_logged_native_audio = False
+            self.current_response_logged_decoded_audio = False
             self.current_response_suppressed = self.current_response_revision in self.suppressed_response_revisions
             self.current_text_revision = self.current_response_revision
             self.text_buffer = ""
@@ -974,11 +1116,28 @@ class DirectRelayCall:
             await asyncio.sleep(tick)
 
     async def _decode_upstream_audio(self, payload: bytes) -> bytes:
+        if self.stream_codec is not None and getattr(self.stream_codec, "is_opus", False):
+            pcm_f32 = self.stream_codec.decode(payload)
+            if isinstance(pcm_f32, np.ndarray):
+                arr = pcm_f32
+            else:
+                arr = np.asarray(pcm_f32)
+            if arr.size == 0:
+                return b""
+            if arr.ndim == 2:
+                arr = arr[0]
+            arr = arr.astype(np.float32, copy=False)
+            resampled = resample_linear(arr, self.cfg.personaplex_rate, self.cfg.fs_output_sample_rate)
+            return f32_to_pcm16(resampled)
         pcm_out = bytearray()
-        for packet in self.ogg_demux.feed(payload):
+        if payload.startswith(b"OggS"):
+            packets = self.ogg_demux.feed(payload)
+        else:
+            packets = [payload]
+        for packet in packets:
             pcm16_bytes = self.decoder.decode(packet, self.cfg.max_decode_samples)
             pcm_f32 = pcm16_to_f32(pcm16_bytes)
-            resampled = resample_linear(pcm_f32, self.cfg.personaplex_rate, self.cfg.fs_sample_rate)
+            resampled = resample_linear(pcm_f32, self.cfg.personaplex_rate, self.cfg.fs_output_sample_rate)
             pcm_out.extend(f32_to_pcm16(resampled))
         return bytes(pcm_out)
 
@@ -1004,15 +1163,36 @@ class DirectRelayCall:
             revision = self._ensure_response_revision()
             self.last_output_activity_at = time.monotonic()
             if kind == FRAME_AUDIO and payload:
+                self.upstream_audio_frame_count += 1
+                self.log(
+                    "upstream audio frame count=%s payload_bytes=%s",
+                    self.upstream_audio_frame_count,
+                    len(payload),
+                )
+                if not self.current_response_logged_native_audio:
+                    self.current_response_logged_native_audio = True
+                    self.log("received native audio frame bytes=%s", len(payload))
+                pcm16 = await self._decode_upstream_audio(payload)
+                if not self.current_response_logged_decoded_audio:
+                    self.current_response_logged_decoded_audio = True
+                    self.log("decoded native audio pcm_bytes=%s", len(pcm16))
+                if not pcm16:
+                    self.log("ignoring empty decoded native audio frame", level=logging.DEBUG)
+                    continue
+                self.upstream_audio_nonzero_pcm_count += 1
+                self.log(
+                    "non-zero decoded pcm count=%s pcm_bytes=%s",
+                    self.upstream_audio_nonzero_pcm_count,
+                    len(pcm16),
+                )
                 self.current_response_has_native_audio = True
                 self.current_response_suppressed = revision in self.suppressed_response_revisions
                 if self.current_response_suppressed:
                     continue
                 self.native_audio_active_until = time.monotonic() + 0.35
                 await self._cancel_local_speech("native_audio")
-                pcm16 = await self._decode_upstream_audio(payload)
                 if pcm16:
-                    await self._send_pcm_to_fs(pcm16)
+                    await self._send_pcm_to_fs(pcm16, source="native")
                 continue
             if kind == FRAME_TEXT:
                 self.output_token_bytes.extend(payload)
@@ -1076,6 +1256,8 @@ class DirectRelayCall:
             self.log("response idle revision=%s", self.current_response_revision, level=logging.DEBUG)
             self.current_response_revision = None
             self.current_response_has_native_audio = False
+            self.current_response_logged_native_audio = False
+            self.current_response_logged_decoded_audio = False
             self.current_response_suppressed = False
             self.current_text_revision = None
             self.text_buffer = ""
@@ -1102,7 +1284,7 @@ class DirectRelayCall:
                     pcm = await synthesize_text_to_pcm(
                         request.text,
                         voice=self.cfg.tts_voice,
-                        sample_rate=self.cfg.fs_sample_rate,
+                        sample_rate=self.cfg.fs_output_sample_rate,
                         work_dir=Path(self.cfg.tts_dir),
                         cancel_event=cancel_event,
                     )
@@ -1138,12 +1320,12 @@ class DirectRelayCall:
                 if chunk.size == 0:
                     continue
                 self.utterance_buffer = np.concatenate([self.utterance_buffer, chunk])
-                max_samples = int(self.cfg.fs_sample_rate * self.cfg.max_utterance_sec)
+                max_samples = int(self.cfg.fs_input_sample_rate * self.cfg.max_utterance_sec)
                 if self.utterance_buffer.size > max_samples:
                     self.utterance_buffer = self.utterance_buffer[-max_samples:]
                 state = detect_vad_state(
                     self.utterance_buffer,
-                    rate=self.cfg.fs_sample_rate,
+                    rate=self.cfg.fs_input_sample_rate,
                     base_threshold=self.cfg.vad_energy_threshold,
                     brief_pause_ms=self.cfg.vad_brief_pause_ms,
                     utterance_end_ms=self.cfg.vad_utterance_end_ms,
@@ -1155,7 +1337,7 @@ class DirectRelayCall:
                     self.utterance_speech_started_at = now
                 if (
                     state in {"brief_pause", "utterance_end"}
-                    and self.utterance_buffer.size >= int(self.cfg.fs_sample_rate * self.cfg.asr_min_audio_sec)
+                    and self.utterance_buffer.size >= int(self.cfg.fs_input_sample_rate * self.cfg.asr_min_audio_sec)
                     and (self.partial_task is None or self.partial_task.done())
                     and now - self.last_partial_asr_at >= self.cfg.asr_recheck_sec
                 ):
@@ -1176,6 +1358,7 @@ class DirectRelayCall:
                     and self.utterance_speech_started_at is not None
                     and now - self.utterance_speech_started_at >= self.cfg.backchannel_min_speech_sec
                     and now - self.last_backchannel_at >= self.cfg.backchannel_cooldown_sec
+                    and self.cfg.backchannel_phrases
                 ):
                     phrase = self.cfg.backchannel_phrases[(self.turn_revision + int(now)) % len(self.cfg.backchannel_phrases)]
                     await self._queue_local_speech(phrase, revision=self.turn_revision + 1, kind="backchannel", phrase_key=phrase)
@@ -1194,7 +1377,7 @@ class DirectRelayCall:
 
     async def _run_partial_asr(self, asr: Any, pcm: np.ndarray, snapshot_seq: int) -> None:
         try:
-            text, confidence, language = await asr.transcribe(pcm, sample_rate=self.cfg.fs_sample_rate)
+            text, confidence, language = await asr.transcribe(pcm, sample_rate=self.cfg.fs_input_sample_rate)
         except Exception as exc:
             self.log("partial ASR failed: %s", exc, level=logging.DEBUG)
             return
@@ -1220,7 +1403,7 @@ class DirectRelayCall:
         text = _normalize_text(str(candidate.get("text"))) if candidate else ""
         if not text or looks_incomplete_partial(text, self.cfg.partial_incomplete_endings):
             try:
-                final_text, _, _ = await asr.transcribe(pcm, sample_rate=self.cfg.fs_sample_rate)
+                final_text, _, _ = await asr.transcribe(pcm, sample_rate=self.cfg.fs_input_sample_rate)
                 text = _normalize_text(final_text)
             except Exception as exc:
                 self.log("final ASR failed: %s", exc, level=logging.DEBUG)
@@ -1235,6 +1418,8 @@ class DirectRelayCall:
             self.log("suppressing greeting-only reply revision=%s", revision)
         self.current_response_revision = None
         self.current_response_has_native_audio = False
+        self.current_response_logged_native_audio = False
+        self.current_response_logged_decoded_audio = False
         self.current_response_suppressed = False
         self.current_text_revision = None
         self.text_buffer = ""
@@ -1249,6 +1434,16 @@ def build_config(args: argparse.Namespace) -> DirectRelayConfig:
     tts_enabled = args.tts_enabled
     backchannel_enabled = args.backchannel_enabled
     local_asr_enabled = not args.disable_local_asr
+    legacy_fs_rate = args.fs_sample_rate
+    fs_input_rate = args.fs_input_sample_rate
+    if fs_input_rate is None:
+        fs_input_rate = _env_int("RELAY_FS_INPUT_SAMPLE_RATE") or legacy_fs_rate
+    fs_output_rate = args.fs_output_sample_rate
+    if fs_output_rate is None:
+        fs_output_rate = _env_int("RELAY_FS_OUTPUT_SAMPLE_RATE") or legacy_fs_rate
+    http_output_rate = args.http_output_sample_rate
+    if http_output_rate is None:
+        http_output_rate = _env_int("RELAY_HTTP_OUTPUT_SAMPLE_RATE") or fs_output_rate
     if native_audio_only:
         proactive_greeting = False
         upstream_initial_greeting = True
@@ -1262,7 +1457,9 @@ def build_config(args: argparse.Namespace) -> DirectRelayConfig:
         health_path=args.health_path,
         personaplex_ws=args.personaplex_ws,
         personaplex_ssl_verify=args.personaplex_ssl_verify,
-        fs_sample_rate=args.fs_sample_rate,
+        fs_input_sample_rate=fs_input_rate,
+        fs_output_sample_rate=fs_output_rate,
+        http_output_sample_rate=http_output_rate,
         personaplex_rate=args.personaplex_rate,
         frame_ms=args.frame_ms,
         max_decode_samples=args.max_decode_samples,
@@ -1320,7 +1517,30 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--health-path", default=os.getenv("RELAY_HEALTH_PATH", "/health"))
     parser.add_argument("--personaplex-ws", default=os.getenv("PERSONAPLEX_WS", "ws://127.0.0.1:8998/api/chat"))
     parser.add_argument("--personaplex-ssl-verify", action="store_true", default=_to_bool(os.getenv("PERSONAPLEX_SSL_VERIFY", "0")))
-    parser.add_argument("--fs-sample-rate", type=int, default=int(os.getenv("RELAY_FS_SAMPLE_RATE", "16000")))
+    parser.add_argument(
+        "--fs-sample-rate",
+        type=int,
+        default=int(os.getenv("RELAY_FS_SAMPLE_RATE", "16000")),
+        help="Legacy fallback for both FS input/output sample rates when side-specific flags are not set.",
+    )
+    parser.add_argument(
+        "--fs-input-sample-rate",
+        type=int,
+        default=None,
+        help="Sample rate expected from FreeSWITCH inbound audio (uplink to PersonaPlex).",
+    )
+    parser.add_argument(
+        "--fs-output-sample-rate",
+        type=int,
+        default=None,
+        help="Sample rate sent back to FreeSWITCH outbound audio (downlink from PersonaPlex).",
+    )
+    parser.add_argument(
+        "--http-output-sample-rate",
+        type=int,
+        default=None,
+        help="Sample rate used for the /output/{call_uuid} MP3 stream consumed by shout:// playback.",
+    )
     parser.add_argument("--personaplex-rate", type=int, default=int(os.getenv("RELAY_PERSONAPLEX_RATE", "24000")))
     parser.add_argument("--frame-ms", type=int, default=int(os.getenv("RELAY_FRAME_MS", "20")))
     parser.add_argument("--max-decode-samples", type=int, default=int(os.getenv("RELAY_MAX_DECODE_SAMPLES", "2880")))
@@ -1379,12 +1599,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     LOG.info(
-        "starting direct relay host=%s port=%s path=%s upstream=%s fs_rate=%s prompt_fetch=%s tts=%s backchannel=%s asr=%s native_audio_only=%s",
+        "starting direct relay host=%s port=%s path=%s upstream=%s fs_in_rate=%s fs_out_rate=%s http_out_rate=%s prompt_fetch=%s tts=%s backchannel=%s asr=%s native_audio_only=%s",
         cfg.host,
         cfg.port,
         cfg.path,
         cfg.personaplex_ws,
-        cfg.fs_sample_rate,
+        cfg.fs_input_sample_rate,
+        cfg.fs_output_sample_rate,
+        cfg.http_output_sample_rate,
         cfg.omnicortex_fetch_enabled,
         cfg.tts_enabled,
         cfg.backchannel_enabled,

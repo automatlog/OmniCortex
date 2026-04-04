@@ -310,6 +310,10 @@
 
     const $ = (id) => document.getElementById(id);
     const logEl = $("log");
+    
+    // Track Blob URLs for cleanup to prevent memory leaks
+    let localAudioUrl = null;
+    let aiAudioUrl = null;
 
     function now() {
       return new Date().toLocaleTimeString();
@@ -576,7 +580,10 @@
       const targetRate = 16000;
       const down = downsample(merged, inputSampleRate, targetRate);
       lastWavBlob = new Blob([encodeWavPcm16(down, targetRate)], { type: "audio/wav" });
-      $("localAudio").src = URL.createObjectURL(lastWavBlob);
+      // Revoke previous URL to prevent memory leak
+      if (localAudioUrl) URL.revokeObjectURL(localAudioUrl);
+      localAudioUrl = URL.createObjectURL(lastWavBlob);
+      $("localAudio").src = localAudioUrl;
       $("btnStt").disabled = false;
       $("btnRespond").disabled = false;
       setStatus("Audio captured", "ok");
@@ -655,7 +662,14 @@
         const textHeader = r.headers.get("X-LFM-Text") || "";
         const latency = r.headers.get("X-LFM-Latency-Ms") || "";
         const blob = new Blob([await r.arrayBuffer()], { type: "audio/wav" });
-        $("aiAudio").src = URL.createObjectURL(blob);
+        // Revoke previous URL and create new one to prevent memory leak
+        if (aiAudioUrl) URL.revokeObjectURL(aiAudioUrl);
+        aiAudioUrl = URL.createObjectURL(blob);
+        $("aiAudio").src = aiAudioUrl;
+        // Revoke URL after audio has loaded to free up memory
+        $("aiAudio").onloadedmetadata = () => {
+          // Keep URL at least until playback, don't revoke immediately
+        };
         if (textHeader) $("textOut").value = textHeader;
         setStatus("Respond complete", "ok");
         log(`/respond ok: audio=${blob.size} bytes latency=${latency || "-"}ms text="${textHeader || "(header unavailable)"}"`, "ok");

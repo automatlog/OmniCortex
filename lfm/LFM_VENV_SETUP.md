@@ -65,7 +65,7 @@ python3 -c "import torch; print(f'CUDA available: {torch.cuda.is_available()}')"
 
 ```bash
 # Activate environment
-source ~/.lfm-venv/bin/activate
+source ~/OmniCortex/.lfm-venv/bin/activate
 
 # Start server with CUDA
 python lfm/serve_lfm.py --host 0.0.0.0 --port 8012 --device cuda --preload
@@ -95,17 +95,19 @@ python lfm/serve_lfm.py
 
 ### Missing CUDA Libraries
 
-If you get `libnvrtc.so.13` errors:
+If you get `libnvrtc.so` errors (version depends on your CUDA runtime):
 
 ```bash
-# Install CUDA 13 runtime
+# For CUDA 12.1 (default in this setup):
 apt-get update
-apt-get install -y cuda-runtime-13-*
+apt-get install -y cuda-runtime-12-1
 
 # Or set LD_LIBRARY_PATH
-export LD_LIBRARY_PATH=/usr/local/cuda-13/lib64:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=/usr/local/cuda-12.1/lib64:$LD_LIBRARY_PATH
 source .lfm-venv/bin/activate
 python lfm/serve_lfm.py --host 0.0.0.0 --port 8012 --device cuda
+
+# Note: If you have CUDA 13 runtime installed, use cuda-runtime-13-* and /usr/local/cuda-13/lib64 instead
 ```
 
 ### Falling Back to CPU

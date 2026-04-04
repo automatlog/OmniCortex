@@ -13,13 +13,18 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import audioop
 import contextlib
+
+try:
+    import audioop
+except ImportError:
+    audioop = None
 import json
 import logging
 import os
 import shlex
 import ssl
+import struct
 import time
 import urllib.parse
 from dataclasses import dataclass, field
@@ -99,6 +104,9 @@ def _normalize_http_audio_chunk(
 ) -> tuple[bytes, object]:
     if not audio_bytes:
         return b"", rate_state
+    if audioop is None:
+        # If audioop is unavailable, return audio as-is without resampling
+        return audio_bytes, rate_state
     if source_sample_rate == output_sample_rate:
         return audio_bytes, rate_state
     converted, next_state = audioop.ratecv(
@@ -493,29 +501,149 @@ async def ws_speak(request: web.Request) -> web.WebSocketResponse:
     return ws
 
 
-async def http_stream(request: web.Request) -> web.StreamResponse:
-    cfg = request.app["cfg"]
-    call_id = _normalize_call_id(str(request.match_info.get("call_id") or ""))
-    if not call_id:
-        raise web.HTTPBadRequest(text="call_id path param is required")
-    state = await _get_call_state(request.app, call_id)
+def _write_wav(path: str, pcm_data: bytes, sample_rate: int, channels: int = 1, sample_width: int = 2) -> None:
+    """Write raw PCM16 data as a WAV file with proper headers."""
+    data_size = len(pcm_data)
+    byte_rate = sample_rate * channels * sample_width
+    block_align = channels * sample_width
+    # RIFF header + fmt chunk + data chunk
+    with open(path, "wb") as f:
+        f.write(b"RIFF")
+        f.write(struct.pack("<I", 36 + data_size))  # file size - 8
+        f.write(b"WAVE")
+        f.write(b"fmt ")
+        f.write(struct.pack("<I", 16))  # fmt chunk size
+        f.write(struct.pack("<H", 1))   # PCM format
+        f.write(struct.pack("<H", channels))
+        f.write(struct.pack("<I", sample_rate))
+        f.write(struct.pack("<I", byte_rate))
+        f.write(struct.pack("<H", block_align))
+        f.write(struct.pack("<H", sample_width * 8))  # bits per sample
+        f.write(b"data")
+        f.write(struct.pack("<I", data_size))
+        f.write(pcm_data)
 
-    # FreeSWITCH/mod_httapi may preflight with HEAD before GET.
-    # Do not connect upstream on HEAD, just advertise stream headers.
-    if request.method == "HEAD":
-        return web.Response(
-            status=200,
-            headers={
-                "Content-Type": cfg["http_media_type"],
-                "Cache-Control": "no-cache",
-                "Connection": "keep-alive",
-                "Transfer-Encoding": "chunked",
-                "X-Accel-Buffering": "no",
-            },
+
+async def _broadcast_wav(fs_cli: str, call_id: str, wav_path: str) -> bool:
+    """Play a WAV file on a FreeSWITCH call via uuid_broadcast."""
+    cmd = f"uuid_broadcast {call_id} {shlex.quote(wav_path)} aleg"
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            fs_cli, "-x", cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
         )
+        out, err = await proc.communicate()
+        if proc.returncode != 0:
+            LOG.warning(
+                "[%s] uuid_broadcast failed rc=%s out=%s err=%s",
+                call_id, proc.returncode,
+                out.decode(errors="ignore").strip(),
+                err.decode(errors="ignore").strip(),
+            )
+            return False
+        return True
+    except FileNotFoundError:
+        LOG.warning("[%s] fs_cli not found at %s", call_id, fs_cli)
+        return False
+    except Exception as exc:
+        LOG.warning("[%s] uuid_broadcast failed: %s", call_id, exc)
+        return False
 
-    target = _build_orchestrator_url(cfg["orchestrator_egress_ws"], call_id, dict(request.query))
-    headers = _build_orchestrator_headers(dict(request.query))
+
+async def _broadcast_tts_worker(cfg: Dict[str, object], state: CallState) -> None:
+    """
+    TTS worker for broadcast_loop: takes sentences from tts_queue,
+    converts via edge-tts → MP3 → ffmpeg → WAV → uuid_broadcast.
+    """
+    if not HAS_EDGE_TTS:
+        LOG.warning("[%s] edge-tts unavailable; TTS broadcast disabled", state.call_id)
+        return
+
+    wav_dir = str(cfg["tts_dir"])
+    os.makedirs(wav_dir, exist_ok=True)
+    output_sr = int(cfg["output_sample_rate"])
+    tts_count = 0
+
+    while True:
+        text = await state.tts_queue.get()
+        if text is None:
+            return
+
+        job_gen = state.generation
+        stamp = int(time.time() * 1000)
+        mp3_path = os.path.join(wav_dir, f"{state.call_id[:8]}_tts_{stamp}.mp3")
+        wav_path = os.path.join(wav_dir, f"{state.call_id[:8]}_tts_{stamp}.wav")
+        try:
+            await _set_tts_state(state, active=True, playing=False)
+            LOG.info("[%s] TTS generating: \"%s\"", state.call_id, text)
+            await edge_tts.Communicate(text, str(cfg["tts_voice"])).save(mp3_path)
+            if job_gen != state.generation:
+                continue
+
+            # Convert MP3 → WAV at FS sample rate
+            proc = await asyncio.create_subprocess_exec(
+                "ffmpeg", "-y", "-loglevel", "error",
+                "-i", mp3_path,
+                "-ar", str(output_sr), "-ac", "1", "-sample_fmt", "s16",
+                wav_path,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, err = await proc.communicate()
+            if proc.returncode != 0:
+                LOG.warning("[%s] ffmpeg failed: %s", state.call_id, err.decode(errors="ignore").strip())
+                continue
+            if job_gen != state.generation:
+                continue
+
+            # Play via uuid_broadcast
+            ok = await _broadcast_wav(str(cfg["fs_cli"]), state.call_id, wav_path)
+            if not ok:
+                continue
+            if job_gen != state.generation:
+                continue
+
+            tts_count += 1
+            await _set_tts_state(state, active=True, playing=True)
+            wav_size = os.path.getsize(wav_path) if os.path.exists(wav_path) else 0
+            wav_duration = wav_size / max(1, output_sr * 2)
+            LOG.info(
+                "[%s] TTS broadcast #%d size=%d duration=%.2fs text=\"%s\"",
+                state.call_id, tts_count, wav_size, wav_duration, text[:80],
+            )
+            # Wait for playback to finish before next sentence
+            remaining = max(0.2, wav_duration + 0.35)
+            while remaining > 0 and state.generation == job_gen:
+                await asyncio.sleep(min(0.1, remaining))
+                remaining -= 0.1
+        except FileNotFoundError as exc:
+            LOG.warning("[%s] TTS dependency missing: %s", state.call_id, exc)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            LOG.warning("[%s] TTS broadcast worker failed: %s", state.call_id, exc)
+        finally:
+            await _set_tts_state(state, active=False, playing=False)
+            for path in (mp3_path, wav_path):
+                with contextlib.suppress(Exception):
+                    if path and os.path.exists(path):
+                        os.unlink(path)
+
+
+async def _broadcast_loop(
+    app: web.Application,
+    call_id: str,
+    query: Dict[str, str],
+) -> None:
+    """
+    Background task: pull from orchestrator egress, use TTS for text tokens,
+    and uuid_broadcast the resulting WAV files to FS.
+    """
+    cfg = app["cfg"]
+    state = await _get_call_state(app, call_id)
+    target = _build_orchestrator_url(cfg["orchestrator_egress_ws"], call_id, query)
+    headers = _build_orchestrator_headers(query)
     timeout = aiohttp.ClientTimeout(total=cfg["upstream_timeout_sec"])
     ssl_ctx: object = False
     if target.startswith("wss://"):
@@ -526,39 +654,40 @@ async def http_stream(request: web.Request) -> web.StreamResponse:
             ssl_ctx.check_hostname = False
             ssl_ctx.verify_mode = ssl.CERT_NONE
 
-    response = web.StreamResponse(
-        status=200,
-        headers={
-            "Content-Type": cfg["http_media_type"],
-            "Cache-Control": "no-cache",
-            "Connection": "keep-alive",
-            "Transfer-Encoding": "chunked",
-            "X-Accel-Buffering": "no",
-        },
-    )
-
     session: Optional[aiohttp.ClientSession] = None
     upstream: Optional[aiohttp.ClientWebSocketResponse] = None
-    chunks_written = 0
-    bytes_written = 0
-    rate_state = None
-    silence_chunk = _silence_chunk_bytes(int(cfg["output_sample_rate"]), int(cfg["http_silence_frame_ms"]))
+    tts_task: Optional[asyncio.Task] = None
+    text_buf = ""
+    texts_received = 0
+    sentences_queued = 0
     try:
         session = aiohttp.ClientSession(timeout=timeout)
         upstream = await session.ws_connect(target, ssl=ssl_ctx, headers=headers or None)
         state.upstream_ws = upstream
-        await response.prepare(request)
+
+        # Start TTS worker
+        tts_task = asyncio.create_task(
+            _broadcast_tts_worker(cfg, state),
+            name=f"broadcast-tts-{call_id}",
+        )
+
         await _send_upstream_control(state, {"type": "bridge_out_ready"})
-        LOG.info("[%s] bridge_out http stream connected orchestrator=%s", call_id, target)
+        LOG.info("[%s] broadcast_loop (TTS mode) connected orchestrator=%s", call_id, target)
+
+        last_text_time = 0.0
+        flush_after = float(cfg.get("tts_flush_after_sec", 1.25))
 
         while True:
             try:
-                msg = await upstream.receive(timeout=float(cfg["http_silence_frame_ms"]) / 1000.0)
+                msg = await upstream.receive(timeout=0.5)
             except asyncio.TimeoutError:
-                if cfg["http_write_silence"]:
-                    await response.write(silence_chunk)
-                    chunks_written += 1
-                    bytes_written += len(silence_chunk)
+                # Flush partial text buffer after silence gap
+                if text_buf and (time.monotonic() - last_text_time) >= flush_after:
+                    cleaned = text_buf.replace("\u2581", " ").strip()
+                    text_buf = ""
+                    if len(cleaned) > 2:
+                        state.tts_queue.put_nowait(cleaned)
+                        sentences_queued += 1
                 continue
 
             if msg.type == aiohttp.WSMsgType.ERROR:
@@ -566,39 +695,68 @@ async def http_stream(request: web.Request) -> web.StreamResponse:
             if msg.type in (aiohttp.WSMsgType.CLOSE, aiohttp.WSMsgType.CLOSED):
                 break
             if msg.type == aiohttp.WSMsgType.BINARY:
-                state.upstream_audio_seen = True
+                # Binary audio from orchestrator — just count it, TTS handles playback
                 state.last_binary_audio_at = time.monotonic()
-                if state.tts_active or state.tts_playing or not state.tts_queue.empty() or state.sentence_buf:
-                    await _cancel_tts(cfg, state, "upstream_audio")
-                chunk = bytes(msg.data)
-                if chunk:
-                    chunk, rate_state = _normalize_http_audio_chunk(
-                        chunk,
-                        cfg["source_sample_rate"],
-                        cfg["output_sample_rate"],
-                        rate_state,
-                    )
-                    if not chunk:
-                        continue
-                    await response.write(chunk)
-                    chunks_written += 1
-                    bytes_written += len(chunk)
-                    if chunks_written == 1 or chunks_written % 100 == 0:
-                        LOG.info(
-                            "[%s] bridge_out streamed chunks=%d bytes=%d",
-                            call_id,
-                            chunks_written,
-                            bytes_written,
-                        )
-            elif msg.type == aiohttp.WSMsgType.TEXT:
-                await _handle_upstream_text(cfg, state, str(msg.data))
-    except web.HTTPException:
-        raise
+                continue
+            if msg.type == aiohttp.WSMsgType.TEXT:
+                raw = str(msg.data or "").strip()
+                if not raw:
+                    continue
+
+                # Try parsing JSON control messages
+                try:
+                    parsed = json.loads(raw)
+                    if isinstance(parsed, dict):
+                        msg_type = str(parsed.get("type") or "").strip().lower()
+                        if msg_type in {"barge_in", "cancel_tts", "interrupt"}:
+                            await _cancel_tts(cfg, state, msg_type)
+                            text_buf = ""
+                            continue
+                        if msg_type == "assistant_text":
+                            raw = str(parsed.get("text") or "").strip()
+                        elif msg_type in {"tts_state", "bridge_out_ready"}:
+                            continue
+                except Exception:
+                    pass
+
+                cleaned = raw.strip()
+                if not cleaned:
+                    continue
+
+                texts_received += 1
+                LOG.info('[%s] text token: "%s"', call_id, cleaned)
+                last_text_time = time.monotonic()
+                text_buf += cleaned
+
+                # Extract complete sentences and enqueue for TTS
+                complete, remainder = _extract_sentences(text_buf)
+                text_buf = remainder
+                for sentence in complete:
+                    state.tts_queue.put_nowait(sentence)
+                    sentences_queued += 1
+                    LOG.info('[%s] TTS queued sentence: "%s"', call_id, sentence)
+
+        # Flush remaining text
+        if text_buf:
+            cleaned = text_buf.replace("\u2581", " ").strip()
+            if len(cleaned) > 2:
+                state.tts_queue.put_nowait(cleaned)
+                sentences_queued += 1
+
+        # Signal TTS worker to finish after processing queue
+        state.tts_queue.put_nowait(None)
+        if tts_task is not None:
+            await asyncio.wait_for(tts_task, timeout=60)
+
+    except asyncio.CancelledError:
+        LOG.info("[%s] broadcast_loop cancelled", call_id)
     except Exception as exc:
-        LOG.exception("[%s] bridge_out http stream failed: %s", call_id, exc)
-        if not response.prepared:
-            raise web.HTTPBadGateway(text=f"upstream stream failed: {exc}") from exc
+        LOG.exception("[%s] broadcast_loop failed: %s", call_id, exc)
     finally:
+        if tts_task is not None and not tts_task.done():
+            tts_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await tts_task
         if upstream is not None and not upstream.closed:
             with contextlib.suppress(Exception):
                 await upstream.close()
@@ -606,16 +764,66 @@ async def http_stream(request: web.Request) -> web.StreamResponse:
             state.upstream_ws = None
         if session is not None and not session.closed:
             await session.close()
-        if response.prepared:
-            with contextlib.suppress(Exception):
-                await response.write_eof()
-            LOG.info(
-                "[%s] bridge_out stream closed chunks=%d bytes=%d",
-                call_id,
-                chunks_written,
-                bytes_written,
-            )
-    return response
+        LOG.info(
+            "[%s] broadcast_loop done texts=%d sentences_queued=%d",
+            call_id, texts_received, sentences_queued,
+        )
+
+
+async def http_stream(request: web.Request) -> web.Response:
+    """
+    Trigger endpoint for FS dialplan.
+
+    Returns a short silence WAV so playback() finishes immediately and FS
+    falls through to park. The real audio delivery happens in a background
+    _broadcast_loop task using uuid_broadcast.
+    """
+    cfg = request.app["cfg"]
+    call_id = _normalize_call_id(str(request.match_info.get("call_id") or ""))
+    if not call_id:
+        raise web.HTTPBadRequest(text="call_id path param is required")
+
+    output_sr = int(cfg["output_sample_rate"])
+
+    # Build a 1-second silence WAV so playback() completes quickly
+    silence_samples = output_sr  # 1 second
+    silence_pcm = b"\x00\x00" * silence_samples
+    wav_buf = bytearray()
+    data_size = len(silence_pcm)
+    wav_buf += b"RIFF"
+    wav_buf += struct.pack("<I", 36 + data_size)
+    wav_buf += b"WAVE"
+    wav_buf += b"fmt "
+    wav_buf += struct.pack("<I", 16)
+    wav_buf += struct.pack("<H", 1)   # PCM
+    wav_buf += struct.pack("<H", 1)   # mono
+    wav_buf += struct.pack("<I", output_sr)
+    wav_buf += struct.pack("<I", output_sr * 2)
+    wav_buf += struct.pack("<H", 2)
+    wav_buf += struct.pack("<H", 16)
+    wav_buf += b"data"
+    wav_buf += struct.pack("<I", data_size)
+    wav_buf += silence_pcm
+
+    # Start the broadcast loop as a background task
+    query = dict(request.query)
+    task = asyncio.create_task(
+        _broadcast_loop(request.app, call_id, query),
+        name=f"broadcast-{call_id}",
+    )
+    # Store task so cleanup can cancel it
+    bg_tasks: Dict[str, asyncio.Task] = request.app.setdefault("bg_tasks", {})
+    old_task = bg_tasks.get(call_id)
+    if old_task is not None and not old_task.done():
+        old_task.cancel()
+    bg_tasks[call_id] = task
+
+    LOG.info("[%s] http_stream triggered broadcast_loop, returning 1s silence WAV", call_id)
+    return web.Response(
+        body=bytes(wav_buf),
+        content_type="audio/wav",
+        headers={"Cache-Control": "no-cache"},
+    )
 
 
 async def health(_: web.Request) -> web.Response:
@@ -623,6 +831,14 @@ async def health(_: web.Request) -> web.Response:
 
 
 async def on_cleanup(app: web.Application) -> None:
+    # Cancel background broadcast tasks
+    bg_tasks: Dict[str, asyncio.Task] = app.get("bg_tasks", {})
+    for task in list(bg_tasks.values()):
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
     registry: Dict[str, CallState] = app.get("call_states", {})
     for state in list(registry.values()):
         with contextlib.suppress(Exception):
@@ -645,7 +861,13 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--stream-endpoint", default=os.getenv("BRIDGE_OUT_STREAM_ENDPOINT", "/stream/{call_id}"))
     parser.add_argument(
         "--http-media-type",
-        default=os.getenv("BRIDGE_OUT_HTTP_MEDIA_TYPE", "audio/l16"),
+        default=os.getenv("BRIDGE_OUT_HTTP_MEDIA_TYPE", "audio/wav"),
+    )
+    parser.add_argument(
+        "--broadcast-flush-ms",
+        type=int,
+        default=int(os.getenv("BRIDGE_OUT_BROADCAST_FLUSH_MS", "500")),
+        help="Accumulate this many ms of PCM before writing WAV and broadcasting via uuid_broadcast.",
     )
     parser.add_argument(
         "--orchestrator-egress-ws",
@@ -714,6 +936,7 @@ def main() -> None:
         "fs_cli": args.fs_cli,
         "http_silence_frame_ms": max(10, args.http_silence_frame_ms),
         "http_write_silence": args.http_write_silence,
+        "broadcast_flush_ms": max(100, args.broadcast_flush_ms),
     }
     app["call_states"] = {}
     app.router.add_get(args.endpoint, ws_speak)

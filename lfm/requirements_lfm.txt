@@ -12,9 +12,9 @@ sqlalchemy>=2.0.0
 psycopg2-binary>=2.9.0
 
 # PyTorch & Audio
-torch==2.3.0  # Will be overridden by CUDA index during install
-torchaudio==2.3.0
-torchvision==0.18.0
+torch>=2.3.0  # Will be overridden by CUDA index during install
+torchaudio>=2.3.0
+torchvision>=0.18.0
 
 # Audio models
 liquid-audio>=0.1.0

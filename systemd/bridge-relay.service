@@ -1,0 +1,52 @@
+[Unit]
+Description=Bridge Relay - FreeSWITCH to PersonaPlex Direct Connection
+Documentation=file:///opt/bridge-relay/BRIDGE_RELAY_DEPLOYMENT_GUIDE.md
+After=network.target network-online.target freeswitch.service
+Wants=network-online.target freeswitch.service
+
+[Service]
+Type=simple
+User=freeswitch
+Group=freeswitch
+WorkingDirectory=/opt/bridge-relay
+
+# Environment
+EnvironmentFile=/opt/bridge-relay/.env
+
+# Execution
+ExecStart=/opt/bridge-relay/venv/bin/python3 /opt/bridge-relay/bridge_relay.py
+ExecReload=/bin/kill -HUP $MAINPID
+
+# Restart policy
+Restart=always
+RestartSec=10
+StartLimitInterval=300
+StartLimitBurst=5
+
+# Logging
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=bridge-relay
+
+# Security hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/tmp/bridge_tts
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictRealtime=true
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=false
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+
+# Resource limits
+LimitNOFILE=65536
+LimitNPROC=512
+TasksMax=512
+
+[Install]
+WantedBy=multi-user.target

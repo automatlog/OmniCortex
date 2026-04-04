@@ -253,7 +253,8 @@ class TwoLegSession:
                 await self._send_interrupt()
 
     async def _upstream_reader_loop(self) -> None:
-        assert self.omni_ws is not None
+        if self.omni_ws is None:
+            raise RuntimeError(f"[{self.call_id}] upstream websocket is not initialized")
         try:
             async for msg in self.omni_ws:
                 self.touch()
@@ -326,7 +327,8 @@ class TwoLegSession:
         self.touch()
         await self.ensure_upstream()
 
-        assert self.omni_ws is not None
+        if self.omni_ws is None:
+            raise RuntimeError(f"[{self.call_id}] upstream websocket failed to initialize")
         try:
             async for msg in ws:
                 self.touch()

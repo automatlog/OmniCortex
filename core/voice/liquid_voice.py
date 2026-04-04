@@ -353,13 +353,31 @@ class LFMRemoteClient:
             timeout=60,
         )
         resp.raise_for_status()
-        text = resp.headers.get("X-LFM-Text", "")
+        try:
+            import json
+            body = resp.json()
+            text = body.get("text", "") if isinstance(body, dict) else ""
+        except (json.JSONDecodeError, ValueError):
+            # Fallback to header if JSON parsing fails
+            text = resp.headers.get("X-LFM-Text", "")
         return VoiceResponse(text=text, audio_bytes=resp.content, sample_rate=24000)
 
 
 # Singleton instance
 _voice_engine = None
-_voice_engine_lock = __import__('threading').Lock()
+_voice_engine_lock = Lock()
+
+
+def _parse_int_env(name: str, default: int) -> int:
+    """Safely parse an integer environment variable with fallback."""
+    try:
+        value = os.getenv(name, "").strip()
+        if not value:
+            return default
+        return int(value)
+    except (ValueError, TypeError):
+        logger.warning("Invalid value for env var %s; using default %d", name, default)
+        return default
 
 
 def get_voice_engine():
@@ -390,7 +408,7 @@ def get_voice_engine():
             _voice_engine = LiquidVoiceEngine(
                 model_id=os.getenv("VOICE_MODEL", "LiquidAI/LFM2.5-Audio-1.5B"),
                 device="cuda" if torch.cuda.is_available() else "cpu",
-                max_instances=int(os.getenv("VOICE_MAX_INSTANCES", "8")),
+                max_instances=_parse_int_env("VOICE_MAX_INSTANCES", 8),
             )
     
     return _voice_engine

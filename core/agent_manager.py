@@ -323,7 +323,7 @@ def resolve_retrieval_config(agent_id: str, agent: dict = None) -> dict:
     if agent is None and agent_id:
         agent = get_agent(agent_id)
     logic = (agent.get("logic") or {}) if agent else {}
-    agent_cfg = logic.get("retrieval") or {} if isinstance(logic, dict) else {}
+    agent_cfg = (logic.get("retrieval") or {}) if isinstance(logic, dict) else {}
     return {
         "use_hybrid_search": agent_cfg.get(
             "use_hybrid_search",
@@ -347,7 +347,7 @@ def resolve_voice_config(agent_id: str, agent: dict = None) -> dict:
     if agent is None and agent_id:
         agent = get_agent(agent_id)
     logic = (agent.get("logic") or {}) if agent else {}
-    agent_cfg = logic.get("voice") or {} if isinstance(logic, dict) else {}
+    agent_cfg = (logic.get("voice") or {}) if isinstance(logic, dict) else {}
     return {
         "enabled": agent_cfg.get("enabled", True),
         "mode": agent_cfg.get(

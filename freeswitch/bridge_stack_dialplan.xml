@@ -1,0 +1,90 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  FreeSWITCH Dialplan for Bridge Stack (bridge_in + brain_orchestrator + bridge_out)
+  
+  Installation:
+  1. Copy to: /usr/local/freeswitch/conf/dialplan/default/bridge_stack.xml
+  2. Reload: fs_cli -x "reloadxml"
+  3. Test: Dial 7777 from your SIP phone
+  
+  Architecture:
+  - bridge_in (port 8001): Receives audio from FreeSWITCH
+  - brain_orchestrator (port 8101): Session manager & AI brain
+  - bridge_out (port 8002): Sends audio back to FreeSWITCH
+-->
+<include>
+  <!-- Voice AI Extension - Bridge Stack -->
+  <extension name="voice_ai_bridge_stack">
+    <condition field="destination_number" expression="^7777$">
+      <!-- Disable RTP encryption -->
+      <action application="set" data="rtp_secure_media=false"/>
+      
+      <!-- Answer the call -->
+      <action application="answer"/>
+      
+      <!-- Small delay for call setup -->
+      <action application="sleep" data="500"/>
+      
+      <!-- Fork audio to bridge_in (sends to brain_orchestrator) -->
+      <action application="audio_fork" data="start ws://127.0.0.1:8001/freeswitch?call_uuid=${uuid} 8k"/>
+      
+      <!-- Small delay to ensure websocket is connected -->
+      <action application="sleep" data="1000"/>
+      
+      <!-- Play audio from bridge_out (receives from brain_orchestrator) -->
+      <action application="playback" data="http://127.0.0.1:8002/stream/${uuid}.raw"/>
+      
+      <!-- Keep call alive with silence -->
+      <action application="playback" data="silence_stream://-1"/>
+    </condition>
+  </extension>
+
+  <!-- Voice AI Extension - With Agent ID -->
+  <extension name="voice_ai_bridge_with_agent">
+    <condition field="destination_number" expression="^7778$">
+      <action application="set" data="rtp_secure_media=false"/>
+      <action application="answer"/>
+      <action application="sleep" data="500"/>
+      
+      <!-- Pass agent_id and token as query params -->
+      <action application="audio_fork" data="start ws://127.0.0.1:8001/freeswitch?call_uuid=${uuid}&amp;agent_id=YOUR_AGENT_ID&amp;token=YOUR_TOKEN 8k"/>
+      <action application="sleep" data="1000"/>
+      <action application="playback" data="http://127.0.0.1:8002/stream/${uuid}.raw"/>
+      <action application="playback" data="silence_stream://-1"/>
+    </condition>
+  </extension>
+
+  <!-- Voice AI Extension - Different Voice -->
+  <extension name="voice_ai_bridge_male_voice">
+    <condition field="destination_number" expression="^7779$">
+      <action application="set" data="rtp_secure_media=false"/>
+      <action application="answer"/>
+      <action application="sleep" data="500"/>
+      
+      <!-- Use male voice -->
+      <action application="audio_fork" data="start ws://127.0.0.1:8001/freeswitch?call_uuid=${uuid}&amp;voice_prompt=NATM0.pt 8k"/>
+      <action application="sleep" data="1000"/>
+      <action application="playback" data="http://127.0.0.1:8002/stream/${uuid}.raw"/>
+      <action application="playback" data="silence_stream://-1"/>
+    </condition>
+  </extension>
+
+  <!-- Voice AI Extension - Test/Debug -->
+  <extension name="voice_ai_bridge_test">
+    <condition field="destination_number" expression="^7770$">
+      <action application="set" data="rtp_secure_media=false"/>
+      <action application="answer"/>
+      
+      <!-- Log call details -->
+      <action application="log" data="INFO Starting bridge stack test call ${uuid}"/>
+      
+      <action application="sleep" data="500"/>
+      <action application="audio_fork" data="start ws://127.0.0.1:8001/freeswitch?call_uuid=${uuid} 8k"/>
+      <action application="sleep" data="1000"/>
+      <action application="playback" data="http://127.0.0.1:8002/stream/${uuid}.raw"/>
+      <action application="playback" data="silence_stream://-1"/>
+      
+      <action application="log" data="INFO Bridge stack test call ended ${uuid}"/>
+    </condition>
+  </extension>
+</include>

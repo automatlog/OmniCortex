@@ -27,7 +27,7 @@ from pathlib import Path
 import uvicorn
 from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import Response
+from fastapi.responses import Response, JSONResponse
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
@@ -215,6 +215,11 @@ async def transcribe_and_respond(
     audio_top_k: int = Form(4),
 ):
     """Full speech-to-speech: audio in, text + audio out."""
+    if max_new_tokens > MAX_TOKENS_ALLOWED:
+        return JSONResponse(
+            status_code=400,
+            content={"error": f"max_new_tokens ({max_new_tokens}) exceeds limit ({MAX_TOKENS_ALLOWED})"},
+        )
     engine = await _get_engine_async()
     audio_bytes = await audio.read()
     if not audio_bytes:
@@ -228,8 +233,13 @@ async def transcribe_and_respond(
             import json
             try:
                 conv_history = json.loads(conversation_history)
-            except (json.JSONDecodeError, ValueError):
-                conv_history = None
+            except (json.JSONDecodeError, ValueError) as e:
+                import logging
+                logging.warning("Failed to parse conversation_history: %s", e)
+                return JSONResponse(
+                    status_code=400,
+                    content={"error": "Invalid conversation_history JSON format"},
+                )
         
         # Run blocking transcribe_and_respond in thread pool
         loop = asyncio.get_event_loop()

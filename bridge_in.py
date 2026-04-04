@@ -239,7 +239,7 @@ async def ws_listen(request: web.Request) -> web.WebSocketResponse:
                             payload = _decode_fs_audio_bytes(payload, cfg["fs_input_codec"])
                             await upstream.send_bytes(payload)
                             forwarded_binary += 1
-                            if forwarded_binary == 1 or forwarded_binary % 200 == 0:
+                            if forwarded_binary <= 3 or forwarded_binary % 100 == 0:
                                 LOG.info(
                                     "[%s] bridge_in forwarded binary frames=%d (last=%d bytes)",
                                     call_id,

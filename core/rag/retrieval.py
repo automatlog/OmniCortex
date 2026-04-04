@@ -21,6 +21,7 @@ _RERANKER_MODEL = None
 _RERANKER_LOADED_NAME: Optional[str] = None
 
 _VECTOR_FAILURE_LOCK = threading.Lock()
+_RERANKER_INIT_LOCK = threading.Lock()
 _LAST_VECTOR_FAILURE_AT: Optional[float] = None
 _VECTOR_FAILURE_THROTTLE_SECONDS = max(
     1.0,
@@ -42,7 +43,7 @@ def get_reranker(model_name: str = None):
         return _RERANKER_MODEL
     
     # Acquire lock for initialization
-    with _VECTOR_FAILURE_LOCK:
+    with _RERANKER_INIT_LOCK:
         # Second check (with lock) to ensure another thread didn't beat us
         if _RERANKER_MODEL is not None:
             if model_name and model_name != _RERANKER_LOADED_NAME:

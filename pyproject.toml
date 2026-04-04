@@ -41,7 +41,7 @@ dependencies = [
 [project.optional-dependencies]
 vllm = ["vllm"]
 voice = ["liquid-audio==1.1.0"]
-voice-relay = ["aiohttp", "edge-tts", "opuslib", "websockets"]
+voice-relay = ["aiohttp>=3.9", "edge-tts>=5.0", "opuslib>=3.0", "websockets>=10.0"]
 # Voice: PersonaPlex (nvidia/personaplex-7b-v1) runs via vLLM, no extra deps
 
 [tool.setuptools.packages.find]

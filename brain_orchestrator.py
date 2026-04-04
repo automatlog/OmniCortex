@@ -12,8 +12,12 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import audioop
 import contextlib
+
+try:
+    import audioop
+except ImportError:
+    audioop = None
 import json
 import logging
 import os
@@ -43,9 +47,9 @@ FRAME_AUDIO = 0x01
 FRAME_TEXT = 0x02
 FRAME_CTRL = 0x03
 
-DEFAULT_UPSTREAM_CHAT_WS = "wss://jwpma2d42856fn-8998.proxy.runpod.net/api/chat"
-DEFAULT_AGENT_ID = "1c62707c-beae-4e55-8e1a-c2f59995aae9"
-DEFAULT_TOKEN = "b6f3b11e-64a5-49c7-9a90-54dd5a4cd482"
+DEFAULT_UPSTREAM_CHAT_WS = os.getenv("UPSTREAM_CHAT_WS", "")
+DEFAULT_AGENT_ID = os.getenv("AGENT_ID", "")
+DEFAULT_TOKEN = os.getenv("ORCHESTRATOR_TOKEN", "")
 
 STOP_PHRASES = [
     "stop",
@@ -691,12 +695,30 @@ class OrchestratorSession:
         )
         if self.upstream_reader_task is not None:
             self.upstream_reader_task.cancel()
+            try:
+                await self.upstream_reader_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                LOG.warning("Exception while awaiting upstream_reader_task: %s", e)
             self.upstream_reader_task = None
         if self.silence_pump_task is not None:
             self.silence_pump_task.cancel()
+            try:
+                await self.silence_pump_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                LOG.warning("Exception while awaiting silence_pump_task: %s", e)
             self.silence_pump_task = None
         if self.phrase_barge_task is not None:
             self.phrase_barge_task.cancel()
+            try:
+                await self.phrase_barge_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as e:
+                LOG.warning("Exception while awaiting phrase_barge_task: %s", e)
             self.phrase_barge_task = None
         with contextlib.suppress(asyncio.QueueFull):
             self.phrase_audio_queue.put_nowait(None)
@@ -722,6 +744,12 @@ class SessionRegistry:
         async with self._lock:
             session = self._sessions.get(call_id)
             if session is None or session.closed or session.is_idle(time.monotonic(), self.cfg.session_idle_sec):
+                # Close old session before replacing it to avoid resource leak
+                if session is not None:
+                    try:
+                        await session.close()
+                    except Exception as e:
+                        LOG.warning("Failed to close idle session %s: %s", call_id, e)
                 session = OrchestratorSession(call_id, self.cfg, params, remote)
                 self._sessions[call_id] = session
             else:
@@ -770,8 +798,9 @@ async def ws_ingest(request: web.Request) -> web.WebSocketResponse:
         session = await reg.get_or_create(call_id, params, request.remote or "unknown")
         await session.handle_ingest(ws)
     except web.HTTPException as exc:
-        await ws.send_str(json.dumps({"error": exc.text}))
-        await ws.close(code=1008, message=exc.text.encode("utf-8", errors="ignore"))
+        text = exc.text or str(exc) or ""
+        await ws.send_str(json.dumps({"error": text}))
+        await ws.close(code=1008, message=text.encode("utf-8", errors="ignore") if text else b"error")
     except Exception as exc:
         LOG.exception("[%s] ingest failed: %s", call_id, exc)
         if not ws.closed:
